@@ -1,0 +1,16 @@
+#!/bin/bash
+#SBATCH -A m2865
+#SBATCH -N 1
+#SBATCH -C gpu
+#SBATCH -q regular
+#SBATCH -t 1:00:00
+#SBATCH -c 10
+#SBATCH -G 1
+#SBATCH -o bitarr_profile.out
+
+cd build
+cmake .. -DPOGGERS_BUILD_TESTS=ON
+make clean && make bitarr_benchmarks
+srun -N 1 -n 1 ./tests/bitarr_benchmarks
+
+

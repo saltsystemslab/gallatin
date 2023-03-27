@@ -1,0 +1,14 @@
+#!/bin/bash
+#SBATCH -A m2865
+#SBATCH -N 1
+#SBATCH -C gpu
+#SBATCH -q regular
+#SBATCH -t 1:00:00
+#SBATCH -c 10
+#SBATCH -G 1
+#SBATCH -o recordings/speed_test_status.out
+#SBATCH -J speed_tests
+
+srun -N 1 -n 1 ncu -f -o recordings/speed_tests --set full ./build/tests/speed_tests
+
+

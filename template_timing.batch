@@ -1,0 +1,14 @@
+#!/bin/bash
+#SBATCH -A m2865_g
+#SBATCH -N 1
+#SBATCH -C gpu
+#SBATCH -q regular
+#SBATCH -t 30:00
+#SBATCH -c 10
+#SBATCH -G 1
+#SBATCH -o recordings/template_timing/1024_64.out
+#SBATCH -J 1024_64_timing
+
+srun -N 1 -n 1 ./batched_template_tests 30 20
+
+
