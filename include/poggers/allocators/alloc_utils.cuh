@@ -227,6 +227,34 @@ __host__ Struct_Type * move_to_host(Struct_Type * dev_version, uint64_t num_copi
 
 }
 
+template <typename Struct_Type>
+__host__ Struct_Type * copy_to_host(Struct_Type * dev_version, uint64_t num_copies){
+
+	Struct_Type * host_version = get_host_version<Struct_Type>(num_copies);
+
+	cudaMemcpy(host_version, dev_version, num_copies*sizeof(Struct_Type), cudaMemcpyDeviceToHost);
+
+	cudaDeviceSynchronize();
+
+	return host_version;
+
+
+}
+
+
+template <typename Struct_Type>
+__host__ Struct_Type * copy_to_host(Struct_Type * dev_version){
+
+	Struct_Type * host_version = get_host_version<Struct_Type>();
+
+	cudaMemcpy(host_version, dev_version, sizeof(Struct_Type), cudaMemcpyDeviceToHost);
+
+	cudaDeviceSynchronize();
+
+	return host_version;
+
+
+}
 
 
 

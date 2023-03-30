@@ -22,6 +22,7 @@ set(GPU_ARCHS "")
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/EvalGpuArchs.cmake)
   evaluate_gpu_archs(GPU_ARCHS)
 
+#set(CUDA_TOOLKIT_ROOT_DIR /usr/local/cuda-12.1)
 
 find_package(CUDAToolkit 11.0 REQUIRED)
 set(CMAKE_CUDA_RUNTIME_LIBRARY SHARED)

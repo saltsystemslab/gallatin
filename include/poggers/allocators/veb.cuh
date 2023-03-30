@@ -123,7 +123,7 @@ struct layer{
 
 		uint64_t ext_num_blocks = (items_in_universe-1)/64+1;
 
-		printf("Universe of %lu items in %lu bytes\n", items_in_universe, ext_num_blocks);
+		//printf("Universe of %lu items in %lu bytes\n", items_in_universe, ext_num_blocks);
 
 
 		layer * host_layer;
@@ -278,6 +278,24 @@ struct layer{
 		return (bits[high] & SET_BIT_MASK(low));
 	}
 
+	__device__ void set_new_universe(uint64_t items_in_universe){
+
+		universe_size = items_in_universe;
+		num_blocks = get_num_blocks(items_in_universe);
+
+		for (uint64_t i =0; i< num_blocks-1; i++){
+			atomicOr((unsigned long long int *)&bits[i], ~0ULL);
+		}
+
+		//uint64_t high = items_in_universe / 64;
+		uint64_t low = items_in_universe % 64;
+
+		atomicOr((unsigned long long int *)&bits[num_blocks-1], BITMASK(low));
+
+		return;
+
+	}
+
 
 
 
@@ -291,6 +309,8 @@ struct veb_tree {
 	uint64_t seed;
 	uint64_t total_universe;
 	int num_layers;
+
+	int original_num_layers;
 	layer ** layers;
 
 	//don't think this calculation is correct
@@ -338,6 +358,7 @@ struct veb_tree {
 
 		//setup host structure
 		host_tree->num_layers = ext_num_layers;
+		host_tree->original_num_layers = ext_num_layers;
 
 		host_tree->layers = dev_layers;
 
@@ -371,7 +392,7 @@ struct veb_tree {
 
 	// }
 
-
+	//always free from the layers we started with.
 	__host__ static void free_on_device(veb_tree * dev_tree){
 
 
@@ -383,9 +404,9 @@ struct veb_tree {
 
 		cudaDeviceSynchronize();
 
-		int ext_num_layers = host_tree->num_layers;
+		int ext_num_layers = host_tree->original_num_layers;
 
-		printf("Cleaning up tree with %d layers\n", ext_num_layers);
+		//printf("Cleaning up tree with %d layers\n", ext_num_layers);
 
 		layer ** host_layers;
 
@@ -437,6 +458,39 @@ struct veb_tree {
 	}
 
 
+	__device__ void init_new_universe(uint64_t items_in_universe){
+
+
+		uint64_t ext_universe_size = items_in_universe;
+
+
+		int max_height = 64 - __builtin_clzll(items_in_universe);
+
+		assert(max_height >= 1);
+		//round up but always assume
+		int ext_num_layers = (max_height-1)/6+1;
+
+
+
+		for (int i =0; i < ext_num_layers; i++){
+
+			layers[ext_num_layers-1-i]->set_new_universe(ext_universe_size);
+
+			ext_universe_size = (ext_universe_size-1)/64 +1;
+
+		}
+
+		num_layers = ext_num_layers;
+
+		total_universe = items_in_universe;
+
+
+
+		
+
+	}
+
+
 	//base setup - only works with lowest level
 	__device__ bool remove(uint64_t delete_val){
 
@@ -483,6 +537,50 @@ struct veb_tree {
 
 
 	}
+
+	__device__ bool insert_force_update(uint64_t insert_val){
+
+		uint64_t high = insert_val >> 6;
+
+		int low = insert_val & BITMASK(6);
+
+		int layer = num_layers - 1;
+
+		uint64_t old = layers[layer]->insert(high, low);
+
+		if ((old & SET_BIT_MASK(low))) return false;
+
+		while (__popcll(old) == 0 && float_up(layer, high, low)){
+			old = layers[layer]->insert(high, low);
+		}
+
+		return true;
+
+
+	}
+
+	//insert, but we're not running probabilistically.
+	//inserting into a block *must* force it to make changes visible at the highest level
+	// __device__ bool insert_force_update(uint64_t insert_val){
+
+	// 	uint64_t high = insert_val >> 6;
+
+	// 	int low = insert_val & BITMASK(6);
+
+	// 	int layer = num_layers - 1;
+
+	// 	uint64_t old = layers[layer]->insert(high, low);
+
+	// 	if ((old & SET_BIT_MASK(low))) return false;
+
+	// 	while (float_up(layer, high, low)){
+	// 		old = layers[layer]->insert(high, low);
+	// 	}
+
+	// 	return true;
+
+
+	// }
 
 	//non atomic
 	__device__ bool query(uint64_t query_val){
@@ -559,6 +657,67 @@ struct veb_tree {
 
 	}
 
+	//allow for multiple loops
+	//this is obviously slower / more divergent, but can help on small trees
+	//guarantee that all items can be retreived is probabilistic
+	__device__ uint64_t successor_thorough(uint64_t query_val){
+
+		uint64_t high = query_val >> 6;
+		int low = query_val & BITMASK(6);
+
+		int layer = num_layers-1;
+
+
+		while (true){
+
+
+			//float up as little as possible
+
+			while (true){
+
+				int found_idx = layers[layer]->find_next(high, low);
+
+
+				if (found_idx == -1){
+
+					if (layer== 0) return veb_tree::fail();	
+
+					float_up(layer, high, low);
+					continue;
+
+				} else {
+					break;
+				}
+
+
+
+
+			}
+
+
+		while (layer != (num_layers-1)){
+
+			low = layers[layer]->find_next(high, low);
+
+			if (low == -1){
+				break;
+			}
+			float_down(layer, high, low);
+
+		}
+
+		low = layers[layer]->find_next(high, low);
+
+		if (low != -1){
+
+			return (high << 6) + low;
+
+		}
+
+		}
+
+	}
+
 	__device__ uint64_t lock_offset(uint64_t start){
 
 		//temporarily clipped for debugging
@@ -568,7 +727,8 @@ struct veb_tree {
 
 		while (true){
 
-			start = successor(start);
+			//start = successor(start);
+			start = successor_thorough(start);
 
 			if (start == veb_tree::fail()) return start;
 
@@ -585,7 +745,25 @@ struct veb_tree {
 
 		if (query(0)) return 0;
 
-		return successor(0);
+		return successor_thorough(0);
+
+	}
+
+	__device__ uint64_t malloc_first(){
+
+		int attempts = 0;
+
+		while (attempts < VEB_MAX_ATTEMPTS){
+
+			uint64_t offset = lock_offset(0);
+
+			if (offset != veb_tree::fail()) return offset;
+
+			attempts+=1;
+
+		}
+
+		return veb_tree::fail();
 
 	}
 
@@ -608,7 +786,8 @@ struct veb_tree {
 		while(attempts < VEB_MAX_ATTEMPTS){
 
 
-			uint64_t index_to_start = (hash1+attempts*hash2) % (total_universe-64);
+			//uint64_t index_to_start = (hash1+attempts*hash2) % (total_universe-64);
+			uint64_t index_to_start = (hash1+attempts*hash2) % (total_universe);
 
 			if (index_to_start == ~0ULL){
 
@@ -617,6 +796,8 @@ struct veb_tree {
 
 			}
 
+
+			if (index_to_start >= total_universe) printf("Huge index error\n");
 
 			uint64_t offset = lock_offset(index_to_start);
 
@@ -673,7 +854,7 @@ struct veb_tree {
 
 		uint64_t max_value = report_max();
 
-		uint64_t num_threads = max_value/64;
+		uint64_t num_threads = (max_value-1)/64+1;
 
 		veb_report_fill_kernel<veb_tree><<<(num_threads-1)/512+1, 512>>>(this, num_threads, fill_count);
 
