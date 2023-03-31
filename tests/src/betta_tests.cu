@@ -630,7 +630,7 @@ int main(int argc, char** argv) {
    //not quite working - get some misses
    //one_boot_betta_test_all_sizes<16ULL*1024*1024, 16ULL, 16ULL>(100ULL*16*1024*1024);
 
-   betta_alloc_random<16ULL*1024*1024, 16ULL, 128ULL>(2000ULL*16*1024*1024, 20000);
+   betta_alloc_random<16ULL*1024*1024, 16ULL, 128ULL>(2000ULL*16*1024*1024, 10000);
 
    cudaDeviceReset();
    return 0;

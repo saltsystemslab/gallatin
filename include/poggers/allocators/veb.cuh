@@ -267,6 +267,8 @@ struct layer{
 
 	}
 
+	//__device__ int inline
+
 	//returns true if item in bitmask.
 	__device__ bool query(uint64_t high, int low){
 
