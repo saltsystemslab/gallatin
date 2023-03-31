@@ -144,7 +144,7 @@ struct alloc_table {
 		for (uint64_t i = 0; i < num_segments; i++){
 
 			//this has high space usage, mark as todo to fix.
-			host_tree_array[i] = malloc_bitarr::generate_on_device(blocks_per_segment, false);
+			host_tree_array[i] = malloc_bitarr::generate_on_device(blocks_per_segment, true);
 
 		}
 

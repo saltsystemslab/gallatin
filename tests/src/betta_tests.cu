@@ -192,7 +192,9 @@ __global__ void malloc_and_save_blocks(betta_type * betta, offset_alloc_bitarr *
    offset_alloc_bitarr * block = betta->request_new_block_from_tree(0);
 
    if (block == nullptr){
-      printf("Alloc failure\n");
+      printf("Alloc failure in 1\n");
+
+      block = betta->request_new_block_from_tree(0);
    }
 
    blocks[tid] = block;
@@ -210,9 +212,9 @@ __global__ void malloc_and_save_blocks_tree(betta_type * betta, offset_alloc_bit
    offset_alloc_bitarr * block = betta->request_new_block_from_tree(tree_id);
 
    if (block == nullptr){
-      printf("Alloc failure\n");
+      printf("Alloc failure in 2\n");
 
-      block = betta->request_new_block_from_tree(tree_id);
+      //block = betta->request_new_block_from_tree(tree_id);
    }
 
    blocks[tid] = block;
@@ -314,7 +316,7 @@ __global__ void alloc_random_blocks(betta_type * betta){
    uint64_t num_trees = betta_type::get_num_trees();
 
 
-   for (int i = 0; i < 10; i++){
+   for (int i = 0; i < 1; i++){
 
       int tree = poggers::hashers::MurmurHash64A (&tid, sizeof(uint64_t), i) % num_trees;
 
@@ -323,7 +325,7 @@ __global__ void alloc_random_blocks(betta_type * betta){
    }
 
 
-   for (int i = 0; i < 10; i++){
+   for (int i = 0; i < 1; i++){
 
       if (my_blocks[i] == nullptr){
          printf("Failed to alloc\n");
@@ -628,9 +630,9 @@ int main(int argc, char** argv) {
    //boot_betta_malloc_free<16ULL*1024*1024, 16ULL, 64ULL>(30ULL*1000*1000*1000);
 
    //not quite working - get some misses
-   //one_boot_betta_test_all_sizes<16ULL*1024*1024, 16ULL, 16ULL>(100ULL*16*1024*1024);
+   //one_boot_betta_test_all_sizes<16ULL*1024*1024, 16ULL, 128ULL>(2000ULL*16*1024*1024);
 
-   betta_alloc_random<16ULL*1024*1024, 16ULL, 128ULL>(2000ULL*16*1024*1024, 10000);
+   betta_alloc_random<16ULL*1024*1024, 16ULL, 128ULL>(2000ULL*16*1024*1024, 1000000);
 
    cudaDeviceReset();
    return 0;

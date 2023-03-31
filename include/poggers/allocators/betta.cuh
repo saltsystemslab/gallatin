@@ -287,11 +287,13 @@ struct betta_allocator {
 
 		//todo 
 		//swap to first
+		__threadfence();
+
 		uint64_t id = segment_tree->malloc_first();
 
 		if (id == veb_tree::fail()){
 
-			printf("No segments available\n");
+			//printf("No segments available\n");
 			return false;
 		}
 
@@ -312,7 +314,7 @@ struct betta_allocator {
 
 		sub_trees[tree]->insert_force_update(id);
 
-		printf("Attached %llu to %d\n", id, tree);
+		//printf("Attached %llu to %d\n", id, tree);
 
 		return true;
 		

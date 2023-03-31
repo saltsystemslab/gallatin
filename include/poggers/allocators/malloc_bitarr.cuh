@@ -171,10 +171,8 @@ struct malloc_bitarr {
 
 		for (int i = 0; i < num_blocks; i++){
 
-			//try load wrong
-			//uint64_t current_block = ~0ULL;
-			//doesn't really change anything.
-			poggers::utils::ldca(&bits[i]);
+			//uint64_t current_block = ~0ULL
+			uint64_t current_block = poggers::utils::ldca(&bits[i]);
 
 			while (current_block != 0ULL){
 
@@ -287,10 +285,37 @@ struct malloc_bitarr {
 		uint64_t new_num_blocks = (items_in_universe - 1)/64+1;
 
 
+		uint64_t current_universe = load_universe_atomic();
 
 		
-		for (int i = 0; i < num_blocks; i++){
-			atomicExch((unsigned long long int *)&bits[i], 0ULL);
+		for (uint64_t i = 0; i < num_blocks; i++){
+
+			
+
+			uint64_t leftover;
+
+			if (i * 64 > current_universe){
+
+				leftover = 0;
+
+			} else {
+
+				leftover = current_universe - i*64;
+
+				
+
+			}
+
+			if (leftover > 64) leftover = 64;
+
+			uint64_t my_bitmask = BITMASK(leftover);
+
+
+			while (atomicCAS((unsigned long long int *)&bits[i], my_bitmask, 0ULL) != my_bitmask){
+				//This is catching bugs!
+				//printf("Stalling on %d: universe is %llu, mask %llx : %llx\n ", i, current_universe, my_bitmask, bits[i]);
+			}
+			//atomicExch((unsigned long long int *)&bits[i], 0ULL);
 		}
 
 		//then reset
