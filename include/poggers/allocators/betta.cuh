@@ -159,7 +159,7 @@ struct betta_allocator {
 		host_version->sub_trees = move_to_device<sub_tree_type *>(ext_sub_trees, num_trees);
 
 
-		boot_segment_trees<<<(max_chunks -1)/512+1, max_chunks>>>(host_version->sub_trees, max_chunks, num_trees);
+		boot_segment_trees<<<(max_chunks -1)/512+1, 512>>>(host_version->sub_trees, max_chunks, num_trees);
 
 
 		host_version->locks = 0;
@@ -269,7 +269,7 @@ struct betta_allocator {
 	}
 
 	//get a new segment for a tree!
-	__device__ bool gather_new_segment(int tree){
+	__device__ bool gather_new_segment(uint16_t tree){
 
 		// void * bits = bit_tree->malloc();
 
@@ -290,16 +290,29 @@ struct betta_allocator {
 		uint64_t id = segment_tree->malloc_first();
 
 		if (id == veb_tree::fail()){
+
+			printf("No segments available\n");
 			return false;
 		}
 
 		//otherwise, both initialized
 		//register segment
-		table->setup_segment(id, tree);
+		if (!table->setup_segment(id, tree)){
+
+			printf("Failed to acquire updatable segment\n");
+
+			segment_tree->insert_force_update(id);
+			//abort, but not because no segments are available.
+			//this is fine.
+			return true;
+
+		}
 
 		__threadfence();
 
 		sub_trees[tree]->insert_force_update(id);
+
+		printf("Attached %llu to %d\n", id, tree);
 
 		return true;
 		
@@ -307,14 +320,14 @@ struct betta_allocator {
 	}
 
 
-	__device__ bool acquire_tree_lock(int tree){
+	__device__ bool acquire_tree_lock(uint16_t tree){
 
 
 		return ((atomicOr(&locks, SET_BIT_MASK(tree)) & SET_BIT_MASK(tree)) == 0);
 
 	}
 
-	__device__ bool release_tree_lock(int tree){
+	__device__ bool release_tree_lock(uint16_t tree){
 
 		atomicAnd(&locks, ~SET_BIT_MASK(tree));
 	}
@@ -322,16 +335,19 @@ struct betta_allocator {
 	//gather a new block for a tree.
 	//this attempts to pull from a memory segment.
 	// and will atteach a new segment if now
-	__device__ offset_alloc_bitarr * request_new_block_from_tree(int tree){
+	__device__ offset_alloc_bitarr * request_new_block_from_tree(uint16_t tree){
 
 		int attempts = 0;
 
 		while (attempts < REQUEST_BLOCK_MAX_ATTEMPTS){
 
+			__threadfence();
+
 			uint64_t segment = sub_trees[tree]->find_first_valid_index();
 
 
 			if (segment == veb_tree::fail()){
+
 
 
 				if (acquire_tree_lock(tree)){
@@ -354,7 +370,15 @@ struct betta_allocator {
 					} 
 
 
+				} else {
+
+					//this is inf loop?
+					//printf("Looping on tree lock\n");
+
 				}
+
+
+				__threadfence();
 
 				//for the moment, failures due to not being full enough aren't penalized.
 				continue;
@@ -364,7 +388,7 @@ struct betta_allocator {
 
 			bool last_block = true;
 
-			auto block = table->get_block(segment, last_block);
+			auto block = table->get_block(segment, tree, last_block);
 
 			if (last_block){
 
@@ -387,6 +411,9 @@ struct betta_allocator {
 		}
 
 
+		return nullptr;
+
+
 	}
 
 
@@ -399,20 +426,7 @@ struct betta_allocator {
 
 		uint64_t segment = table->get_segment_from_block_ptr(block);
 
-		//we're good! wasn't in tree so lets just give it back to the segment tree
-		if (need_to_reregister && need_to_deregister){
-
-			segment_tree->insert_force_update(segment);
-			return;
-		}
-
-		if (need_to_reregister){
-
-			//add to tree again
-			int tree = table->chunk_ids[segment];
-			sub_trees[tree]->insert_force_update(segment);
-
-		}
+		//uint16_t tree = table->read_tree_id(segment);
 
 		if (need_to_deregister){
 			//printf("Deregistering block! %llu\n", table->get_segment_from_block_ptr(block));
@@ -420,10 +434,14 @@ struct betta_allocator {
 			//don't need to reset anything, just pull from table and threadfence
 			
 
-			int tree = table->chunk_ids[segment];
+			uint16_t tree = table->read_tree_id(segment);
 
 			//pull from tree
+			//should be fine, no one can update till this point
 			sub_trees[tree]->remove(segment);
+
+			table->reset_tree_id(segment, tree);
+			__threadfence();
 
 			segment_tree->insert_force_update(segment);
 
@@ -471,7 +489,7 @@ struct betta_allocator {
 	}
 
 
-	static __host__ __device__ uint64_t get_blocks_per_segment(int tree){
+	static __host__ __device__ uint64_t get_blocks_per_segment(uint16_t tree){
 
 		return alloc_table<bytes_per_segment, smallest>::get_blocks_per_segment(tree);
 	}

@@ -36,6 +36,8 @@
 #include <poggers/allocators/veb.cuh>
 #include <poggers/allocators/offset_slab.cuh>
 
+#include <poggers/allocators/malloc_bitarr.cuh>
+
 
 
 #ifndef DEBUG_PRINTS
@@ -53,6 +55,17 @@ namespace allocators {
 
 //register atomically inserst tree num, or registers memory from chunk_tree.
 
+__global__ void betta_init_counters_kernel(unsigned int * counters, uint64_t num_segments, uint64_t blocks_per_segment){
+
+
+	uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+	if (tid >= num_segments) return;
+
+	counters[tid] = blocks_per_segment;
+
+}
+
 
 template<uint64_t bytes_per_segment, uint64_t min_size>
 struct alloc_table {
@@ -66,12 +79,12 @@ struct alloc_table {
 	uint16_t * chunk_ids;
 
 	//2) how much is paritioned
-	veb_tree ** metadata_trees;
+	malloc_bitarr ** segment_metadata;
 
 	//3) what are the individual allocations.
 	offset_alloc_bitarr * blocks;
 
-	int * counters;
+	unsigned int * counters;
 
 	char * memory;
 	
@@ -126,24 +139,26 @@ struct alloc_table {
 		//start of metadata
 
 
-		veb_tree ** host_tree_array = poggers::utils::get_host_version<veb_tree *>(num_segments);
+		malloc_bitarr ** host_tree_array = poggers::utils::get_host_version<malloc_bitarr *>(num_segments);
 
 		for (uint64_t i = 0; i < num_segments; i++){
 
 			//this has high space usage, mark as todo to fix.
-			host_tree_array[i] = veb_tree::generate_on_device(blocks_per_segment, i);
+			host_tree_array[i] = malloc_bitarr::generate_on_device(blocks_per_segment, false);
 
 		}
 
-		host_version->metadata_trees = poggers::utils::move_to_device<veb_tree *>(host_tree_array, num_segments);
+		host_version->segment_metadata = poggers::utils::move_to_device<malloc_bitarr *>(host_tree_array, num_segments);
 
 		//end of metadata trees
 
 		//start of counters
 
-		host_version->counters = poggers::utils::get_device_version<int>(num_segments);
+		host_version->counters = poggers::utils::get_device_version<unsigned int>(num_segments);
 
-		cudaMemset(host_version->counters, 0, sizeof(int)*num_segments);
+		betta_init_counters_kernel<<<(num_segments-1)/512+1,512>>>(host_version->counters, num_segments, blocks_per_segment);
+
+		//cudaMemset(host_version->counters, 0, sizeof(unsigned int)*num_segments);
 
 		my_type * dev_version;
 
@@ -172,10 +187,10 @@ struct alloc_table {
 
 		cudaDeviceSynchronize();
 
-		veb_tree ** host_trees = poggers::utils::move_to_host<veb_tree *>(host_version->metadata_trees, host_version->num_segments);
+		malloc_bitarr ** host_trees = poggers::utils::move_to_host<malloc_bitarr *>(host_version->segment_metadata, host_version->num_segments);
 
 		for (uint64_t i=0; i< host_version->num_segments; i++){
-			veb_tree::free_on_device(host_trees[i]);
+			malloc_bitarr::free_on_device(host_trees[i]);
 		}
 
 		cudaFree(host_version->blocks);
@@ -218,22 +233,37 @@ struct alloc_table {
 	}
 
 
-	__device__ void setup_segment(uint64_t segment, uint16_t tree_id){
+	__device__ bool setup_segment(uint64_t segment, uint16_t tree_id){
+
+		//this serves to lock the segment
+		//if people are fucking with it you can't claim.
+		if (atomicCAS(&counters[segment], blocks_per_segment, 2*blocks_per_segment) != blocks_per_segment){
+			//need to abort!
+			printf("Failed to claim segment %lu for tree %u\n", segment, tree_id);
+			return false;
+		}
 
 		uint64_t tree_alloc_size = get_tree_alloc_size(tree_id);
 
 		chunk_ids[segment] = tree_id;
 
+		//gate to init is init_new_universe
+		
+
 		uint64_t num_blocks = bytes_per_segment/(tree_alloc_size*4096);
 
-		metadata_trees[segment]->init_new_universe(num_blocks);
+		segment_metadata[segment]->init_new_universe(num_blocks);
 
-		setup_blocks(segment, num_blocks);
+		__threadfence();
 
+		return setup_blocks(segment, num_blocks);
 
 	}
 
-	__device__ void setup_blocks(uint64_t segment, uint64_t num_blocks){
+	__device__ bool setup_blocks(uint64_t segment, uint64_t num_blocks){
+
+
+		__threadfence();
 
 		uint64_t base_offset = blocks_per_segment*segment;
 
@@ -250,57 +280,107 @@ struct alloc_table {
 
 		}
 
-		counters[segment] = num_blocks;
+		return (atomicCAS(&counters[segment], 2*blocks_per_segment, 0) == 2*blocks_per_segment);
+
+
 
 	}
 
 
+	__device__ bool set_tree_id(uint64_t segment, uint16_t tree_id){
+
+
+		return (atomicCAS((unsigned short int *)&chunk_ids[segment],  (unsigned short int) ~0U, (unsigned short int)tree_id) == (unsigned short int) ~0U);
+	}
+
+
+	__device__ uint16_t read_tree_id(uint64_t segment){
+
+		return atomicCAS((unsigned short int *)&chunk_ids[segment],  (unsigned short int) ~0U, (unsigned short int) ~0U);
+
+	}
+
+	__device__ bool reset_tree_id(uint64_t segment, uint16_t tree_id){
+
+		return (atomicCAS((unsigned short int *)&chunk_ids[segment], (unsigned short int)tree_id, (unsigned short int) ~0U) == (unsigned short int) tree_id);
+	}
+
 	//in the near future this will be allowed to fail
-	__device__ offset_alloc_bitarr * get_block(uint64_t segment_id, bool &empty){
-
-
-		int my_count = atomicSub(&counters[segment_id], 1);
-
-		if (my_count < 0){
-			//this is fine
-			//printf("No count\n");
-			atomicAdd(&counters[segment_id], 1);
-
-			return nullptr;
-		}
+	__device__ offset_alloc_bitarr * get_block(uint64_t segment_id, uint16_t tree_id, bool &empty){
 
 		//else valid
 		//get bit
 
 		//I know a bit is available.
 
-		// uint64_t block_id = veb_tree::fail();
+		// uint64_t block_id = malloc_bitarr::fail();
 
-		// while (block_id == veb_tree::fail()){
-		// 	block_id = metadata_trees[segment_id]->malloc();
+		// while (block_id == malloc_bitarr::fail()){
+		// 	block_id = segment_metadata[segment_id]->malloc();
 		// }
 
 		// return &blocks[segment_id*blocks_per_segment+block_id];
 
 		//last thread to pull from a block is obligated to unset the block in the sub tree.
-		empty = (my_count == 0);
+		//empty = (my_count == 0);
 
-		auto block_id = metadata_trees[segment_id]->malloc();
+		uint16_t global_tree_id = read_tree_id(segment_id);
 
-		if (block_id != veb_tree::fail()){
 
-			return &blocks[segment_id*blocks_per_segment+block_id];
+
+		if (tree_id != global_tree_id){
+			//printf("Tree load err in %llu, %u != %u\n", segment_id, tree_id, global_tree_id);
+
+			empty = false;
+			return nullptr;
+		}
+
+		uint64_t num_blocks = get_blocks_per_segment(global_tree_id);
+
+		int my_count = atomicAdd(&counters[segment_id], 1);
+
+		if (my_count >= num_blocks){
+			//this is fine
+			//printf("Count failure in segment %llu\n", segment_id);
+			atomicSub(&counters[segment_id], 1);
+
+			return nullptr;
+		}
+
+
+		auto block_id = segment_metadata[segment_id]->malloc();
+
+		if (block_id == malloc_bitarr::fail()){
+
+			//this shouldn't ever happen *but* it can
+			//This means that we had a full reset,
+			printf("Shouldn't ever happen\n");
+
+			atomicSub(&counters[segment_id], 1);
+			empty = false;
+			return nullptr;
 
 		}
+
+
+
+		if (my_count == (num_blocks-1)){
+			empty = true;
+		}
+
+		
+
+		return &blocks[segment_id*blocks_per_segment+block_id];
+
 		// } else {
 
 		// 	printf("Failed to get ID\n");
 
-		// 	//block_id = metadata_trees[segment_id]->malloc();
+		// 	//block_id = segment_metadata[segment_id]->malloc();
 
 		// }
 
-		return nullptr;
+		//return nullptr;
 	}
 
 
@@ -350,14 +430,14 @@ struct alloc_table {
 
 	}
 
-	static __host__ __device__ uint64_t get_tree_alloc_size(int tree){
+	static __host__ __device__ uint64_t get_tree_alloc_size(uint16_t tree){
 
 		//scales up by smallest.
 		return min_size * get_p2_from_index(tree);
 
 	}
 
-	static __host__ __device__ uint64_t get_blocks_per_segment(int tree){
+	static __host__ __device__ uint64_t get_blocks_per_segment(uint16_t tree){
 
 		uint64_t tree_alloc_size = get_tree_alloc_size(tree);
 
@@ -380,25 +460,28 @@ struct alloc_table {
 		uint64_t num_blocks = bytes_per_segment/(tree_alloc_size*4096);
 
 		//first, add back to tree
-		if (!metadata_trees[segment]->insert_force_update(relative_offset)){
-			printf("Double free in tree\n");
+
+
+		int old_count = atomicSub(&counters[segment], 1);
+
+		//printf("Old count for offset %d is %d\n", relative_offset, old_count);
+
+
+		if (!segment_metadata[segment]->insert(relative_offset)){
+			printf("Double free in tree %llu at address %d\n", segment, relative_offset);
 		}
 
-		int old_count = atomicAdd(&counters[segment], 1);
 
-		if (old_count == 0){
+		if (old_count == 1){
 
-			need_to_reregister = true;
 
-		}
-
-		if (old_count == num_blocks-1){
 
 
 			//can maybe free section.
 			//attempt CAS
 			//on success, you are the exclusive owner of the segment.
-			return (atomicCAS(&counters[segment], num_blocks, 0) == num_blocks);
+
+			return (atomicCAS(&counters[segment], 0, blocks_per_segment) == 0);
 
 		}
 

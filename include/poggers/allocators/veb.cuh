@@ -470,6 +470,11 @@ struct veb_tree {
 		//round up but always assume
 		int ext_num_layers = (max_height-1)/6+1;
 
+		num_layers = ext_num_layers;
+
+		total_universe = items_in_universe;
+
+		__threadfence();
 
 
 		for (int i =0; i < ext_num_layers; i++){
@@ -480,9 +485,7 @@ struct veb_tree {
 
 		}
 
-		num_layers = ext_num_layers;
 
-		total_universe = items_in_universe;
 
 
 

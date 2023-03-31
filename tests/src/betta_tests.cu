@@ -162,6 +162,7 @@ __global__ void malloc_all_blocks(betta_type * betta, uint64_t num_segments, uin
 
 
 
+
 }
 
 //pull all blocks using betta
@@ -333,6 +334,8 @@ __global__ void alloc_random_blocks(betta_type * betta){
       
 
    }
+
+   //printf("Done with %llu\n", tid);
 
 
 
@@ -624,9 +627,10 @@ int main(int argc, char** argv) {
 
    //boot_betta_malloc_free<16ULL*1024*1024, 16ULL, 64ULL>(30ULL*1000*1000*1000);
 
-   //one_boot_betta_test_all_sizes<16ULL*1024*1024, 16ULL, 4096ULL>(2000ULL*16*1024*1024);
+   //not quite working - get some misses
+   //one_boot_betta_test_all_sizes<16ULL*1024*1024, 16ULL, 16ULL>(100ULL*16*1024*1024);
 
-   betta_alloc_random<16ULL*1024*1024, 16ULL, 16ULL>(10ULL*16*1024*1024, 1000);
+   betta_alloc_random<16ULL*1024*1024, 16ULL, 128ULL>(2000ULL*16*1024*1024, 20000);
 
    cudaDeviceReset();
    return 0;
