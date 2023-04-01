@@ -37,6 +37,8 @@
 
 #include <poggers/allocators/offset_slab.cuh>
 
+#include <poggers/allocators/block_storage.cuh>
+
 
 
 #ifndef DEBUG_PRINTS
@@ -80,6 +82,8 @@ struct betta_allocator {
 	//using sub_tree_type = extending_veb_allocator_nosize<bytes_per_segment, 5>;
 	using sub_tree_type = veb_tree;
 
+	using pinned_block_type = pinned_block_container<smallest, biggest>;
+
 	veb_tree * segment_tree;
 	//one_size_allocator * segment_tree;
 
@@ -87,11 +91,20 @@ struct betta_allocator {
 
 	sub_tree_type ** sub_trees;
 
+	//smid_pinned_container<2> ** malloc_containers;
+
+	pinned_block_type * local_blocks;
+
+	pinned_storage ** storage_containers;
+
+
 	int num_trees;
 
 	int smallest_bits;
 
 	uint locks;
+
+
 
 	static __host__ my_type * generate_on_device(uint64_t max_bytes, uint64_t seed){
 
@@ -110,6 +123,9 @@ struct betta_allocator {
 		//estimate the max_bits
 		uint64_t num_bits = bytes_per_segment/(4096*smallest);
 
+		host_version->local_blocks = pinned_block_type::generate_on_device(num_bits);
+
+
 		uint64_t num_bytes = 0;
 
 		//this underestimates the total #bytes needed.
@@ -126,12 +142,12 @@ struct betta_allocator {
 		num_bytes += 8+num_bits*sizeof(offset_alloc_bitarr);
 
 
-		printf("Final bits is %llu, bytes is %llu\n", num_bits, num_bytes);
+		//printf("Final bits is %llu, bytes is %llu\n", num_bits, num_bytes);
 
 		//need to verify, but this should be sufficient for all sizes.
 		//host_version->bit_tree = one_size_allocator::generate_on_device(max_chunks, num_bytes, seed);
 
-		printf("Each bit tree array gets %llu\n", num_bytes);
+		//printf("Each bit tree array gets %llu\n", num_bytes);
 
 		uint64_t num_trees = get_first_bit_bigger(biggest) - get_first_bit_bigger(smallest)+1;
 
@@ -139,8 +155,7 @@ struct betta_allocator {
 
 		host_version->num_trees = num_trees;
 
-		printf("Booting %llu trees\n", num_trees);
-
+		
 		sub_tree_type ** ext_sub_trees = get_host_version<sub_tree_type *>(num_trees);
 
 		for (int i = 0; i < num_trees; i++){
@@ -161,12 +176,13 @@ struct betta_allocator {
 
 		boot_segment_trees<<<(max_chunks -1)/512+1, 512>>>(host_version->sub_trees, max_chunks, num_trees);
 
-
 		host_version->locks = 0;
 
-		printf("Host sub tree %lx, dev %lx\n", (uint64_t) ext_sub_trees, (uint64_t) host_version->sub_trees);
+		//printf("Host sub tree %lx, dev %lx\n", (uint64_t) ext_sub_trees, (uint64_t) host_version->sub_trees);
 
 		host_version->table = alloc_table<bytes_per_segment, smallest>::generate_on_device(max_bytes); //host_version->segment_tree->get_allocator_memory_start());
+
+		printf("Booted BETA with %llu trees\n", num_trees);
 
 		return move_to_device(host_version);
 
@@ -182,15 +198,7 @@ struct betta_allocator {
 
 			//63rd bit would give 0
 
-		#ifndef __CUDA_ARCH__
-
-			return 63 - __builtin_clzll(counter) + (__builtin_popcountll(counter) != 1);
-
-		#else 
-
-			return 63 - __clzll(counter) + (__popcll(counter) != 1);
-
-		#endif
+		return poggers::utils::get_first_bit_bigger(counter);
 
 	}
 
@@ -226,6 +234,8 @@ struct betta_allocator {
 
 		veb_tree::free_on_device(host_version->segment_tree);
 
+		pinned_block_type::free_on_device(host_version->local_blocks);
+
 		cudaFreeHost(host_subtrees);
 
 		cudaFreeHost(host_version);
@@ -247,9 +257,9 @@ struct betta_allocator {
 	//for small allocations, attempt to grab locks.
 	__device__ void * malloc(uint64_t bytes_needed){
  
-		int allocator_needed = get_first_bit_bigger(smallest) - smallest_bits;
+		int tree_id = get_first_bit_bigger(smallest) - smallest_bits;
 
-		if (allocator_needed >= num_trees){
+		if (tree_id >= num_trees){
 
 			//get big allocation
 			printf("Larger allocations not yet implemented\n");
@@ -258,10 +268,36 @@ struct betta_allocator {
 
 		} else {
 
-
+			per_size_pinned_blocks * my_local_blocks = local_blocks->get_tree_local_blocks(tree_id);
 			
 
-			return nullptr;
+			while (true){
+
+				auto my_block = my_local_blocks->get_my_block();
+
+				if (my_block == nullptr){
+
+					if (my_local_blocks->lock_my_block()){
+
+						offset_alloc_bitarr * block = request_new_block_from_tree(tree_id);
+
+						my_local_blocks->unlock_my_block();
+
+					} else {
+
+						//acquire different block
+						continue;
+
+					}
+
+				}
+
+
+				//at this point we have a block! good to go.
+
+				return nullptr;
+
+			}
 
 		}
 

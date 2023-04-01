@@ -630,9 +630,9 @@ int main(int argc, char** argv) {
    //boot_betta_malloc_free<16ULL*1024*1024, 16ULL, 64ULL>(30ULL*1000*1000*1000);
 
    //not quite working - get some misses
-   //one_boot_betta_test_all_sizes<16ULL*1024*1024, 16ULL, 128ULL>(2000ULL*16*1024*1024);
+   one_boot_betta_test_all_sizes<16ULL*1024*1024, 16ULL, 128ULL>(2000ULL*16*1024*1024);
 
-   betta_alloc_random<16ULL*1024*1024, 16ULL, 128ULL>(2000ULL*16*1024*1024, 1000000);
+   //betta_alloc_random<16ULL*1024*1024, 16ULL, 128ULL>(2000ULL*16*1024*1024, 100000);
 
    cudaDeviceReset();
    return 0;

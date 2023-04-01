@@ -194,11 +194,11 @@ __host__ Struct_Type * move_to_host(Struct_Type * dev_version){
 template <typename Struct_Type>
 __host__ Struct_Type * move_to_device(Struct_Type * host_version, uint64_t num_copies){
 
-	printf("Starting copy\n");
+	//printf("Starting copy\n");
 
 	Struct_Type * dev_version = get_device_version<Struct_Type>(num_copies);
 
-	printf("Dev ptr %lx\n", (uint64_t) dev_version);
+	//printf("Dev ptr %lx\n", (uint64_t) dev_version);
 
 	cudaMemcpy(dev_version, host_version, num_copies*sizeof(Struct_Type), cudaMemcpyHostToDevice);
 
@@ -255,6 +255,27 @@ __host__ Struct_Type * copy_to_host(Struct_Type * dev_version){
 
 
 }
+
+
+static __host__ __device__ int get_first_bit_bigger(uint64_t counter){
+
+	//	if (__builtin_popcountll(counter) == 1){
+
+			//0th bit would give 63
+
+			//63rd bit would give 0
+
+		#ifndef __CUDA_ARCH__
+
+			return 63 - __builtin_clzll(counter) + (__builtin_popcountll(counter) != 1);
+
+		#else 
+
+			return 63 - __clzll(counter) + (__popcll(counter) != 1);
+
+		#endif
+
+	}
 
 
 

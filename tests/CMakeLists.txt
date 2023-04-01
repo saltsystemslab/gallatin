@@ -69,7 +69,10 @@ ConfigureExecutable(one_size_allocator_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/on
 
 ConfigureExecutable(offset_slab_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/offset_slab_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
-ConfigureExecutable(betta_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/betta_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
+ConfigureExecutable(beta_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/beta_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
+
+ConfigureExecutable(beta_block_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/beta_block_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
+
 
 ConfigureExecutable(delete_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/delete_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
