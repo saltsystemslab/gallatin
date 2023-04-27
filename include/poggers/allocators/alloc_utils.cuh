@@ -12,8 +12,12 @@
 #include "assert.h"
 
 #include <cooperative_groups.h>
+#include <cooperative_groups/reduce.h>
+#include <cooperative_groups/scan.h>
 
 namespace cg = cooperative_groups;
+
+using namespace poggers::allocators;
 
 
 //helper_macro
@@ -23,6 +27,9 @@ namespace cg = cooperative_groups;
   ((nbits) == 64 ? 0xffffffffffffffff : MAX_VALUE(nbits))
 
 #define SET_BIT_MASK(index) ((1ULL << index))
+
+
+#define BETA_UTIL_DEBUG 0
 
 
 

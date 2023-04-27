@@ -176,7 +176,9 @@ struct malloc_bitarr {
 
 			while (current_block != 0ULL){
 
-				int bit = __ffsll(current_block)-1;
+
+				int bit = ((uint64_t_bitarr) current_block).get_random_active_bit();
+				//int bit = __ffsll(current_block)-1;
 
 				if (bit == -1) continue;
 
@@ -199,8 +201,6 @@ struct malloc_bitarr {
 		return fail();
 
 	}
-
-
 
 	__device__ bool insert(uint64_t set_bit){
 

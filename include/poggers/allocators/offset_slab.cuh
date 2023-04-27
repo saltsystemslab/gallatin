@@ -151,143 +151,6 @@ __device__ int select_unique_bit_int(cg::coalesced_group & active_threads, uint6
 }
 
 
-
-
-//global helper 
-//make this select -1 if not grabbable
-//does modify
-__device__ int select_unique_bit(cg::coalesced_group & active_threads, uint64_t_bitarr & active_bits){
-
-
-		int my_bit = -1;
-
-		// if (active_threads.thread_rank() == 0){
-		// 	printf("Starting up selection process with active bits %lu\n", copy_active_bits.bits);
-		// }
-
-
-		while (true){
-
-			cg::coalesced_group searching_group = cg::coalesced_threads();
-
-			#if SLAB_PRINT_DEBUG
-			if (searching_group.thread_rank() == 0)
-			printf("Start of round: %d in group, bits %llx\n", searching_group.size(), active_bits.bits);
-			#endif
-
-
-			int bit = active_bits.get_random_active_bit();
-
-			//if not available fucken crash
-			if (bit == -1){ my_bit = -1; break; }
-
-			uint64_t my_mask = (1ULL) << bit;
-
-
-			//now scan across the masks
-			uint64_t scanned_mask = cg::exclusive_scan(searching_group, my_mask, cg::bit_or<uint64_t>());
-
-			//final thread needs to broadcast updates
-			if (searching_group.thread_rank() == searching_group.size()-1){
-
-				//doesn't matter as the scan only adds bits
-				//not to set the mask to all bits not taken
-				uint64_t final_mask = ~(scanned_mask | my_mask);
-
-				active_bits.apply_mask(final_mask);
-
-				#if SLAB_PRINT_DEBUG
-				printf("Team member %d/%d sees new bits as %llx, new mask %llx, popcount of bits %d\n", searching_group.thread_rank(), searching_group.size(), active_bits, scanned_mask, __popcll(active_bits.bits));
-				#endif
-
-			}
-
-			//everyone now has an updated final copy of ext bits?
-			active_bits = searching_group.shfl(active_bits, searching_group.size()-1);
-
-			if (!(scanned_mask & my_mask)){
-
-				//I received an item!
-				//allocation has already been marked and index is set
-				//break to recoalesce for exit
-				my_bit = bit;
-				break;
-
-
-
-			}
-
-
-
-		}
-
-
-		//group needs to synchronize
-		//everyone needs to ballot on what the smallest version of bits is.
-		int min = cg::reduce(active_threads, __popcll(active_bits), cg::less<int>());
-
-
-		#if SLAB_PRINT_DEBUG
-		printf("Min is %d, my_popcount active_bits %llx\n", min, active_bits);
-		#endif
-
-	 	int leader = __ffs(active_threads.ballot(__popcll(active_bits) == min))-1;
-
-
-
-		//group needs to synchronize
-		active_bits = active_threads.shfl(active_bits, leader);
-
-
-
-
-
-		return my_bit;
-
-
-
-		// uint64_t my_mask;
-
-		// //people who don't get an index don't get to set mask to 11111111...
-		// if (my_bit == -1){
-
-		// 	#if SLAB_PRINT_DEBUG
-		// 	if (__popcll(active_bits.bits) >= active_threads.size()){
-
-		// 		printf("Bug is in selecting indices\n");
-
-		// 	}
-
-		// 	#endif
-
-		// 	my_mask = 0;
-		// } else {
-		// 	my_mask = (1ULL << my_bit);
-		// }
-		
-
-		// uint64_t scanned_mask = cg::exclusive_scan(active_threads, my_mask, cg::bit_or<uint64_t>());
-
-		// if (active_threads.thread_rank() == active_threads.size()-1){
-
-
-		// 	uint64_t final_mask = ~(scanned_mask | my_mask);
-
-		// 	active_bits.apply_mask(final_mask);
-
-
-		// }
-
-		// active_bits = active_threads.shfl(active_bits, active_threads.size()-1);
-
-		// return my_bit;
-
-
-
-}
-
-
-
 struct warp_lock {
 
 	uint64_t_bitarr lock_bits;
@@ -1157,6 +1020,7 @@ __device__ bool alloc_with_locks(uint64_t & allocation, offset_alloc_bitarr * ma
 	if (ballot && (allocation == ~0ULL)){
 		printf("Bug in first malloc, remainder is %llu\n", remainder);
 	}
+
 	#endif
 
 
@@ -1196,10 +1060,11 @@ __device__ bool alloc_with_locks(uint64_t & allocation, offset_alloc_bitarr * ma
 
 
 	if (bit_malloc_result){
-
+		#if SLAB_PRINT_DEBUG
 		if (!manager->belongs_to_block(allocation)){
 			printf("Primary Offset bug.\n");
 		}
+		#endif
 
 		//uint64_t debug_alloc_bitarr_offset = allocation/4096;
 
@@ -1223,8 +1088,9 @@ __device__ bool alloc_with_locks(uint64_t & allocation, offset_alloc_bitarr * ma
 		      if (!result){
 		      	printf("Failed to attach - this is a bug\n");
 		      }
-
 		      #endif
+
+
 
 	  		}
 	      
@@ -1268,7 +1134,7 @@ struct pinned_storage {
 
 		int num_storages = poggers::utils::get_num_streaming_multiprocessors(device);
 
-		printf("Booting up %d storages, %llu bytes\n", num_storages, sizeof(offset_storage_bitmap)*num_storages);
+		//printf("Booting up %d storages, %llu bytes\n", num_storages, sizeof(offset_storage_bitmap)*num_storages);
 		cudaMalloc((void **)&dev_storages, sizeof(offset_storage_bitmap)*num_storages);
 
 		init_storage<<<(num_storages-1)/256+1,256>>>(dev_storages, num_storages);

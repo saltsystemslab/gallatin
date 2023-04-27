@@ -396,6 +396,7 @@ __host__ void boot_betta(uint64_t num_bytes){
 }
 
 
+
 template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
 __host__ void boot_betta_malloc_free(uint64_t num_bytes){
 

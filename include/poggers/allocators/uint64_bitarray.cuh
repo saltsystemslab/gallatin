@@ -753,6 +753,98 @@ __device__ int get_random_active_bit_control_only(){
 
 };
 
+
+__device__ int select_unique_bit(cg::coalesced_group & active_threads, uint64_t_bitarr & active_bits){
+
+
+		int my_bit = -1;
+
+		// if (active_threads.thread_rank() == 0){
+		// 	printf("Starting up selection process with active bits %lu\n", copy_active_bits.bits);
+		// }
+
+
+		while (true){
+
+			cg::coalesced_group searching_group = cg::coalesced_threads();
+
+			#if BETA_UTIL_DEBUG
+			if (searching_group.thread_rank() == 0)
+			printf("Start of round: %d in group, bits %llx\n", searching_group.size(), active_bits.bits);
+			#endif
+
+
+			int bit = active_bits.get_random_active_bit();
+
+			//if not available fucken crash
+			if (bit == -1){ my_bit = -1; break; }
+
+			uint64_t my_mask = (1ULL) << bit;
+
+
+			//now scan across the masks
+			uint64_t scanned_mask = cg::exclusive_scan(searching_group, my_mask, cg::bit_or<uint64_t>());
+
+			//final thread needs to broadcast updates
+			if (searching_group.thread_rank() == searching_group.size()-1){
+
+				//doesn't matter as the scan only adds bits
+				//not to set the mask to all bits not taken
+				uint64_t final_mask = ~(scanned_mask | my_mask);
+
+				active_bits.apply_mask(final_mask);
+
+				#if BETA_UTIL_DEBUG
+				printf("Team member %d/%d sees new bits as %llx, new mask %llx, popcount of bits %d\n", searching_group.thread_rank(), searching_group.size(), active_bits, scanned_mask, __popcll(active_bits.bits));
+				#endif
+
+			}
+
+			//everyone now has an updated final copy of ext bits?
+			active_bits = searching_group.shfl(active_bits, searching_group.size()-1);
+
+			if (!(scanned_mask & my_mask)){
+
+				//I received an item!
+				//allocation has already been marked and index is set
+				//break to recoalesce for exit
+				my_bit = bit;
+				break;
+
+
+
+			}
+
+
+
+		}
+
+
+		//group needs to synchronize
+		//everyone needs to ballot on what the smallest version of bits is.
+		int min = cg::reduce(active_threads, __popcll(active_bits), cg::less<int>());
+
+
+		#if BETA_UTIL_DEBUG
+		printf("Min is %d, my_popcount active_bits %llx\n", min, active_bits);
+		#endif
+
+	 	int leader = __ffs(active_threads.ballot(__popcll(active_bits) == min))-1;
+
+
+
+		//group needs to synchronize
+		active_bits = active_threads.shfl(active_bits, leader);
+
+
+
+
+
+		return my_bit;
+
+}
+
+
 }
 
 }

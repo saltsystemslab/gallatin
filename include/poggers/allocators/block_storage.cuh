@@ -104,11 +104,32 @@ namespace allocators {
 		}
 
 
+		__device__ offset_alloc_bitarr * get_alt_block(){
+
+
+			int my_smid = poggers::utils::get_smid();
+
+			my_smid = my_smid*my_smid % num_blocks;
+
+			return blocks[my_smid];
+
+		}
+
+
 		__device__ bool swap_out_block(offset_alloc_bitarr * block){
 
 			int my_smid = poggers::utils::get_smid() % num_blocks;
 
 			return (atomicCAS((unsigned long long int *)&blocks[my_smid], (unsigned long long  int )block, 0ULL) == (unsigned long long int) block);
+
+
+		}
+
+		__device__ bool replace_block(offset_alloc_bitarr * old_block, offset_alloc_bitarr * new_block){
+
+			int my_smid = poggers::utils::get_smid() % num_blocks;
+
+			return (atomicCAS((unsigned long long int *)&blocks[my_smid], (unsigned long long  int )old_block,  (unsigned long long  int )new_block) == (unsigned long long int) old_block);
 
 
 		}

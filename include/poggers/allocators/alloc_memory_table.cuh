@@ -233,6 +233,13 @@ struct alloc_table {
 	}
 
 
+	__device__ char * get_segment_memory_start(uint64_t segment){
+
+		return memory + bytes_per_segment*segment;
+
+	}
+
+
 	__device__ bool setup_segment(uint64_t segment, uint16_t tree_id){
 
 		//this serves to lock the segment
@@ -274,7 +281,21 @@ struct alloc_table {
 
 			block->init();
 
-			block->attach_allocation(4096*(base_offset+i));
+			uint64_t global_offset = get_global_block_offset(block);
+
+			// if (global_offset != base_offset+i){
+			// 	printf("Issue in setting blocks\n");
+			// }
+
+			// if (global_offset*4096 != 4096*(base_offset+i)){
+			// 	printf("Rounding issue\n");
+			// }
+
+			block->attach_allocation(global_offset*4096);
+
+			__threadfence();
+
+
 
 
 
@@ -435,6 +456,11 @@ struct alloc_table {
 		//scales up by smallest.
 		return min_size * get_p2_from_index(tree);
 
+	}
+
+
+	__device__ uint64_t get_global_block_offset(offset_alloc_bitarr * block){
+		return block - blocks;
 	}
 
 	static __host__ __device__ uint64_t get_blocks_per_segment(uint16_t tree){
