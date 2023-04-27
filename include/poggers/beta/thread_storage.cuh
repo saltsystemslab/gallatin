@@ -60,6 +60,9 @@
 #define BETA_THREAD_STORAGE_DEBUG 0
 
 
+#define SLAB_GLOBAL_LOADING 0
+
+
 namespace beta {
 
 namespace allocators {
@@ -176,7 +179,7 @@ struct thread_storage {
 			//printf("%d: Bit chosen is %d / %llx, %llx %llx\n", threadIdx.x/32, allocation_index_bit, manager_bits, alloc_bits[allocation_index_bit], memmap[allocation_index_bit]);
 
 
-			//can only swap out if memory is set to 0xffff*8 ...
+			//can only swap out if memory is set to 0xff*8 ...
 
 			if (claim_bits.unset_index(allocation_index_bit) & SET_BIT_MASK(allocation_index_bit)){
 
@@ -231,8 +234,9 @@ struct thread_storage {
 
 
 			//local_copy = manager_bits.global_load_this();
+			#if SLAB_GLOBAL_LOADING
 			claim_bits.global_load_this();
-
+			#endif
 
 		}
 
@@ -282,7 +286,10 @@ struct thread_storage {
 		if (upper_index == -1) return ~0ULL;
 
 		//team succeeds or fails together, original team is fine
+
+		#if SLAB_GLOBAL_LOADING
 		alloc_bits[upper_index].global_load_this();
+		#endif
 
 		uint64_t_bitarr bits;
 		uint64_t mapping;

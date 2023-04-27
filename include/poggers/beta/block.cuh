@@ -203,7 +203,7 @@ struct block{
 
 		upper_index = active_threads.shfl(upper_index, 0);
 
-		if (upper_index == -1) return false;
+		if (upper_index == -1) return ~0ULL;
 
 		#if BETA_BLOCK_DEBUG
 		if (active_threads.thread_rank() == 0){

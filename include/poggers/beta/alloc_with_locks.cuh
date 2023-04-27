@@ -78,7 +78,7 @@ namespace allocators {
 // 3) if this doesn't satisfy, pull from the requested block
 // 4) leftovers go to the main func.
 
-__device__ uint64_t alloc_with_locks(warp_lock * team_lock, uint64_t block_id, block * manager, thread_storage * block_storage){
+__device__ uint64_t alloc_with_locks(warp_lock * team_lock, uint64_t block_id, block * alloc_block, thread_storage * block_storage){
 
 	uint64_t remainder = 0ULL;
 
@@ -159,6 +159,11 @@ __device__ uint64_t alloc_with_locks(warp_lock * team_lock, uint64_t block_id, b
 	//success on the ballot means that an allocation was acquired for you
 	//leftovers have been handled, so return. 
 	if (ballot){
+
+		if (allocation == (~0ULL -1)){
+			printf("Error at first ballot\n");
+		}
+
 		return allocation;
 	}
 
@@ -175,7 +180,7 @@ __device__ uint64_t alloc_with_locks(warp_lock * team_lock, uint64_t block_id, b
 
 
 	//3) alloc from existing block.
-	allocation = manager->block_malloc(remaining, remainder);
+	allocation = alloc_block->block_malloc(remaining, remainder);
 
 	alloc_offset = block_id*4096 + (allocation - (allocation % 64));
 
@@ -213,6 +218,9 @@ __device__ uint64_t alloc_with_locks(warp_lock * team_lock, uint64_t block_id, b
 		allocation = allocation+block_id*4096;
 	}
 
+	if (allocation == (~0ULL -1)){
+		printf("Error at end\n");
+	}
 
 	return allocation;
 

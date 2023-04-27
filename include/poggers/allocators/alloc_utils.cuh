@@ -290,6 +290,24 @@ __device__ uint64_t get_tid(){
 }
 
 
+__device__ void cooperative_copy(char * dst, char * src, uint64_t num_bytes){
+
+	for (uint64_t i = threadIdx.x; i < num_bytes; i+=blockDim.x){
+
+		dst[i] = src[i];
+
+	}
+
+
+}
+
+template <typename T>
+__device__ void cooperative_copy(T * dst, T * src){
+
+	return cooperative_copy((char *) dst, (char *) src, sizeof(T));
+
+}
+
 // __device__ uint64_t reduce_less(cg::coalesced_threads active_threads, uint64_t val){
 
 // 	int i = 1;
