@@ -119,8 +119,8 @@ __device__ uint64_t alloc_with_locks(warp_lock * team_lock, uint64_t block_id, b
 	//2) attempt to grab an existing allocation.
 	uint64_t allocation = (block_storage->malloc(in_lock, remainder));
 
-
-	uint64_t alloc_offset = block_id*4096 + (allocation - (allocation % 64));
+	//allocation already has its upper bits set.
+	uint64_t alloc_offset = (allocation - (allocation % 64));
 
 	//if 100% of requests are satisfied, we are all returning, so one thread needs to drop lock.
 	//this makes a clever assumption that if any request was not satisfied then no remainder left
@@ -159,7 +159,7 @@ __device__ uint64_t alloc_with_locks(warp_lock * team_lock, uint64_t block_id, b
 	//success on the ballot means that an allocation was acquired for you
 	//leftovers have been handled, so return. 
 	if (ballot){
-		return block_id*4096 + allocation;
+		return allocation;
 	}
 
 
@@ -177,7 +177,7 @@ __device__ uint64_t alloc_with_locks(warp_lock * team_lock, uint64_t block_id, b
 	//3) alloc from existing block.
 	allocation = manager->block_malloc(remaining, remainder);
 
-	alloc_offset = (allocation - (allocation % 64));
+	alloc_offset = block_id*4096 + (allocation - (allocation % 64));
 
 
 	if (__popcll(remainder) && (allocation == ~0ULL)){

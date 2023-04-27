@@ -285,6 +285,10 @@ static __host__ __device__ int get_first_bit_bigger(uint64_t counter){
 	}
 
 
+__device__ uint64_t get_tid(){
+	return ( (uint64_t) threadIdx.x)+( (uint64_t) blockIdx.x)*blockDim.x;
+}
+
 
 // __device__ uint64_t reduce_less(cg::coalesced_threads active_threads, uint64_t val){
 
