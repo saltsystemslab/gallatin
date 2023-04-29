@@ -60,7 +60,7 @@
 #define BETA_THREAD_STORAGE_DEBUG 0
 
 
-#define SLAB_GLOBAL_LOADING 0
+#define SLAB_GLOBAL_LOADING 1
 
 
 namespace beta {
@@ -324,6 +324,15 @@ struct thread_storage {
 			//atomicExch((unsigned long long int *)&memmap[upper_index], ~0ULL);
 			claim_bits.set_index(upper_index);
 		}
+
+		if (my_index == -1){
+			return ~0ULL;
+		}
+
+		// if (!check_indices(active_threads, offset % 64 )){
+		// 	printf("Thread storage end: Team %d with %d threads, Bug in select unique main storage index %d\n", threadIdx.x/32, active_threads.size(), my_index);
+		// }
+
 
 		return offset;
 	}

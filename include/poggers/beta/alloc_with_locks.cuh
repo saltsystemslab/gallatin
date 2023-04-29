@@ -122,6 +122,11 @@ __device__ uint64_t alloc_with_locks(warp_lock * team_lock, uint64_t block_id, b
 	//allocation already has its upper bits set.
 	uint64_t alloc_offset = (allocation - (allocation % 64));
 
+
+	// if (!check_indices(in_lock, allocation % 64)){
+	// 		printf("Alloc with locks: Team %d with %d threads, Selecting index %d\n", threadIdx.x/32, in_lock.size(), allocation % 64);
+	// }
+
 	//if 100% of requests are satisfied, we are all returning, so one thread needs to drop lock.
 	//this makes a clever assumption that if any request was not satisfied then no remainder left
 
