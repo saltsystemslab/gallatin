@@ -192,11 +192,21 @@ struct one_size_slab_allocator {
 
 	}
 
-	__device__ context * get_kernel_context(){
+
+
+	//shockingly, this appears to work
+	//shared memory has a lifetime of the kernel
+	//so calling create_local_context reserves space
+	__device__ context * generate_kernel_context(bool load_context){
 
 		__shared__ context local_context;
+		
 
-   		local_context.open_context(storage_containers);
+		if (load_context){
+
+			local_context.open_context(storage_containers);
+
+		} 
 
    		return &local_context;
 
@@ -204,9 +214,24 @@ struct one_size_slab_allocator {
 	}
 
 
-	__device__ void * malloc(context * local_context){
+	//boot context for the first time
+	__device__ context * create_local_context(){
+
+		return generate_kernel_context(true);
+
+	}
+
+	__device__ context * reload_kernel_context(){
+		return generate_kernel_context(false);
+	}
+
+
+
+	__device__ void * malloc(){
 
 		//__shared__ warp_lock team_lock;
+
+		context * local_context = reload_kernel_context();
 
 		block_storage<extra_blocks> * my_storage = malloc_containers->get_pinned_blocks();
 
@@ -329,6 +354,27 @@ struct one_size_slab_allocator {
 		ext_as_bits = ext_as_bits/offset_size;
 
 		return ext_as_bits;
+
+	}
+
+	__device__ void * get_ptr_from_offset(uint64_t offset){
+
+		uint64_t ext_as_bits = offset*offset_size;
+
+		uint64_t mem_offset = (uint64_t) extra_memory + ext_as_bits;
+
+		return (void *) mem_offset;
+
+	}
+
+	__device__ uint64_t malloc_ofset(){
+
+		void * alloc = malloc();
+
+		if (alloc == nullptr) return ~0ULL;
+
+		return get_offset_from_ptr(alloc);
+
 
 	}
 

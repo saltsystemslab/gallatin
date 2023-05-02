@@ -40,13 +40,15 @@ double elapsed(high_resolution_clock::time_point t1, high_resolution_clock::time
 
 __global__ void malloc_tests(one_size_slab_allocator<15> * allocator, uint64_t max_mallocs){
 
-   auto context = allocator->get_kernel_context();
+   auto context = allocator->create_local_context();
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
    if (tid >= max_mallocs) return;
 
-   void * allocation = allocator->malloc(context);
+   //void * allocation = allocator->malloc(context);
+   void * allocation = allocator->malloc();
+
 
 
    return;
@@ -75,13 +77,14 @@ __host__ void boot_slab_one_size(){
 template <int num_blocks>
 __global__ void allocate_into_array(one_size_slab_allocator<num_blocks> * allocator, uint64_t * array, uint64_t num_mallocs, uint64_t * misses){
 
-   auto context = allocator->get_kernel_context();
+   auto context = allocator->create_local_context();
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
    if (tid >= num_mallocs) return;
 
-   void * allocation = allocator->malloc(context);
+   //void * allocation = allocator->malloc(context);
+   void * allocation = allocator->malloc();
 
    if (allocation != nullptr){
 
@@ -111,13 +114,14 @@ __global__ void allocate_into_array(one_size_slab_allocator<num_blocks> * alloca
 template <int num_blocks>
 __global__ void allocate_into_array_bits(one_size_slab_allocator<num_blocks> * allocator, uint64_t * array, uint64_t num_mallocs, uint64_t * misses){
 
-   auto context = allocator->get_kernel_context();
+   auto context = allocator->create_local_context();
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
    if (tid >= num_mallocs) return;
 
-   void * allocation = allocator->malloc(context);
+   //void * allocation = allocator->malloc(context);
+   void * allocation = allocator->malloc();
 
    if (allocation != nullptr){
 
@@ -463,11 +467,12 @@ template <int num_blocks>
 __global__ void churn_kernel(one_size_slab_allocator<num_blocks> * allocator, uint64_t * bitarray, uint64_t num_threads, uint64_t num_rounds, uint64_t * misses){
 
 
-   auto context = allocator->get_kernel_context();
+   auto context = allocator->create_local_context();
 
    for (int i = 0; i < num_rounds; i++){
 
-      void * allocation = allocator->malloc(context);
+      //void * allocation = allocator->malloc(context);
+      void * allocation = allocator->malloc();
 
       if (allocation == nullptr){
 

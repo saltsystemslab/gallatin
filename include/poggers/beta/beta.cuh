@@ -1,5 +1,5 @@
-#ifndef BETTA_ALLOCATOR
-#define BETTA_ALLOCATOR
+#ifndef BETA_ALLOCATOR
+#define BETA_ALLOCATOR
 //Betta, the block-based extending-tree thread allocaotor, made by Hunter McCoy (hunter@cs.utah.edu)
 //Copyright (C) 2023 by Hunter McCoy
 
@@ -31,8 +31,8 @@
 #include <iostream>
 #include <poggers/allocators/alloc_utils.cuh>
 #include <poggers/hash_schemes/murmurhash.cuh>
-#include <poggers/allocators/ext_veb_nosize.cuh>
-#include <poggers/allocators/alloc_memory_table.cuh>
+#include <poggers/allocators/extending_veb.cuh>
+#include <poggers/allocators/memory_table.cuh>
 #include <poggers/allocators/one_size_allocator.cuh>
 
 #include <poggers/allocators/offset_slab.cuh>
