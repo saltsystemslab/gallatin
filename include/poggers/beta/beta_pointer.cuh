@@ -1,5 +1,5 @@
-#ifndef BETTA_ALLOCATOR
-#define BETTA_ALLOCATOR
+#ifndef BETTA_POINTER
+#define BETTA_POINTER
 //Betta, the block-based extending-tree thread allocaotor, made by Hunter McCoy (hunter@cs.utah.edu)
 //Copyright (C) 2023 by Hunter McCoy
 

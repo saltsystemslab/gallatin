@@ -5,7 +5,6 @@
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 
-#include <poggers/allocators/free_list.cuh>
 #include <poggers/representations/representation_helpers.cuh>
 
 #include <poggers/hash_schemes/murmurhash.cuh>
@@ -19,6 +18,8 @@
 #include <vector>
 
 #include <poggers/allocators/offset_slab.cuh>
+
+#include <poggers/beta/block.cuh>
 
 #include <cooperative_groups.h>
 
@@ -34,7 +35,7 @@ namespace cg = cooperative_groups;
 
 
 //a pointer list managing a set section of device memory
-namespace poggers {
+namespace beta {
 
 
 namespace allocators { 
@@ -165,9 +166,9 @@ namespace allocators {
 
 	//container has one of these per size. 
 	template <uint64_t smallest, uint64_t biggest>
-	struct pineed_shared_blocks {
+	struct pinned_shared_blocks {
 
-		using my_type = pineed_shared_blocks<smallest, biggest>;
+		using my_type = pinned_shared_blocks<smallest, biggest>;
 
 		per_size_pinned_blocks ** block_containers;
 

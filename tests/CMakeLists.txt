@@ -89,3 +89,5 @@ ConfigureExecutable(sawtooth_test "${CMAKE_CURRENT_SOURCE_DIR}/src/sawtooth_test
 ConfigureExecutable(beta_veb_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/beta_veb_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
 ConfigureExecutable(beta_slab_one_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/beta_slab_one_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
+
+ConfigureExecutable(new_beta_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/new_beta_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")

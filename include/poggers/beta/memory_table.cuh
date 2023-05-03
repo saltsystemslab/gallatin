@@ -31,8 +31,7 @@
 #include <iostream>
 #include <poggers/allocators/alloc_utils.cuh>
 #include <poggers/hash_schemes/murmurhash.cuh>
-#include <poggers/allocators/veb.cuh>
-#include <poggers/allocators/offset_slab.cuh>
+#include <poggers/beta/veb.cuh>
 
 #include <poggers/beta/block.cuh>
 
@@ -44,7 +43,7 @@
 #define DEBUG_PRINTS 0
 #endif
 
-namespace poggers {
+namespace beta {
 
 namespace allocators {
 
@@ -291,7 +290,7 @@ struct alloc_table {
 			// 	printf("Rounding issue\n");
 			// }
 
-			block->attach_allocation(global_offset*4096);
+			//block->attach_allocation(global_offset*4096);
 
 			__threadfence();
 
@@ -369,6 +368,7 @@ struct alloc_table {
 		}
 
 
+
 		auto block_id = segment_metadata[segment_id]->malloc();
 
 		if (block_id == malloc_bitarr::fail()){
@@ -385,7 +385,11 @@ struct alloc_table {
 
 
 
-		if (my_count == (num_blocks-1)){
+		// if (my_count == (num_blocks-1)){
+		// 	empty = true;
+		// }
+
+		if (my_count == (num_blocks)*.5){
 			empty = true;
 		}
 

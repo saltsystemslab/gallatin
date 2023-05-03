@@ -77,6 +77,14 @@ struct context {
 
 	}
 
+	__device__ void init_context_lock_only(){
+
+		local_lock.init();
+
+		__syncthreads();
+
+	}
+
 	__device__ warp_lock * get_local_lock(){
 		return &local_lock;
 	}

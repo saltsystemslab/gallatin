@@ -31,14 +31,16 @@
 #include <iostream>
 #include <poggers/allocators/alloc_utils.cuh>
 #include <poggers/hash_schemes/murmurhash.cuh>
-#include <poggers/allocators/extending_veb.cuh>
-#include <poggers/allocators/memory_table.cuh>
-#include <poggers/allocators/one_size_allocator.cuh>
+#include <poggers/beta/memory_table.cuh>
+#include <poggers/beta/one_size_allocator.cuh>
 
-#include <poggers/allocators/offset_slab.cuh>
+#include <poggers/beta/shared_block_storage.cuh>
 
-#include <poggers/allocators/block_storage.cuh>
+#include <poggers/beta/block.cuh>
 
+#include <poggers/beta/alloc_with_locks.cuh>
+
+#include <poggers/beta/allocator_context.cuh>
 
 
 #ifndef DEBUG_PRINTS
@@ -46,7 +48,7 @@
 #endif
 
 
-namespace poggers {
+namespace beta {
 
 namespace allocators {
 
@@ -75,14 +77,14 @@ __global__ void boot_segment_trees(veb_tree ** segment_trees, uint64_t max_chunk
 
 
 template<uint64_t bytes_per_segment, uint64_t smallest, uint64_t biggest>
-struct betta_allocator {
+struct beta_allocator {
 
 
-	using my_type = betta_allocator<bytes_per_segment, smallest, biggest>;
+	using my_type = beta_allocator<bytes_per_segment, smallest, biggest>;
 	//using sub_tree_type = extending_veb_allocator_nosize<bytes_per_segment, 5>;
 	using sub_tree_type = veb_tree;
 
-	using pinned_block_type = pinned_block_container<smallest, biggest>;
+	using pinned_block_type = pinned_shared_blocks<smallest, biggest>;
 
 	veb_tree * segment_tree;
 	//one_size_allocator * segment_tree;
@@ -139,7 +141,7 @@ struct betta_allocator {
 			num_bits = num_bits/64;
 		} while (num_bits > 64);
 
-		num_bytes += 8+num_bits*sizeof(offset_alloc_bitarr);
+		num_bytes += 8+num_bits*sizeof(block);
 
 
 		//printf("Final bits is %llu, bytes is %llu\n", num_bits, num_bytes);
@@ -266,6 +268,29 @@ struct betta_allocator {
 
 	}
 
+
+	__device__ context * generate_kernel_context(bool load_context){
+
+		__shared__ context local_context;
+
+		if (load_context) {
+			local_context.init_context_lock_only();
+		}
+
+		return &local_context;
+
+	}
+
+
+	__device__ context * create_local_context(){
+		return generate_kernel_context(true);
+	}
+
+	__device__ context * reload_kernel_context(){
+		return generate_kernel_context(false);
+	}
+
+
 	__device__ inline uint64_t snap_pointer_to_block(void * ext_ptr){
 
 
@@ -320,6 +345,7 @@ struct betta_allocator {
 
 			auto * my_pinned_storage = storage_containers[tree_id]->get_pinned_storage();
 			
+			auto context = reload_kernel_context();
 
 			while (true){
 
@@ -374,11 +400,14 @@ struct betta_allocator {
 
 				//at this point we have a block! good to go.
 
-				uint64_t allocation;
+				//uint64_t allocation;
 
-				bool alloced = alloc_with_locks(allocation, my_block, my_pinned_storage);
 
-				if (!alloced){
+				uint64_t allocation = alloc_with_locks(context->get_local_lock(), my_block, my_pinned_storage);
+
+				//bool alloced = alloc_with_locks(allocation, my_block, my_pinned_storage);
+
+				if (allocation == ~0ULL){
 					
 					if (my_local_blocks->lock_my_block()){
 
@@ -413,13 +442,13 @@ struct betta_allocator {
 
 				uint64_t global_offset = table->get_global_block_offset(my_block);
 
-				if (my_block->get_offset()/4096 != global_offset){
-					printf("Read err in block %llu: %llu != %llu\n", global_offset, global_offset, my_block->get_offset()/4096);
-				}
+				// if (my_block->get_offset()/4096 != global_offset){
+				// 	printf("Read err in block %llu: %llu != %llu\n", global_offset, global_offset, my_block->get_offset()/4096);
+				// }
 
-				if (!alloced) printf("Looping incorrectly\n");
+				if (allocation == ~0ULL) printf("Looping incorrectly\n");
 
-				if (alloced) return allocation;
+				return global_offset*4096 + allocation;
 
 				//return allocation; //global_offset*4096 + (allocation  % 4096); //alloc_offset_to_ptr(allocation, tree_id);
 
@@ -500,7 +529,7 @@ struct betta_allocator {
 	//gather a new block for a tree.
 	//this attempts to pull from a memory segment.
 	// and will atteach a new segment if now
-	__device__ offset_alloc_bitarr * request_new_block_from_tree(uint16_t tree){
+	__device__ block * request_new_block_from_tree(uint16_t tree){
 
 		int attempts = 0;
 
@@ -514,12 +543,12 @@ struct betta_allocator {
 			if (segment == veb_tree::fail()){
 
 
-				if (true){
-				//if (acquire_tree_lock(tree)){
+				//if (true){
+				if (acquire_tree_lock(tree)){
 
 					bool success = gather_new_segment(tree);
 
-					//release_tree_lock(tree);
+					release_tree_lock(tree);
 
 					__threadfence();
 
@@ -551,9 +580,9 @@ struct betta_allocator {
 
 			}
 
-			bool last_block = true;
+			bool last_block = false;
 
-			auto block = table->get_block(segment, tree, last_block);
+			auto new_block = table->get_block(segment, tree, last_block);
 
 			if (last_block){
 
@@ -563,10 +592,10 @@ struct betta_allocator {
 
 			}
 
-			if (block != nullptr){
+			if (new_block != nullptr){
 
 
-				return block;
+				return new_block;
 
 			}
 
@@ -583,13 +612,13 @@ struct betta_allocator {
 
 
 
-	__device__ void free_block(offset_alloc_bitarr * block){
+	__device__ void free_block(block * block_to_free){
 
 
 		bool need_to_reregister = false;
-		bool need_to_deregister = table->free_block(block, need_to_reregister);
+		bool need_to_deregister = table->free_block(block_to_free, need_to_reregister);
 
-		uint64_t segment = table->get_segment_from_block_ptr(block);
+		uint64_t segment = table->get_segment_from_block_ptr(block_to_free);
 
 		//uint16_t tree = table->read_tree_id(segment);
 

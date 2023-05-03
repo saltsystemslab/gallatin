@@ -44,6 +44,9 @@
 
 #include <poggers/beta/warp_lock.cuh>
 
+#include <poggers/beta/block.cuh>
+#include <poggers/beta/thread_storage.cuh>
+
 #include "stdio.h"
 #include "assert.h"
 #include <vector>
