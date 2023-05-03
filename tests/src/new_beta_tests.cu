@@ -204,10 +204,10 @@ __global__ void malloc_and_save_blocks_tree(betta_type * betta, block ** blocks,
 
    block * new_block = betta->request_new_block_from_tree(tree_id);
 
-   if (new_block == nullptr){
-      printf("Alloc failure in 2\n");
+   while (new_block == nullptr){
+      //printf("Alloc failure in 2\n");
 
-      //block = betta->request_new_block_from_tree(tree_id);
+      new_block = betta->request_new_block_from_tree(tree_id);
    }
 
    blocks[tid] = new_block;
