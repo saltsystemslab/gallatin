@@ -23,11 +23,11 @@ using namespace std::chrono;
 #include <cooperative_groups.h>
 
 
-#include <poggers/allocators/one_size_allocator.cuh>
+//#include <poggers/allocators/one_size_allocator.cuh>
 
 namespace cg = cooperative_groups;
 
-using namespace poggers::allocators;
+using namespace beta::allocators;
 
 
 double elapsed(high_resolution_clock::time_point t1, high_resolution_clock::time_point t2) {
@@ -100,6 +100,49 @@ __global__ void allocate_into_array(one_size_slab_allocator<num_blocks> * alloca
 
 
 }
+
+
+template <int num_blocks>
+__global__ void allocate_into_array_btree(one_size_slab_allocator<num_blocks> * allocator, uint64_t * array, uint64_t num_mallocs, uint64_t * misses){
+
+   uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+   if (tid >= num_mallocs) return;
+
+   void * allocation = allocator->malloc();
+
+   if (allocation != nullptr){
+
+      uint64_t offset = allocator->get_offset_from_ptr(allocation);
+
+
+      void * guess_alloc = allocator->get_ptr_from_offset(offset);
+
+
+      if (guess_alloc != allocation){
+         printf("Bug in getting ptr\n");
+      }
+
+      if (offset >= allocator->get_largest_allocation_offset()){
+
+         printf("allocation bug %llx > %llx\n", offset, 31250000ULL);
+      }
+
+      char * cast = (char *) allocation;
+
+      cast[0] = 't';
+   
+   } else {
+      atomicAdd((unsigned long long int *) misses, 1ULL);
+   }
+
+   array[tid] = (uint64_t) allocation;
+
+   //printf("Tid %llu\n", tid);
+
+
+}
+
 
 
 template <int num_blocks>
@@ -445,6 +488,93 @@ __host__ void test_num_malloc_no_free(uint64_t num_mallocs, int num_rounds){
 
 
 
+
+template <int num_blocks>
+__host__ void test_btree(){
+
+   //I think 4,000,000 is enough to saturate the wavefront.
+   //108 SMs, each with 4096 items
+   //pocket math says 500,000 is sufficient for an A100
+   //times 16 jk gonna do 10,000,000 to be safe
+
+
+   uint64_t num_mallocs = 20000000;
+
+   high_resolution_clock::time_point malloc_start, malloc_end, free_start, free_end;
+
+   printf("Starting test with %llu threads\n", num_mallocs);
+
+   one_size_slab_allocator<num_blocks> * test_alloc = one_size_slab_allocator<num_blocks>::generate_on_device(31250000, 128);
+
+
+   uint64_t pre_fill = test_alloc->report_fill();
+
+   uint64_t pre_max = test_alloc->report_max();
+
+   printf("Initial fill ratio %llu/%llu %f \n", pre_fill, pre_max, 1.0*pre_fill/pre_max);
+
+
+   uint64_t * array;
+
+   cudaMalloc((void ** )&array, sizeof(uint64_t)*num_mallocs);
+
+   uint64_t * misses;
+
+   cudaMallocManaged((void **)&misses, sizeof(uint64_t));
+
+   cudaDeviceSynchronize();
+
+
+
+
+   misses[0] = 0;
+
+   cudaDeviceSynchronize();
+
+   malloc_start = high_resolution_clock::now();
+
+   allocate_into_array_btree<num_blocks><<<(num_mallocs -1)/512+1, 512>>>(test_alloc, array, num_mallocs, misses);
+
+   cudaDeviceSynchronize();
+
+   malloc_end = high_resolution_clock::now();
+
+   uint64_t half_fill = test_alloc->report_fill();
+
+   uint64_t half_max = test_alloc->report_max();
+
+   printf("Halfway through: %llu/%llu %f \n", half_fill, half_max, 1.0*half_fill/half_max);
+
+   cudaDeviceSynchronize();
+
+   free_start = high_resolution_clock::now();
+
+   free_from_array<num_blocks><<<(num_mallocs -1)/512+1, 512>>>(test_alloc, array, num_mallocs);
+
+   cudaDeviceSynchronize();
+
+   free_end = high_resolution_clock::now();
+
+   uint64_t fill = test_alloc->report_fill();
+   uint64_t max = test_alloc->report_max();
+
+   printf("Done %llu/%llu: %f misses. %llu/%llu free\n", misses[0], num_mallocs, 1.0*misses[0]/num_mallocs, fill, max);
+   std::cout << "Cycle took " << elapsed(malloc_start, malloc_end) << " for malloc and " << elapsed(free_start, free_end) << " for frees.\n";
+
+
+
+
+   cudaFree(array);
+
+   one_size_slab_allocator<num_blocks>::free_on_device(test_alloc);
+
+   return;
+
+
+
+}
+
+
 //using allocator_type = buddy_allocator<0,0>;
 
 int main(int argc, char** argv) {
@@ -461,7 +591,7 @@ int main(int argc, char** argv) {
 
    //test_num_malloc_frees(10000, 10);
 
-   test_num_malloc_frees<4>(1000000000, 10);
+   //test_num_malloc_frees<4>(1000000000, 10);
 
    //test_num_malloc_frees(1000000, 10);
 
@@ -469,7 +599,7 @@ int main(int argc, char** argv) {
 
    //test_num_malloc_frees_bitarr<4>(100000000, 10);
 
-
+   test_btree<4>();
 
  
    cudaDeviceReset();

@@ -581,9 +581,8 @@ __host__ void one_boot_betta_test_all_sizes(uint64_t num_bytes){
 
       uint64_t total_num_blocks = num_segments*blocks_per_segment;
 
-      std::cout << "Alloced " << total_num_blocks << " in " << malloc_duration << " seconds, throughput " << std::fixed << 1.0*total_num_blocks/malloc_duration << std::endl;   
-      std::cout << "freed " << total_num_blocks << " in " << free_duration << " seconds, throughput " << std::fixed << 1.0*total_num_blocks/free_duration << std::endl;   
-
+      malloc_timing.print_throughput("Alloced", total_num_blocks);
+      free_timing.print_throughput("Freed", total_num_blocks);
 
 
       cudaFree(blocks);
@@ -623,7 +622,73 @@ __host__ void betta_alloc_random(uint64_t num_bytes, uint64_t num_allocs){
 }
 
 
+template<typename allocator_type>
+__global__ void alloc_one_size(allocator_type * allocator, uint64_t num_allocs, uint64_t size){
 
+
+   allocator->create_local_context();
+
+   uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+   if (tid >= num_allocs) return;
+
+
+   uint64_t malloc = allocator->malloc(size);
+
+
+}
+
+
+
+template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
+__host__ void beta_test_allocs(uint64_t num_bytes){
+
+
+   beta::utils::timer boot_timing;
+
+   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+
+   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+
+   uint64_t allocs_per_segment = mem_segment_size/smallest;
+
+   uint64_t num_allocs = allocs_per_segment*num_segments;
+
+   printf("Starting test with %lu segments, %lu allocs per segment\n", num_segments, allocs_per_segment);
+
+   betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+
+   //generate bitarry
+
+   uint64_t num_bytes_bitarray = sizeof(uint64_t)*((num_allocs -1)/64+1);
+
+   uint64_t * bits;
+
+   cudaMalloc((void **)&bits, num_bytes_bitarray);
+
+   cudaMemset(bits, 0, num_bytes_bitarray);
+
+
+
+
+   std::cout << "Init in " << boot_timing.sync_end() << " seconds" << std::endl;
+
+
+   beta::utils::timer kernel_timing;
+   alloc_one_size<betta_type><<<(num_allocs-1)/512+1,512>>>(allocator, .5*num_allocs, smallest);
+   kernel_timing.sync_end();
+
+
+   kernel_timing.print_throughput("Malloced", .5*num_allocs);
+
+
+
+
+
+   betta_type::free_on_device(allocator);
+
+
+}
 
 
 
@@ -642,15 +707,12 @@ int main(int argc, char** argv) {
    }
 
 
-   // boot_alloc_table<8ULL*1024*1024, 16ULL>();
 
 
-   //boot_betta_malloc_free<16ULL*1024*1024, 16ULL, 64ULL>(30ULL*1000*1000*1000);
+   //one_boot_betta_test_all_sizes<16ULL*1024*1024, 16ULL, 16ULL>(num_segments*16*1024*1024);  
 
-   //not quite working - get some misses
-   one_boot_betta_test_all_sizes<16ULL*1024*1024, 16ULL, 16ULL>(num_segments*16*1024*1024);
 
-   //betta_alloc_random<16ULL*1024*1024, 16ULL, 128ULL>(2000ULL*16*1024*1024, 100000);
+   beta_test_allocs<16ULL*1024*1024, 16ULL, 16ULL>(num_segments*16*1024*1024);
 
    cudaDeviceReset();
    return 0;

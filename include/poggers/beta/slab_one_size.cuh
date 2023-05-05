@@ -367,7 +367,7 @@ struct one_size_slab_allocator {
 
 	}
 
-	__device__ uint64_t malloc_ofset(){
+	__device__ uint64_t malloc_offset(){
 
 		void * alloc = malloc();
 

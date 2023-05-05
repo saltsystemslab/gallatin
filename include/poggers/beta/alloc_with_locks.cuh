@@ -114,6 +114,12 @@ __device__ uint64_t alloc_with_locks(warp_lock * team_lock, uint64_t block_id, b
 
 	__threadfence();
 
+	// if (in_lock.thread_rank() == 0){
+
+	// 	uint64_t size = in_lock.size();
+	// 	printf("Team is %llu\n", size);
+	// }
+
 	//printf("Progressing %llu out of team lock\n", threadIdx.x+blockIdx.x*blockDim.x);
 
 

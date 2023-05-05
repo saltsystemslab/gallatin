@@ -17,8 +17,6 @@
 #include "assert.h"
 #include <vector>
 
-#include <poggers/allocators/offset_slab.cuh>
-
 #include <poggers/beta/block.cuh>
 
 #include <cooperative_groups.h>

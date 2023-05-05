@@ -469,7 +469,11 @@ __global__ void churn_kernel(one_size_slab_allocator<num_blocks> * allocator, ui
 
    auto context = allocator->create_local_context();
 
+   cg::coalesced_group grouping = cg::coalesced_threads();
+
    for (int i = 0; i < num_rounds; i++){
+
+      grouping.sync();
 
       //void * allocation = allocator->malloc(context);
       void * allocation = allocator->malloc();
@@ -482,7 +486,16 @@ __global__ void churn_kernel(one_size_slab_allocator<num_blocks> * allocator, ui
 
       }
 
+      char * alloc_as_char = (char * ) allocation;
+      alloc_as_char[0] = 't';
+
       uint64_t offset = allocator->get_offset_from_ptr(allocation);
+
+      void * alt_allocation = allocator->get_ptr_from_offset(offset);
+
+      if (allocation != alt_allocation){
+         printf("Discrepancy in alloc\n");
+      }
 
 
       uint64_t high = offset / 64;
@@ -499,9 +512,16 @@ __global__ void churn_kernel(one_size_slab_allocator<num_blocks> * allocator, ui
          printf("Double malloc bug %llu: block %llu alloc %llu\n", offset, offset/4096, offset % 4096);
          //allocation = allocator->malloc(context);
          //atomicAdd((unsigned long long int *)misses, 1ULL);
+         continue;
       }
 
-      atomicAnd((unsigned long long int *)&bitarray[high], (unsigned long long int) ~bitmask);
+      uint64_t old_bits = atomicAnd((unsigned long long int *)&bitarray[high], (unsigned long long int) ~bitmask);
+
+      if (!(old_bits & bitmask)){
+         printf("Unpinned wrong allocation\n");
+      }
+
+      __threadfence();
 
       allocator->free(allocation);
 
@@ -598,6 +618,8 @@ int main(int argc, char** argv) {
       num_allocs = std::stoull(argv[2]);
 
    }
+
+   //test_num_malloc_frees_bitarr<4>(100000000, 10);
 
    test_churn<4>(num_threads, num_allocs);
 

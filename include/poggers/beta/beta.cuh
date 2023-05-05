@@ -29,6 +29,7 @@
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 #include <iostream>
+#include <poggers/beta/alloc_with_locks.cuh>
 #include <poggers/allocators/alloc_utils.cuh>
 #include <poggers/hash_schemes/murmurhash.cuh>
 #include <poggers/beta/memory_table.cuh>
@@ -38,7 +39,7 @@
 
 #include <poggers/beta/block.cuh>
 
-#include <poggers/beta/alloc_with_locks.cuh>
+
 
 #include <poggers/beta/allocator_context.cuh>
 
@@ -86,6 +87,8 @@ struct beta_allocator {
 
 	using pinned_block_type = pinned_shared_blocks<smallest, biggest>;
 
+	using thread_storage_type = pinned_thread_storage;
+
 	veb_tree * segment_tree;
 	//one_size_allocator * segment_tree;
 
@@ -97,7 +100,7 @@ struct beta_allocator {
 
 	pinned_block_type * local_blocks;
 
-	pinned_storage ** storage_containers;
+	thread_storage_type ** storage_containers;
 
 
 	int num_trees;
@@ -174,16 +177,16 @@ struct beta_allocator {
 
 		//boot pinned storage
 
-		pinned_storage ** host_pinned_storage = poggers::utils::get_host_version<pinned_storage *>(num_trees);
+		thread_storage_type ** host_pinned_storage = poggers::utils::get_host_version<thread_storage_type *>(num_trees);
 
 		for (int i =0; i < num_trees; i++){
 
-			host_pinned_storage[i] = pinned_storage::generate_on_device();
+			host_pinned_storage[i] = thread_storage_type::generate_on_device();
 
 
 		}
 
-		host_version->storage_containers = move_to_device<pinned_storage *>(host_pinned_storage, num_trees);
+		host_version->storage_containers = move_to_device<thread_storage_type *>(host_pinned_storage, num_trees);
 
 
 		host_version->sub_trees = move_to_device<sub_tree_type *>(ext_sub_trees, num_trees);
@@ -247,11 +250,11 @@ struct beta_allocator {
 
 		//one_size_allocator::free_on_device(host_version->bit_tree);
 
-		pinned_storage ** host_pinned_storage = poggers::utils::move_to_host<pinned_storage *>(host_version->storage_containers, num_trees);
+		thread_storage_type ** host_pinned_storage = poggers::utils::move_to_host<thread_storage_type *>(host_version->storage_containers, num_trees);
 
 		for (int i =0; i< num_trees; i++){
 
-			pinned_storage::free_on_device(host_pinned_storage[i]);
+			thread_storage_type::free_on_device(host_pinned_storage[i]);
 
 		}
 
@@ -343,7 +346,7 @@ struct beta_allocator {
 
 			per_size_pinned_blocks * my_local_blocks = local_blocks->get_tree_local_blocks(tree_id);
 
-			auto * my_pinned_storage = storage_containers[tree_id]->get_pinned_storage();
+			auto * my_pinned_storage = storage_containers[tree_id]->get_thread_storage();
 			
 			auto context = reload_kernel_context();
 
@@ -352,6 +355,8 @@ struct beta_allocator {
 				//printf("%llu Spinning...\n", threadIdx.x+blockIdx.x*blockDim.x);
 
 				auto my_block = my_local_blocks->get_my_block();
+
+				uint64_t global_offset = table->get_global_block_offset(my_block);
 
 				if (my_block == nullptr){
 
@@ -363,7 +368,7 @@ struct beta_allocator {
 						if (new_block == nullptr){
 
 							my_local_blocks->unlock_my_block();
-							return 0;
+							return ~0ULL;
 						} 
 
 						if (!my_local_blocks->swap_out_nullptr(new_block)){
@@ -403,7 +408,7 @@ struct beta_allocator {
 				//uint64_t allocation;
 
 
-				uint64_t allocation = alloc_with_locks(context->get_local_lock(), my_block, my_pinned_storage);
+				uint64_t allocation = alloc_with_locks(context->get_local_lock(), global_offset, my_block, my_pinned_storage);
 
 				//bool alloced = alloc_with_locks(allocation, my_block, my_pinned_storage);
 
@@ -415,7 +420,7 @@ struct beta_allocator {
 						auto new_block = request_new_block_from_tree(tree_id);
 						if (new_block == nullptr){
 							my_local_blocks->unlock_my_block();
-							return 0;
+							return ~0ULL;
 						}
 
 						if (!my_local_blocks->replace_block(my_block, new_block)){
@@ -440,15 +445,9 @@ struct beta_allocator {
 				}
 
 
-				uint64_t global_offset = table->get_global_block_offset(my_block);
-
-				// if (my_block->get_offset()/4096 != global_offset){
-				// 	printf("Read err in block %llu: %llu != %llu\n", global_offset, global_offset, my_block->get_offset()/4096);
-				// }
-
 				if (allocation == ~0ULL) printf("Looping incorrectly\n");
 
-				return global_offset*4096 + allocation;
+				return allocation;
 
 				//return allocation; //global_offset*4096 + (allocation  % 4096); //alloc_offset_to_ptr(allocation, tree_id);
 

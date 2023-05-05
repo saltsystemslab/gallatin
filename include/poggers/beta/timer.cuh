@@ -81,6 +81,14 @@ struct timer {
 	}
 
 
+	__host__ void print_throughput(std::string operation, uint64_t nitems){
+
+		std::cout << operation << " " <<  nitems << " in " << elapsed() << " seconds, throughput " << std::fixed << 1.0*nitems/elapsed() << std::endl;   
+      
+
+	}
+
+
 };
 
 }

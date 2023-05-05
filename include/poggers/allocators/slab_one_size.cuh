@@ -343,9 +343,12 @@ struct one_size_slab_allocator {
    				int result = my_storage->pivot_primary(bitarr);
 
 
+
    				if (result != -1){
 
    					//malloc and replace pivot slab
+
+   					printf("Bitarr unpinned\n");
 
    					if (!bitarr->atomic_check_unpinned()){
    						printf("Unpinning bug\n");
