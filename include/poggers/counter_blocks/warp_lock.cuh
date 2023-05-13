@@ -1,5 +1,5 @@
-#ifndef BETA_TIMER
-#define BETA_TIMER
+#ifndef BETA_WARP_LOCK
+#define BETA_WARP_LOCK
 //Betta, the block-based extending-tree thread allocaotor, made by Hunter McCoy (hunter@cs.utah.edu)
 //Copyright (C) 2023 by Hunter McCoy
 
@@ -29,66 +29,49 @@
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 #include <iostream>
-#include <chrono>
-
+#include <poggers/allocators/alloc_utils.cuh>
 #include <poggers/allocators/uint64_bitarray.cuh>
 
-using namespace std::chrono;
+
 
 namespace beta {
 
-namespace utils {
+namespace allocators {
 
-struct timer {
+struct warp_lock {
 
 	uint64_t_bitarr lock_bits;
 
-	high_resolution_clock::time_point start;
+	__device__ void init(){
 
-	high_resolution_clock::time_point end;
-
-	//flush device and start timer
-	timer(){
-
-		cudaDeviceSynchronize();
-		start_timer();
-	}
-
-	__host__ double elapsed() {
-   		return (duration_cast<duration<double> >(end - start)).count();
-	}
-
-	__host__ void start_timer(){
-
-		start = high_resolution_clock::now();
+		lock_bits = 0ULL;
 
 	}
 
-	__host__ void end_timer(){
+	__device__ int get_warp_bit(){
 
-		end = high_resolution_clock::now();
-
-	}
-
-	//synchronize with device, end the timer, and report duration
-	__host__ double sync_end(){
-
-		cudaDeviceSynchronize();
-
-		end_timer();
-
-		return elapsed();
+		return (threadIdx.x / 32);
 
 	}
 
+	__device__ bool lock(){
 
-	__host__ void print_throughput(std::string operation, uint64_t nitems){
-
-		std::cout << operation << " " <<  nitems << " in " << elapsed() << " seconds, throughput " << std::fixed << 1.0*nitems/elapsed() << std::endl;   
-      
+		return lock_bits.set_bit_atomic(get_warp_bit());
 
 	}
 
+	__device__ void unlock(){
+
+		lock_bits.unset_bit_atomic(get_warp_bit());
+
+	}
+
+	__device__ void spin_lock(){
+
+
+		while (!lock());
+
+	}
 
 };
 

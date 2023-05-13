@@ -6,15 +6,10 @@
 #include <cuda_runtime_api.h>
 
 
-#include <poggers/beta/block.cuh>
-#include <poggers/beta/thread_storage.cuh>
-#include <poggers/beta/alloc_with_locks.cuh>
+#include <poggers/counter_blocks/block.cuh>
+#include <poggers/counter_blocks/block_storage.cuh>
+#include <poggers/counter_blocks/one_size_allocator.cuh>
 
-#include <poggers/beta/allocator_context.cuh>
-
-#include <poggers/beta/block_storage.cuh>
-
-#include <poggers/beta/one_size_allocator.cuh>
 #include "stdio.h"
 #include "assert.h"
 #include <vector>
@@ -79,8 +74,6 @@ struct one_size_slab_allocator {
 
 	pinned_block_storages<extra_blocks> * malloc_containers;
 
-	pinned_thread_storage * storage_containers;
-
 	#if SLAB_DEBUG_ARRAY
 	uint64_t * debug_array;
 	#endif
@@ -103,7 +96,7 @@ struct one_size_slab_allocator {
 
 	host_version->num_blocks = num_pinned_blocks;
 
-	host_version->block_allocator = one_size_allocator::generate_on_device(num_pinned_blocks, sizeof(block), 17);
+	host_version->block_allocator = one_size_allocator::generate_on_device(num_pinned_blocks, sizeof(Block), 17);
 
     //host_version->mem_allocator = one_size_allocator::generate_on_device(num_pinned_blocks, 4096*ext_size, 1324);
 
@@ -116,10 +109,7 @@ struct one_size_slab_allocator {
 
 	host_version->extra_memory = host_ptr_ext_mem;
 
- 	host_version->malloc_containers = pinned_block_storages<extra_blocks>::generate_on_device(host_version->block_allocator, 4096);
-
- 	host_version->storage_containers = pinned_thread_storage::generate_on_device();
-
+ 	host_version->malloc_containers = pinned_block_storages<extra_blocks>::generate_on_device(host_version->block_allocator);
 
 	#if SLAB_DEBUG_ARRAY
 	
@@ -167,9 +157,6 @@ struct one_size_slab_allocator {
 
 		pinned_block_storages<extra_blocks>::free_on_device(host_version->malloc_containers);
 
-		pinned_thread_storage::free_on_device(host_version->storage_containers);
-	
-
 		#if SLAB_DEBUG_ARRAY
 
 			cudaFree(host_version->debug_array);
@@ -194,60 +181,37 @@ struct one_size_slab_allocator {
 
 
 
-	//shockingly, this appears to work
-	//shared memory has a lifetime of the kernel
-	//so calling create_local_context reserves space
-	__device__ context * generate_kernel_context(bool load_context){
-
-		__shared__ context local_context;
-		
-
-		if (load_context){
-
-			local_context.open_context(storage_containers);
-
-		} 
-
-   		return &local_context;
-
-
-	}
-
-
-	//boot context for the first time
-	__device__ context * create_local_context(){
-
-		return generate_kernel_context(true);
-
-	}
-
-	__device__ context * reload_kernel_context(){
-		return generate_kernel_context(false);
-	}
-
-
+	//request an allocation
+	//returns a void * to the allocation
+	//or a nullptr if no allocations available.
 
 	__device__ void * malloc(){
 
 		//__shared__ warp_lock team_lock;
 
-		context * local_context = reload_kernel_context();
 
+		
 		block_storage<extra_blocks> * my_storage = malloc_containers->get_pinned_blocks();
 
-   		//thread_storage * my_storage_bitmap = storage_containers->get_pinned_thread_storage();
+		//declare block ahead of time, all threads copy from leader.
+		Block * my_block;
 
    		int num_attempts = 0;
 
    		while (num_attempts < SLAB_ONE_SIZE_MAX_ATTEMPTS){
 
-   			//auto team = cg::coalesced_threads();
+   			cg::coalesced_group coalesced_team = cg::coalesced_threads();
 
-   			//printf("Stalling in the main loop\n");
 
-   			block * bitarr = my_storage->get_primary();
 
-   			if (bitarr == nullptr){
+   			if (coalesced_team.thread_rank() == 0){
+   				my_block = my_storage->get_primary();
+   			}
+
+   			//blocking
+   			my_block = coalesced_team.shfl(my_block, 0);
+
+   			if (my_block == nullptr){
    				//team.sync();
 
    				//printf("Bitarr empty\n");
@@ -255,32 +219,25 @@ struct one_size_slab_allocator {
    				continue;
    			}
 
-   			uint64_t block_id = block_allocator->get_offset_from_address(bitarr);
+   			uint64_t block_id = block_allocator->get_offset_from_address(my_block);
 
    			if (block_id >= num_blocks){
    				printf("Wrong block\n");
    			}
 
-
-   			uint64_t allocation = alloc_with_locks(local_context->get_local_lock(), block_id, bitarr, local_context->get_local_storage());
-
+   			//get offset from block.
+   			uint64_t allocation = my_block->block_malloc(coalesced_team);
 
 
    			if (allocation == ~0ULL){
 
 
-   				int result = my_storage->pivot_primary(bitarr);
+   				int result = my_storage->pivot_primary(my_block);
 
 
    				if (result != -1){
 
    					//malloc and replace pivot slab
-
-   					#if SLAB_ONE_SIZE_DEBUG
-   					if (!bitarr->atomic_check_unpinned()){
-   						printf("Unpinning bug\n");
-   					}
-   					#endif
 
    					{
    						uint64_t slab_offset = block_allocator->get_offset();
@@ -291,7 +248,7 @@ struct one_size_slab_allocator {
 
    						}
 
-   						block * slab = (block *) block_allocator->get_mem_from_offset(slab_offset);
+   						Block * slab = (Block *) block_allocator->get_mem_from_offset(slab_offset);
 
    						slab->init();
 
@@ -301,8 +258,6 @@ struct one_size_slab_allocator {
 
 
    						//slab->attach_allocation(slab_buffer_offset);
-
-   						slab->mark_pinned();
 
    						__threadfence();
 
@@ -323,7 +278,7 @@ struct one_size_slab_allocator {
 
    			} else {
 
-   				return (void *) (extra_memory + allocation*offset_size);
+   				return (void *) (extra_memory + (block_id*4096 +allocation)*offset_size);
 
 
    			}
@@ -339,16 +294,6 @@ struct one_size_slab_allocator {
 
 	}
 
-
-
-	__device__ void * malloc_with_lock(){
-
-		
-
-
-
-		
-	}
 
 
 
@@ -404,27 +349,23 @@ struct one_size_slab_allocator {
 		// 	printf("Slab %llu is attached before its time\n", slab_offset);
 		// }
 
-		block * slab = (block * )  block_allocator->get_mem_from_offset(slab_offset);
+		Block * slab = (Block * )  block_allocator->get_mem_from_offset(slab_offset);
 
-		if (slab->block_free(allocation_offset - slab_offset*4096)){
+		if (slab->block_free()){
 
-			//slab may be available for free - need to check pin status.
-			//multiple people may unpin?
-			if (slab->atomic_check_unpinned()){
+			//slabs that are marked unpinned cannot be reattached - therefore, this read succeeding guarantees correctness.
 
-				//slabs that are marked unpinned cannot be reattached - therefore, this read succeeding guarantees correctness.
+			//printf("Returning block\n");
 
-				//printf("Returning block\n");
+			block_allocator->free_offset(slab_offset);
 
-				block_allocator->free_offset(slab_offset);
+			#if SLAB_ONE_SIZE_DEBUG
+			if (!block_allocator->query(slab_offset)){
+				printf("Slab %llu failed to attach to the tree\n", slab_offset);
+			}	
+			#endif
 
-				#if SLAB_ONE_SIZE_DEBUG
-				if (!block_allocator->query(slab_offset)){
-					printf("Slab %llu failed to attach to the tree\n", slab_offset);
-				}	
-				#endif
-
-			}
+			
 
 		}
 
@@ -442,30 +383,22 @@ struct one_size_slab_allocator {
 		// 	printf("Slab %llu is attached before its time\n", slab_offset);
 		// }
 
-		block * slab = (block * )  block_allocator->get_mem_from_offset(slab_offset);
+		Block * slab = (Block * )  block_allocator->get_mem_from_offset(slab_offset);
 
-		if (slab->block_free(allocation_offset - slab_offset*4096)){
+		if (slab->block_free()){
 
-			//slab may be available for free - need to check pin status.
+			//slab may be available for free - no pins in this version, can always free
 			//multiple people may unpin?
-			if (slab->atomic_check_unpinned()){
+			
+			block_allocator->free_offset(slab_offset);
 
-				//slabs that are marked unpinned cannot be reattached - therefore, this read succeeding guarantees correctness.
+			atomicAdd((unsigned long long int *)&misses[0], 1ULL);
 
-				//printf("Returning block\n");
-				
-				block_allocator->free_offset(slab_offset);
+			if (!block_allocator->query(slab_offset)){
+				printf("Slab %llu failed to attach to the tree\n", slab_offset);
+			}	
 
-				atomicAdd((unsigned long long int *)&misses[0], 1ULL);
-
-				if (!block_allocator->query(slab_offset)){
-					printf("Slab %llu failed to attach to the tree\n", slab_offset);
-				}	
-
-			} else {
-				//printf("Unpinned status not observed\n");
-				atomicAdd((unsigned long long int *)&misses[1], 1ULL);
-			}
+			
 
 		}
 
@@ -482,7 +415,7 @@ struct one_size_slab_allocator {
 		uint64_t slab_offset = allocation_offset/4096;
 
 
-		block * slab = (block * )  block_allocator->get_mem_from_offset(slab_offset);
+		Block * slab = (Block * )  block_allocator->get_mem_from_offset(slab_offset);
 
 
 		if (!slab->belongs_to_block(allocation_offset)){
@@ -498,77 +431,8 @@ struct one_size_slab_allocator {
 	}
 
 
-	__device__ void check_block(uint64_t tid){
-
-		uint64_t freed_amount = debug_array[tid];
-
-
-		if (block_allocator->query(tid)){
-			return;
-		}
-
-		block * slab = (block * )  block_allocator->get_mem_from_offset(tid);
-
-		uint64_t leftover = slab->get_active_bits();
-
-		if (leftover + freed_amount != 4096){
-
-			printf("Tid %llu failed, %llu stored and %llu in free requests\n", tid, leftover, freed_amount);
-
-		}
-
-	}
-
-
-	__host__ void check_all_blocks(){
-
-
-		uint64_t num_blocks = report_max();
-
-
-		check_block_kernel<my_type><<<(num_blocks-1)/512+1,512>>>(num_blocks);
-
-		cudaDeviceSynchronize();
-
-
-	}
-
-
 	#endif
 
-
-
-
-	//in the one allocator scheme free is simplified - get the block and free
-	//if the block we free to is unpinned, we can safely return the memory to the veb tree
-	// __device__ void free(void * ext_allocation, uint64_t max_alloc){
-
-	// 	uint64_t allocation_offset = get_offset_from_ptr(ext_allocation);
-
-
-	// 	if (allocation_offset >= max_alloc){
-	// 		printf("Bug here\n!");
-	// 	}
-
-	// 	uint64_t slab_offset = allocation_offset/4096;
-
-	// 	block * slab = (block * )  block_allocator->get_mem_from_offset(slab_offset);
-
-	// 	if (slab->free_allocation_v2(allocation_offset)){
-
-	// 		//slab may be available for free - need to check pin status.
-	// 		if (slab->atomic_check_unpinned()){
-
-
-	// 			//printf("Returning block\n");
-	// 			//slabs that are marked unpinned cannot be reattached - therefore, this read succeeding guarantees correctness.
-	// 			block_allocator->free_offset(slab_offset);
-
-	// 		}
-
-	// 	}
-
-	// }
 
 
 	__host__ one_size_allocator * get_block_allocator_host(){

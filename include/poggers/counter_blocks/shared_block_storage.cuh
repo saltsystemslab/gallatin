@@ -13,8 +13,6 @@
 
 #include <poggers/allocators/uint64_bitarray.cuh>
 
-#include <poggers/allocators/malloc_bitarr.cuh>
-
 #include "stdio.h"
 #include "assert.h"
 #include <vector>

@@ -33,6 +33,7 @@
 
 #include <poggers/allocators/uint64_bitarray.cuh>
 
+
 using namespace std::chrono;
 
 namespace beta {

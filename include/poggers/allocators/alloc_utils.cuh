@@ -70,6 +70,19 @@ __device__ inline void prefetch_l2(const void *p) {
 	asm("prefetch.global.L2 [%0];": :"l"(p));
 }
 
+
+/** get clock time in ns **/
+__device__ inline uint64_t get_clock_time(){
+
+	uint64_t res;
+	asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(res));
+
+	return res;
+	
+}
+
+
+
 __device__ uint get_smid() {
 
      uint ret;

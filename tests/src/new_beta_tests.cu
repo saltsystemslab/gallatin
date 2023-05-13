@@ -650,7 +650,7 @@ __host__ void beta_test_allocs(uint64_t num_bytes){
 
    uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
-   uint64_t allocs_per_segment = mem_segment_size/smallest;
+   uint64_t allocs_per_segment = mem_segment_size/largest;
 
    uint64_t num_allocs = allocs_per_segment*num_segments;
 
@@ -675,7 +675,7 @@ __host__ void beta_test_allocs(uint64_t num_bytes){
 
 
    beta::utils::timer kernel_timing;
-   alloc_one_size<betta_type><<<(num_allocs-1)/512+1,512>>>(allocator, .5*num_allocs, smallest);
+   alloc_one_size<betta_type><<<(num_allocs-1)/512+1,512>>>(allocator, .5*num_allocs, largest);
    kernel_timing.sync_end();
 
 
@@ -712,7 +712,7 @@ int main(int argc, char** argv) {
    //one_boot_betta_test_all_sizes<16ULL*1024*1024, 16ULL, 16ULL>(num_segments*16*1024*1024);  
 
 
-   beta_test_allocs<16ULL*1024*1024, 16ULL, 16ULL>(num_segments*16*1024*1024);
+   beta_test_allocs<16ULL*1024*1024, 1024ULL, 1024ULL>(num_segments*16*1024*1024);
 
    cudaDeviceReset();
    return 0;
