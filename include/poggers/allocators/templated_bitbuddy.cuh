@@ -1,538 +1,409 @@
 #ifndef POGGERS_TEMPLATE_BITBUDDY
 #define POGGERS_TEMPLATE_BITBUDDY
 
-
+#include <cooperative_groups.h>
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 
-#include <poggers/allocators/free_list.cuh>
-#include <poggers/representations/representation_helpers.cuh>
-
-#include <poggers/hash_schemes/murmurhash.cuh>
-
 #include <poggers/allocators/alloc_utils.cuh>
-
+#include <poggers/allocators/free_list.cuh>
 #include <poggers/allocators/uint64_bitarray.cuh>
-
-#include "stdio.h"
-#include "assert.h"
+#include <poggers/hash_schemes/murmurhash.cuh>
+#include <poggers/representations/representation_helpers.cuh>
 #include <vector>
 
-#include <cooperative_groups.h>
-
+#include "assert.h"
+#include "stdio.h"
 
 namespace cg = cooperative_groups;
-
 
 #define LEVEL_CUTOF 0
 
 #define PROG_CUTOFF 3
 
-
-//a pointer list managing a set section of device memory
+// a pointer list managing a set section of device memory
 namespace poggers {
 
+namespace allocators {
 
-namespace allocators { 
+// compress index into 32 bit index
+__host__ __device__ static int shrink_index(int index) {
+  if (index == -1) return index;
 
-
-//compress index into 32 bit index
-__host__ __device__ static int shrink_index(int index){
-	if (index == -1) return index;
-
-	return index/2;
+  return index / 2;
 }
 
-
-
 template <int depth, uint64_t size_in_bytes>
-struct templated_bitbuddy{
+struct templated_bitbuddy {
+  using my_type = templated_bitbuddy<depth, size_in_bytes>;
 
+  enum { size = size_in_bytes / 32 };
 
-	using my_type = templated_bitbuddy<depth, size_in_bytes>;
+  using child_type = templated_bitbuddy<depth - 1, size>;
 
-	enum { size = size_in_bytes/32 };
+  enum { lowest_size = child_type::lowest_size };
 
-	using child_type = templated_bitbuddy<depth-1, size>;
+  static_assert(size > 0);
 
-	enum {lowest_size = child_type::lowest_size};
+  uint64_t_bitarr mask;
 
-	static_assert(size > 0);
-	
-	
-	uint64_t_bitarr mask;
+  child_type children[32];
 
-	child_type children[32];
+  static __host__ my_type *generate_on_device() {
+    my_type *dev_version;
 
+    cudaMalloc((void **)&dev_version, sizeof(my_type));
 
-	static __host__ my_type * generate_on_device(){
+    cudaMemset(dev_version, ~0U, sizeof(my_type));
 
+    return dev_version;
+  }
 
+  static __host__ void free_on_device(my_type *dev_version) {
+    cudaFree(dev_version);
+  }
 
-		my_type * dev_version;
+  __host__ __device__ bool valid_for_alloc(uint64_t ext_size) {
+    return (size >= ext_size && ext_size >= child_type::size);
+  }
 
-		cudaMalloc((void **)& dev_version, sizeof(my_type));
+  __device__ uint64_t malloc_at_level() {
+    while (true) {
+      int index = shrink_index(mask.get_random_active_bit_full());
 
-		cudaMemset(dev_version, ~0U, sizeof(my_type));
+      if (index == -1) return (~0ULL);
 
-		return dev_version;
+      uint64_t old = mask.unset_both_atomic(index);
 
+      if (__popcll(old & READ_BOTH(index)) == 2) {
+        return index * size;
 
+      } else {
+        mask.reset_both_atomic(old, index);
+      }
+    }
+  }
 
-	}
+  __device__ uint64_t malloc_child_old(uint64_t bytes_needed) {
+    while (true) {
+      int index = shrink_index(mask.get_random_active_bit_control());
 
-	static __host__ void free_on_device(my_type * dev_version){
+      if (index == -1) return (~0ULL);
 
+      if (mask.unset_lock_bit_atomic(index) & SET_SECOND_BIT(index)) {
+        // valid
 
-		cudaFree(dev_version);
+        uint64_t offset = children[index].malloc_offset(bytes_needed);
 
-	}
+        if (offset == (~0ULL)) {
+          mask.unset_control_bit_atomic(index);
+          continue;
+        }
 
+        return index * size + offset;
+      }
+    }
+  }
 
-	__host__ __device__ bool valid_for_alloc(uint64_t ext_size){
+  __device__ uint64_t malloc_child(uint64_t bytes_needed) {
+    while (true) {
+      // mask.global_load_this();
 
-		return (size >= ext_size && ext_size >= child_type::size);
+      int index = shrink_index(mask.get_first_active_bit_control());
 
-	}
+      if (index == -1) return (~0ULL);
 
+      uint64_t offset;
 
-	__device__ uint64_t malloc_at_level(){
+      if ((mask & SET_SECOND_BIT(index)) && (!(mask & SET_FIRST_BIT(index)))) {
+        offset = children[index].malloc_offset(bytes_needed);
 
-		while (true){
+      } else if (mask.unset_lock_bit_atomic(index) & SET_SECOND_BIT(index)) {
+        offset = children[index].malloc_offset(bytes_needed);
 
-			int index = shrink_index(mask.get_random_active_bit_full());
+      } else {
+        mask.global_load_this();
+        continue;
+      }
 
-			if (index == -1) return (~0ULL);
+      if (offset == (~0ULL)) {
+        mask.unset_control_bit_atomic(index);
+        continue;
+      }
 
-			uint64_t old = mask.unset_both_atomic(index);
+      return index * size + offset;
+    }
+  }
 
+  // __device__ uint64_t malloc_child_v3_temp(uint64_t bytes_needed){
 
+  // 	while (true){
 
-			if (__popcll(old & READ_BOTH(index)) == 2){
+  // 		//mask.global_load_this();
 
-				return index * size;
+  // 		int index = shrink_index(mask.get_random_active_bit_control());
 
-			} else {
+  // 		if (index == -1) return (~0ULL);
 
-				mask.reset_both_atomic(old, index);
+  // 		uint64_t offset = children[index].malloc_offset(bytes_needed);
 
-			}
+  // 		if (offset == (~0ULL)){
+  // 			mask.unset_control_bit_atomic(index);
+  // 			continue;
+  // 		}
 
+  // 		if (mask & SET_FIRST_BIT(index)){
 
-		}
+  // 			if (mask.unset_lock_bit_atomic() & SET_SECOND_BIT){
 
-	}
+  // 			} else {
 
-	__device__ uint64_t malloc_child_old(uint64_t bytes_needed){
+  // 				//00
+  // 				children[index].free(offset);
+  // 			}
+  // 		}
 
-		while (true){
+  // 		if ((mask & SET_SECOND_BIT(index)) && (!(mask &
+  // SET_FIRST_BIT(index)))){
 
-			int index = shrink_index(mask.get_random_active_bit_control());
+  // 			offset = children[index].malloc_offset(bytes_needed);
 
-			if (index == -1) return (~0ULL);
+  // 		} else if (mask.unset_lock_bit_atomic(index) &
+  // SET_SECOND_BIT(index)){
 
-			if (mask.unset_lock_bit_atomic(index) & SET_SECOND_BIT(index)){
-				//valid
+  // 			offset = children[index].malloc_offset(bytes_needed);
 
-				uint64_t offset = children[index].malloc_offset(bytes_needed);
+  // 		} else {
 
-				if (offset == (~0ULL)){
-					mask.unset_control_bit_atomic(index);
-					continue;
-				}
+  // 			mask.global_load_this();
+  // 			continue;
+  // 		}
 
-				return index*size + offset;
-			}
+  // 		if (offset == (~0ULL)){
+  // 			mask.unset_control_bit_atomic(index);
+  // 			continue;
+  // 		}
 
-		}
+  // 		return index*size+offset;
 
-	}
+  // 	}
 
-	__device__ uint64_t malloc_child(uint64_t bytes_needed){
+  // }
 
-		while (true){
+  __device__ uint64_t malloc_offset(uint64_t bytes_needed) {
+    uint64_t offset;
 
-			//mask.global_load_this();
+    if (valid_for_alloc(bytes_needed)) {
+      offset = malloc_at_level();
 
-			int index = shrink_index(mask.get_first_active_bit_control());
+    } else {
+      offset = malloc_child(bytes_needed);
+    }
 
-			if (index == -1) return (~0ULL);
+    return offset;
+  }
 
+  __device__ bool free_at_level(uint64_t offset) {
+    if (__popcll(mask.set_both_atomic(offset) & READ_BOTH(offset)) == 0) {
+      return true;
+    }
 
-			uint64_t offset;
+    return false;
+  }
 
-			if ((mask & SET_SECOND_BIT(index)) && (!(mask & SET_FIRST_BIT(index)))){
+  __device__ bool free(uint64_t offset) {
+    uint64_t local_offset = offset / size;
 
-				offset = children[index].malloc_offset(bytes_needed);
+    assert(local_offset < 32);
 
-			} else if (mask.unset_lock_bit_atomic(index) & SET_SECOND_BIT(index)){
+    if (children[local_offset].free(offset % size)) {
+      mask.set_control_bit_atomic(local_offset);
+      return true;
+    }
 
-				offset = children[index].malloc_offset(bytes_needed);
-
-			} else {
-
-				mask.global_load_this();
-				continue;
-			}
-
-			if (offset == (~0ULL)){
-				mask.unset_control_bit_atomic(index);
-				continue;
-			}
-
-			return index*size+offset;
-
-		}
-
-	}
-
-	// __device__ uint64_t malloc_child_v3_temp(uint64_t bytes_needed){
-
-	// 	while (true){
-
-	// 		//mask.global_load_this();
-
-	// 		int index = shrink_index(mask.get_random_active_bit_control());
-
-	// 		if (index == -1) return (~0ULL);
-
-
-	// 		uint64_t offset = children[index].malloc_offset(bytes_needed);
-
-	// 		if (offset == (~0ULL)){
-	// 			mask.unset_control_bit_atomic(index);
-	// 			continue;
-	// 		}
-
-	// 		if (mask & SET_FIRST_BIT(index)){
-
-	// 			if (mask.unset_lock_bit_atomic() & SET_SECOND_BIT){
-
-	// 			} else {
-
-	// 				//00
-	// 				children[index].free(offset);
-	// 			}
-	// 		}
-
-
-
-	// 		if ((mask & SET_SECOND_BIT(index)) && (!(mask & SET_FIRST_BIT(index)))){
-
-	// 			offset = children[index].malloc_offset(bytes_needed);
-
-	// 		} else if (mask.unset_lock_bit_atomic(index) & SET_SECOND_BIT(index)){
-
-	// 			offset = children[index].malloc_offset(bytes_needed);
-
-	// 		} else {
-
-	// 			mask.global_load_this();
-	// 			continue;
-	// 		}
-
-	// 		if (offset == (~0ULL)){
-	// 			mask.unset_control_bit_atomic(index);
-	// 			continue;
-	// 		}
-
-	// 		return index*size+offset;
-
-	// 	}
-
-	// }
-
-
-	__device__ uint64_t malloc_offset(uint64_t bytes_needed){
-
-
-		uint64_t offset;
-
-		if (valid_for_alloc(bytes_needed)){
-
-			offset = malloc_at_level();
-
-		} else {
-
-			offset = malloc_child(bytes_needed);
-
-		}
-
-
-		return offset;
-
-
-
-	}
-
-
-	__device__ bool free_at_level(uint64_t offset){
-
-
-		if (__popcll(mask.set_both_atomic(offset) & READ_BOTH(offset)) == 0){
-
-			return true;
-		}
-
-		return false;
-
-	}
-
-	__device__ bool free(uint64_t offset){
-
-		uint64_t local_offset = offset / size;
-
-		assert(local_offset < 32);
-
-		if (children[local_offset].free(offset % size)){
-
-			mask.set_control_bit_atomic(local_offset);
-			return true;
-
-		}
-
-		return free_at_level(local_offset);
-
-	}
-
-
-
-
-
+    return free_at_level(local_offset);
+  }
 };
-
 
 template <uint64_t size_in_bytes>
-struct  templated_bitbuddy<0, size_in_bytes> {
+struct templated_bitbuddy<0, size_in_bytes> {
+  using my_type = templated_bitbuddy<0, size_in_bytes>;
 
-	using my_type = templated_bitbuddy<0, size_in_bytes>;
+  enum { size = size_in_bytes };
+  // TODO double check this, feels like it should be sizeinbytes/32;
+  enum { lowest_size = size_in_bytes / 32 };
 
-	enum {size = size_in_bytes};
-	//TODO double check this, feels like it should be sizeinbytes/32;
-	enum {lowest_size = size_in_bytes/32};
+  uint64_t_bitarr mask;
 
-	uint64_t_bitarr mask;
+  __device__ uint64_t malloc_offset(uint64_t bytes_needed) {
+    return malloc_at_level();
+  }
 
+  __device__ uint64_t malloc_at_level() {
+    while (true) {
+      int index = shrink_index(mask.get_random_active_bit_full());
 
-	__device__ uint64_t malloc_offset(uint64_t bytes_needed){
+      if (index == -1) return (~0ULL);
 
-		return malloc_at_level();
-	}
+      if (__popcll(mask.unset_both_atomic(index) & READ_BOTH(index)) == 2) {
+        return index;
+      }
+    }
+  }
 
+  // returns true if entirely full
+  __device__ bool free_at_level(uint64_t offset) {
+    if (__popcll(mask.set_both_atomic(offset) & READ_BOTH(offset)) == 0) {
+      return true;
+    }
 
-	__device__ uint64_t malloc_at_level(){
+    return false;
+  }
 
+  __device__ bool free(uint64_t offset) { return free_at_level(offset); }
 
-		while (true){
+  __host__ __device__ bool valid_for_alloc(uint64_t size) { return true; }
 
-			int index = shrink_index(mask.get_random_active_bit_full());
+  static __host__ my_type *generate_on_device() {
+    my_type *dev_version;
 
-			if (index == -1) return (~0ULL);
+    cudaMalloc((void **)&dev_version, sizeof(my_type));
 
-			if (__popcll(mask.unset_both_atomic(index) & READ_BOTH(index)) == 2){
+    cudaMemset(dev_version, ~0U, sizeof(my_type));
 
-				return index;
+    return dev_version;
+  }
 
-			}
-
-
-		}
-
-
-	}
-
-
-	//returns true if entirely full
-	__device__ bool free_at_level(uint64_t offset){
-
-
-		if (__popcll(mask.set_both_atomic(offset) & READ_BOTH(offset)) == 0){
-
-			return true;
-		}
-
-		return false;
-
-	}
-
-	__device__ bool free(uint64_t offset){
-
-		return free_at_level(offset);
-
-	}
-
-	__host__ __device__ bool valid_for_alloc(uint64_t size){
-		return true;
-	}
-
-
-
-	static __host__ my_type * generate_on_device(){
-
-
-
-		my_type * dev_version;
-
-		cudaMalloc((void **)& dev_version, sizeof(my_type));
-
-		cudaMemset(dev_version, ~0U, sizeof(my_type));
-
-		return dev_version;
-
-
-
-	}
-
-	static __host__ void free_on_device(my_type * dev_version){
-
-
-		cudaFree(dev_version);
-
-	}
-
+  static __host__ void free_on_device(my_type *dev_version) {
+    cudaFree(dev_version);
+  }
 };
 
-
-//32 should return 0
+// 32 should return 0
 
 template <uint64_t num_allocations>
 struct determine_depth {
-
-
-	enum {depth = num_allocations > 32 ? determine_depth<num_allocations/32>::depth+1 : 0};
-
-
+  enum {
+    depth = num_allocations > 32
+                ? determine_depth<num_allocations / 32>::depth + 1
+                : 0
+  };
 };
-
 
 template <>
 struct determine_depth<0> {
-
-
-	enum {depth = 32};
-
-
+  enum { depth = 32 };
 };
 
 template <int depth>
 struct determine_num_allocations {
-
-	enum {count = 32 * determine_num_allocations<depth-1>::count };
-
+  enum { count = 32 * determine_num_allocations<depth - 1>::count };
 };
 
 template <>
 struct determine_num_allocations<0> {
-
-	enum {count = 32};
+  enum { count = 32 };
 };
-
 
 template <uint64_t num_allocations, uint64_t size_of_allocation>
 struct bitbuddy_allocator {
+  using my_type = bitbuddy_allocator<num_allocations, size_of_allocation>;
 
-	using my_type = bitbuddy_allocator<num_allocations, size_of_allocation>;
+  enum {
+    total_size =
+        size_of_allocation * determine_num_allocations<
+                                 determine_depth<num_allocations>::depth>::count
+  };
 
-	enum {total_size = size_of_allocation*determine_num_allocations<determine_depth<num_allocations>::depth>::count };
+  using bitbuddy_type =
+      templated_bitbuddy<determine_depth<num_allocations>::depth,
+                         determine_num_allocations<
+                             determine_depth<num_allocations>::depth>::count>;
 
-	using bitbuddy_type = templated_bitbuddy<determine_depth<num_allocations>::depth, determine_num_allocations<determine_depth<num_allocations>::depth>::count>;
+  bitbuddy_type *internal_allocator;
 
-	
-	bitbuddy_type * internal_allocator;
+  void *memory;
 
-	void * memory;
+  static __host__ my_type *generate_on_device() {
+    my_type host_version;
 
+    void *ext_memory;
 
-	static __host__ my_type * generate_on_device(){
+    host_version.internal_allocator = bitbuddy_type::generate_on_device();
 
-		my_type host_version;
+    if (host_version.internal_allocator == nullptr) {
+      printf("Allocator could not get enough space\n");
+      assert(1 == 0);
+    }
 
-		void * ext_memory;
+    cudaMalloc((void **)&ext_memory, num_allocations * size_of_allocation);
 
-		host_version.internal_allocator = bitbuddy_type::generate_on_device();
+    if (ext_memory == nullptr) {
+      cudaFree(host_version.internal_allocator);
 
-		if (host_version.internal_allocator == nullptr){
+      printf(
+          "Allocator could not get enough memory to handle requested # "
+          "allocations.\n");
+      assert(1 == 0);
+    }
 
-			printf("Allocator could not get enough space\n");
-			assert(1==0);
-		}
+    host_version.memory = ext_memory;
 
-		cudaMalloc((void **)&ext_memory, num_allocations*size_of_allocation);
+    my_type *dev_version;
 
-		if (ext_memory == nullptr){
+    // my type is 16 bytes. I'm gonna conservatively estimate that this will
+    // always go through.
+    cudaMalloc((void **)&dev_version, sizeof(my_type));
 
-			cudaFree(host_version.internal_allocator);
+    cudaMemcpy(dev_version, &host_version, sizeof(my_type),
+               cudaMemcpyHostToDevice);
 
-			printf("Allocator could not get enough memory to handle requested # allocations.\n");
-			assert(1==0);
-		}
+    return dev_version;
+  }
 
-		host_version.memory = ext_memory;
+  static __host__ void free_on_device(my_type *dev_version) {
+    my_type host_version;
 
-		my_type * dev_version;
+    cudaMemcpy(&host_version, dev_version, sizeof(my_type),
+               cudaMemcpyDeviceToHost);
 
-		//my type is 16 bytes. I'm gonna conservatively estimate that this will always go through.
-		cudaMalloc((void **)&dev_version, sizeof(my_type));
+    cudaFree(dev_version);
 
-		cudaMemcpy(dev_version, &host_version, sizeof(my_type), cudaMemcpyHostToDevice);
+    cudaFree(host_version.memory);
 
-		return dev_version;
+    bitbuddy_type::free_on_device(host_version.internal_allocator);
+  }
 
+  __device__ void *malloc(uint64_t bytes_needed) {
+    uint64_t offset = internal_allocator->malloc_offset(
+        (bytes_needed - 1) / size_of_allocation + 1);
 
-	}
+    if (offset == (~0ULL)) return nullptr;
 
-	static __host__ void free_on_device(my_type * dev_version){
+    return (void *)((uint64_t)memory + offset * size_of_allocation);
+  }
 
-		my_type host_version;
+  __device__ bool free(void *allocation) {
+    uint64_t offset =
+        ((uint64_t)allocation - (uint64_t)memory) / size_of_allocation;
 
-		cudaMemcpy(&host_version, dev_version, sizeof(my_type), cudaMemcpyDeviceToHost);
+    return internal_allocator->free(offset);
+  }
 
-		cudaFree(dev_version);
+  __host__ __device__ bool is_bitbuddy_alloc(void *allocation) {
+    // all allocations from the bitbuddy must be in the stride of the bitbuddy.
+    // since internals are offset by light of their allocation this is an easy
+    // check.
+    return ((uint64_t)allocation % bitbuddy_type::lowest_size == allocation);
 
-		cudaFree(host_version.memory);
-
-		bitbuddy_type::free_on_device(host_version.internal_allocator);
-
-	}
-
-
-	__device__ void * malloc(uint64_t bytes_needed){
-
-		uint64_t offset = internal_allocator->malloc_offset((bytes_needed-1)/size_of_allocation+1);
-
-		if (offset == (~0ULL)) return nullptr;
-
-		return (void *) ((uint64_t) memory + offset*size_of_allocation); 
-	}
-
-
-	__device__ bool free(void * allocation){
-
-		uint64_t offset = ((uint64_t) allocation - (uint64_t) memory)/size_of_allocation;
-
-		return internal_allocator->free(offset);
-	}
-
-
-	__host__ __device__ bool is_bitbuddy_alloc(void * allocation){
-
-
-		//all allocations from the bitbuddy must be in the stride of the bitbuddy.
-		//since internals are offset by light of their allocation this is an easy check.
-		return ((uint64_t) allocation % bitbuddy_type::lowest_size == allocation);
-		
-		//could also make sure offset is internal but whatevs.
-		//kind of on you to not free from the wrong allocator lol
-		//uint64_t offset = ((uint64_t allocation) - (uint64_t) memory);
-
-	}
-
+    // could also make sure offset is internal but whatevs.
+    // kind of on you to not free from the wrong allocator lol
+    // uint64_t offset = ((uint64_t allocation) - (uint64_t) memory);
+  }
 };
 
+}  // namespace allocators
 
-}
+}  // namespace poggers
 
-}
-
-
-#endif //GPU_BLOCK_
+#endif  // GPU_BLOCK_

@@ -1,562 +1,487 @@
 #ifndef BETA_BLOCK_STORAGE
 #define BETA_BLOCK_STORAGE
-//Betta, the block-based extending-tree thread allocaotor, made by Hunter McCoy (hunter@cs.utah.edu)
-//Copyright (C) 2023 by Hunter McCoy
+// Betta, the block-based extending-tree thread allocaotor, made by Hunter
+// McCoy (hunter@cs.utah.edu) Copyright (C) 2023 by Hunter McCoy
 
-//Permission is hereby granted, free of charge, to any person obtaining a copy of this software 
-//and associated documentation files (the "Software"), to deal in the Software without restriction, 
-//including without l> imitation the rights to use, copy, modify, merge, publish, distribute, sublicense, 
-//and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so,
-// subject to the following conditions:
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to
+// deal in the Software without restriction, including without l> imitation the
+// rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+// sell copies of the Software, and to permit persons to whom the Software is
+// furnished to do so,
+//  subject to the following conditions:
 
-//The above copyright notice and this permission notice shall be included in all copies or substantial
-// portions of the Software.
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial
+//  portions of the Software.
 
-//THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT 
-//LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. 
-//IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-// WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
-// OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY,
+//  WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF
+//  OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+//  SOFTWARE.
 
+// Block Storage are localized storage for each
 
-//Block Storage are localized storage for each 
+// inlcudes
+#include <cooperative_groups.h>
+#include <cuda.h>
+#include <cuda_runtime_api.h>
 
-
-
-//inlcudes
-#include <cstdio>
-#include <cmath>
 #include <cassert>
-#include <cuda.h>
-#include <cuda_runtime_api.h>
+#include <cmath>
+#include <cstdio>
 #include <iostream>
-
-
-#include <cuda.h>
-#include <cuda_runtime_api.h>
-
-#include <poggers/representations/representation_helpers.cuh>
-
-#include <poggers/hash_schemes/murmurhash.cuh>
-
 #include <poggers/allocators/alloc_utils.cuh>
-
 #include <poggers/allocators/uint64_bitarray.cuh>
-
 #include <poggers/beta/block.cuh>
-
-#include "stdio.h"
-#include "assert.h"
+#include <poggers/hash_schemes/murmurhash.cuh>
+#include <poggers/representations/representation_helpers.cuh>
 #include <vector>
 
-#include <cooperative_groups.h>
+#include "assert.h"
+#include "stdio.h"
 
-//These need to be enabled for bitarrays
+// These need to be enabled for bitarrays
 #include <cooperative_groups/reduce.h>
 #include <cooperative_groups/scan.h>
 
-
-
-
 #define BETA_BLOCK_DEBUG 0
-
 
 namespace beta {
 
 namespace allocators {
 
+// V2 of the block
+// blocks now hand out relative offsets in the range of 0-4095.
+// the global offset is determined entirely by the local offset.
 
-
-//V2 of the block
-//blocks now hand out relative offsets in the range of 0-4095.
-//the global offset is determined entirely by the local offset.
-
-//states
-//11--alloced and ready to go
-//01 - alloced
+// states
+// 11--alloced and ready to go
+// 01 - alloced
 template <int num_backups>
 struct block_storage {
+  static_assert(num_backups < 64);
+
+  // one bit buffer?
+  uint64_t_bitarr slab_markers;
+
+  block *slab_ptrs[num_backups + 1];
+
+  __device__ void init() {
+    slab_markers = 0ULL;
+
+    for (int i = 0; i < num_backups + 1; i++) {
+      slab_ptrs[i] = nullptr;
+    }
+  }
 
+  // ISSUE
+  // non primary may be passed in here and non be the primary... - thats bad
+  // mkay to rectify need to detect non match and swap out?
 
-	static_assert(num_backups < 64);
+  // reserve that you are exclusive manager - unset manager bit
+  // todo - only swap with known value of primary - prevent unneccesary swap
+  // outs
 
-	//one bit buffer?
-	uint64_t_bitarr slab_markers;
+  __device__ bool pivot_non_primary(int index, block *old_item) {
+    if (!(slab_markers.unset_index(index) & SET_BIT_MASK(index))) {
+      // claimed by someone else
+      return false;
+    }
+  }
 
+  __device__ int pivot_primary(block *old_primary) {
+    // printf("Thread %d entering pivot\n", threadIdx.x);
 
-	block * slab_ptrs[num_backups+1];
+    if (!(slab_markers.unset_index(0) & SET_BIT_MASK(0))) {
+      return -1;
+    }
 
+    old_primary->mark_unpinned();
 
-	__device__ void init(){
+    if (!old_primary->atomic_check_unpinned()) {
+      printf("Internal pivot unpin bug\n");
+    }
 
-		slab_markers = 0ULL;
+    // not happening - so the blocks must be full at some point...
+    if (old_primary->is_full_atomic()) {
+      printf("behavior bug in pivot primary\n");
+    }
 
+    __threadfence();
 
-		for (int i = 0; i < num_backups+1; i++){
+    while (true) {
+      int index = slab_markers.get_random_active_bit_nonzero();
 
-			slab_ptrs[i] = nullptr;
+      if (index == -1) {
+        return -1;
+      }
 
-		}
+      if (slab_markers.unset_index(index) & SET_BIT_MASK(index)) {
+        // legal and very cool
+        // other threads must check that they do not receive a nullptr in
+        // this rather unstable state.
+        uint64_t old =
+            atomicExch((unsigned long long int *)&slab_ptrs[index], 0ULL);
 
-	}
+        if (atomicCAS((unsigned long long int *)&slab_ptrs[0],
+                      (unsigned long long int)old_primary,
+                      (unsigned long long int)old) !=
+            (unsigned long long int)old_primary) {
+          // printf("This is the fail case\n");
 
+          slab_markers.set_index(0);
+          attach_new_buffer(index, (block *)old);
+          return -1;
+        }
 
+        slab_markers.set_index(0);
 
-	//ISSUE
-	//non primary may be passed in here and non be the primary... - thats bad mkay
-	//to rectify need to detect non match and swap out?
+        // printf("Index %d successfully swapped to primary\n", index);
+        return index;
+      } else {
+        // someone else has grabbed an index for alloc - this should be
+        // impossible?
+        printf("This may be undefined behavior\n");
+      }
+    }
+  }
 
-	//reserve that you are exclusive manager - unset manager bit
-	//todo - only swap with known value of primary - prevent unneccesary swap outs
+  // potential bug - pivot allows for multiple to succeed
+  // accidentally swapping valud blocks
+  // adding this bit check appears to solve - check extensively
+  __device__ block *get_primary() {
+    block *ret = slab_ptrs[0];
 
+    // if (ret == nullptr || !(slab_markers.bits & SET_BIT_MASK(0))){
+    // 	return get_non_primary();
+    // }
 
-	__device__ bool pivot_non_primary(int index, block * old_item){
+    if ((uint64_t)ret == 0x1) {
+      printf("Bug inside get primary\n");
+    }
 
+    return ret;
 
-		if (!(slab_markers.unset_index(index) & SET_BIT_MASK(index))){
+    // int valid_index = poggers::utils::get_smid();
+  }
 
-			//claimed by someone else
-			return false;
+  __device__ block *get_non_primary() {
+    // multiple threads in the same warp should maintain coalescing.
 
-		}
+    int index = slab_markers.get_random_active_bit_warp();
 
-	}
+    if (index == -1) return nullptr;
 
-	__device__ int pivot_primary(block * old_primary){
+    // if ( (uint64_t) slab_ptrs[index] == 0x1){
+    // 	printf("Bug in get_non_primary\n");
+    // }
 
+    return slab_ptrs[index];
+  }
 
-		//printf("Thread %d entering pivot\n", threadIdx.x);
+  // __device__ bool attach_new_buffer(int index, block * new_buffer){
 
-		if (!(slab_markers.unset_index(0) & SET_BIT_MASK(0))){
-			return -1;
-		}
+  // 	if (slab_markers.set_index(index) & SET_BIT_MASK(index)){
 
-		old_primary->mark_unpinned();
+  // 		printf("Error attaching: index %d already set\n", index);
+  // 		return false;
 
-		if (!old_primary->atomic_check_unpinned()){
-			printf("Internal pivot unpin bug\n");
-		}
+  // 	} else {
 
-		//not happening - so the blocks must be full at some point...
-		if (old_primary->is_full_atomic()){
-			printf("behavior bug in pivot primary\n");
-		}
+  // 		uint64_t old = atomicExch((unsigned long long int
+  // *)&slab_ptrs[index], (unsigned long long int) new_buffer);
 
-		__threadfence();
+  // 		if (old != 0ULL){
 
-		while (true){
+  // 			printf("%d Exchanged for an already set buffer: %llx
+  // exchanged\n", index, old);
 
-			int index = slab_markers.get_random_active_bit_nonzero();
+  // 			//weird state but I think this is technically a success
+  // 			return true;
 
-			if (index == -1){
-				return -1;
-			}
+  // 		}
 
-			if (slab_markers.unset_index(index) & SET_BIT_MASK(index)){
+  // 		//printf("Buffer attached to index %d\n", index);
+  // 		return true;
 
-				//legal and very cool
-				//other threads must check that they do not receive a nullptr in this rather unstable state.
-				uint64_t old = atomicExch((unsigned long long int *) &slab_ptrs[index], 0ULL);
+  // 	}
 
-				if (atomicCAS((unsigned long long int *)&slab_ptrs[0], (unsigned long long int) old_primary, (unsigned long long int) old) != (unsigned long long int) old_primary){
+  // }
 
-					//printf("This is the fail case\n");
+  __device__ bool attach_new_buffer(int index, block *new_buffer) {
+    uint64_t old = atomicCAS((unsigned long long int *)&slab_ptrs[index], 0ULL,
+                             (unsigned long long int)new_buffer);
 
-					slab_markers.set_index(0);
-					attach_new_buffer(index, (block *) old);
-					return -1;
+    if (old != 0ULL) {
+      printf("%d Exchanged for an already set buffer: %llx exchanged\n", index,
+             old);
 
-				}
+      return false;
+    }
 
-				slab_markers.set_index(0);
+    if (slab_markers.set_index(index) & SET_BIT_MASK(index)) {
+      printf("Error attaching: index %d already set\n", index);
 
-				//printf("Index %d successfully swapped to primary\n", index);
-				return index;
+      return false;
+    }
 
+    return true;
+  }
 
-			} else {
+  template <typename block_allocator, typename memory_allocator>
+  __device__ void init_with_allocators(block_allocator *balloc,
+                                       memory_allocator *memalloc) {
+    // boot myself to clear memory
+    init();
 
-				//someone else has grabbed an index for alloc - this should be impossible?
-				printf("This may be undefined behavior\n");
-			}
+    for (int i = 0; i < num_backups + 1; i++) {
+      block *slab = (block *)balloc->malloc();
 
+      if (slab == nullptr) {
+        printf("Failed to load slab from allocator\n");
+        return;
+      }
 
-		}
+      uint64_t offset = memalloc->get_offset();
 
-	}
+      if (offset == memory_allocator::fail()) {
+        balloc->free(slab);
+        printf("Fail to claim memory for slab\n");
+      }
 
+      // don't forget to actually boot memory lol
+      slab->init();
 
-	//potential bug - pivot allows for multiple to succeed 
-	//accidentally swapping valud blocks
-	//adding this bit check appears to solve - check extensively	
-	__device__ block * get_primary(){
+      // slab->attach_allocation(offset);
 
-		block * ret = slab_ptrs[0];
+      slab->mark_pinned();
 
-		// if (ret == nullptr || !(slab_markers.bits & SET_BIT_MASK(0))){
-		// 	return get_non_primary();
-		// }
+      attach_new_buffer(i, slab);
+    }
+  }
 
+  template <typename block_allocator>
+  __device__ void init_with_allocators_memory(block_allocator *balloc,
+                                              uint64_t ext_offset) {
+    // boot myself to clear memory
+    init();
 
-		if ((uint64_t) ret == 0x1){
+    for (int i = 0; i < num_backups + 1; i++) {
+      uint64_t slab_offset = balloc->get_offset();
 
-			printf("Bug inside get primary\n");
+      block *slab = (block *)balloc->get_mem_from_offset(slab_offset);
 
-		}
+      if (slab == nullptr) {
+        printf("Failed to load slab from allocator\n");
+        return;
+      }
 
-		return ret;
+      // uint64_t offset = slab_offset*ext_offset;
 
-		//int valid_index = poggers::utils::get_smid(); 
+      // if (offset == memory_allocator::fail()){
+      // 	balloc->free(slab);
+      // 	printf("Fail to claim memory for slab\n");
 
+      // }
 
+      // don't forget to actually boot memory lol
+      slab->init();
 
-	}
+      // slab->attach_allocation(offset);
 
-	__device__ block * get_non_primary(){
+      slab->mark_pinned();
 
-		//multiple threads in the same warp should maintain coalescing.
-
-		int index = slab_markers.get_random_active_bit_warp();
-
-		if (index == -1) return nullptr;
-
-		// if ( (uint64_t) slab_ptrs[index] == 0x1){
-		// 	printf("Bug in get_non_primary\n");
-		// }
-
-		return slab_ptrs[index];
-	}
-
-
-	// __device__ bool attach_new_buffer(int index, block * new_buffer){
-
-	// 	if (slab_markers.set_index(index) & SET_BIT_MASK(index)){
-
-	// 		printf("Error attaching: index %d already set\n", index);
-	// 		return false;
-
-	// 	} else {
-
-
-	// 		uint64_t old = atomicExch((unsigned long long int *)&slab_ptrs[index], (unsigned long long int) new_buffer);
-
-	// 		if (old != 0ULL){
-
-	// 			printf("%d Exchanged for an already set buffer: %llx exchanged\n", index, old);
-
-	// 			//weird state but I think this is technically a success
-	// 			return true;
-
-	// 		}
-
-	// 		//printf("Buffer attached to index %d\n", index);
-	// 		return true;
-
-
-	// 	}
-
-	// }
-
-
-	__device__ bool attach_new_buffer(int index, block * new_buffer){
-
-		uint64_t old = atomicCAS((unsigned long long int *)&slab_ptrs[index], 0ULL, (unsigned long long int) new_buffer);
-
-		if (old != 0ULL){
-
-			printf("%d Exchanged for an already set buffer: %llx exchanged\n", index, old);
-
-			return false;
-
-		}
-
-		if (slab_markers.set_index(index) & SET_BIT_MASK(index)){
-
-			printf("Error attaching: index %d already set\n", index);
-
-			return false;
-		}
-
-		return true;
-
-	}
-
-
-	template<typename block_allocator, typename memory_allocator>
-	__device__ void init_with_allocators(block_allocator * balloc, memory_allocator * memalloc){
-
-		//boot myself to clear memory
-		init();
-
-
-		for (int i = 0; i < num_backups+1; i++){
-
-			block * slab = (block *) balloc->malloc();
-
-			if (slab == nullptr){
-				printf("Failed to load slab from allocator\n");
-				return;
-			}
-
-			uint64_t offset = memalloc->get_offset();
-
-			if (offset == memory_allocator::fail()){
-				balloc->free(slab);
-				printf("Fail to claim memory for slab\n");
-
-			}
-
-			//don't forget to actually boot memory lol
-			slab->init();
-
-			//slab->attach_allocation(offset);
-
-			slab->mark_pinned();
-
-			attach_new_buffer(i, slab);
-
-			
-		}
-
-
-	}		
-
-		template<typename block_allocator>
-	__device__ void init_with_allocators_memory(block_allocator * balloc, uint64_t ext_offset){
-
-		//boot myself to clear memory
-		init();
-
-
-		for (int i = 0; i < num_backups+1; i++){
-
-			uint64_t slab_offset = balloc->get_offset();
-
-			block * slab = (block *) balloc->get_mem_from_offset(slab_offset);
-
-			if (slab == nullptr){
-				printf("Failed to load slab from allocator\n");
-				return;
-			}
-
-			//uint64_t offset = slab_offset*ext_offset; 
-
-			// if (offset == memory_allocator::fail()){
-			// 	balloc->free(slab);
-			// 	printf("Fail to claim memory for slab\n");
-
-			// }
-
-			//don't forget to actually boot memory lol
-			slab->init();
-
-			//slab->attach_allocation(offset);
-
-			slab->mark_pinned();
-
-			attach_new_buffer(i, slab);
-
-			
-		}
-
-
-	}
-
-
+      attach_new_buffer(i, slab);
+    }
+  }
 };
 
-
 template <int num_blocks, typename block_allocator, typename memory_allocator>
-__global__ void smid_pinned_block_init_storage(block_allocator * balloc, memory_allocator * memalloc, block_storage<num_blocks> * storages, int num_storages){
+__global__ void smid_pinned_block_init_storage(
+    block_allocator *balloc, memory_allocator *memalloc,
+    block_storage<num_blocks> *storages, int num_storages) {
+  uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
 
-	uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+  if (tid >= num_storages) return;
 
-	if (tid >= num_storages) return;
-
-	storages[tid].init_with_allocators(balloc, memalloc);
-
+  storages[tid].init_with_allocators(balloc, memalloc);
 }
 
 template <int num_blocks, typename block_allocator>
-__global__ void smid_pinned_block_init_storage_char(block_allocator * balloc, uint64_t offset, block_storage<num_blocks> * storages, int num_storages){
+__global__ void smid_pinned_block_init_storage_char(
+    block_allocator *balloc, uint64_t offset,
+    block_storage<num_blocks> *storages, int num_storages) {
+  uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
 
-	uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+  if (tid >= num_storages) return;
 
-	if (tid >= num_storages) return;
-
-	storages[tid].init_with_allocators_memory(balloc, offset);
-
+  storages[tid].init_with_allocators_memory(balloc, offset);
 }
 
 template <int num_blocks>
 struct pinned_block_storages {
+  using my_type = pinned_block_storages<num_blocks>;
 
+  using pinned_type = block_storage<num_blocks>;
 
-	using my_type = pinned_block_storages<num_blocks>;
+  pinned_type *storages;
 
-	using pinned_type =  block_storage<num_blocks>;
+  template <typename block_allocator, typename memory_allocator>
+  static __host__ my_type *generate_on_device(int device,
+                                              block_allocator *balloc,
+                                              memory_allocator *memalloc) {
+    my_type *host_storage;
 
-	pinned_type * storages;
+    cudaMallocHost((void **)&host_storage, sizeof(my_type));
 
+    pinned_type *dev_storages;
 
-	template <typename block_allocator, typename memory_allocator>
-	static __host__ my_type * generate_on_device(int device, block_allocator * balloc, memory_allocator * memalloc){
+    int num_storages =
+        poggers::utils::get_num_streaming_multiprocessors(device);
 
-		my_type * host_storage;
+    printf("Booting up %d storages, %llu bytes\n", num_storages,
+           sizeof(pinned_type) * num_storages);
+    cudaMalloc((void **)&dev_storages, sizeof(pinned_type) * num_storages);
 
-		cudaMallocHost((void **)&host_storage, sizeof(my_type));
+    smid_pinned_block_init_storage<num_blocks, block_allocator,
+                                   memory_allocator>
+        <<<(num_storages - 1) / 256 + 1, 256> > >(balloc, memalloc,
+                                                  dev_storages, num_storages);
 
-		pinned_type * dev_storages;
+    cudaDeviceSynchronize();
 
+    host_storage->storages = dev_storages;
 
-		int num_storages = poggers::utils::get_num_streaming_multiprocessors(device);
+    my_type *dev_ptr;
 
-		printf("Booting up %d storages, %llu bytes\n", num_storages, sizeof(pinned_type)*num_storages);
-		cudaMalloc((void **)&dev_storages, sizeof(pinned_type)*num_storages);
+    cudaMalloc((void **)&dev_ptr, sizeof(my_type));
 
-		smid_pinned_block_init_storage<num_blocks, block_allocator, memory_allocator><<<(num_storages-1)/256+1,256>>>(balloc, memalloc, dev_storages, num_storages);
+    cudaMemcpy(dev_ptr, host_storage, sizeof(my_type), cudaMemcpyHostToDevice);
 
-		cudaDeviceSynchronize();
+    cudaDeviceSynchronize();
 
-		host_storage->storages = dev_storages;
+    cudaFreeHost(host_storage);
 
-		my_type * dev_ptr;
+    return dev_ptr;
+  }
 
-		cudaMalloc((void **)&dev_ptr, sizeof(my_type));
+  // if you don't specify we go on device 0.
+  template <typename block_allocator, typename memory_allocator>
+  static __host__ my_type *generate_on_device(block_allocator *balloc,
+                                              memory_allocator *memalloc) {
+    return my_type::generate_on_device(0, balloc, memalloc);
+  }
 
-		cudaMemcpy(dev_ptr, host_storage, sizeof(my_type), cudaMemcpyHostToDevice);
+  template <typename block_allocator>
+  static __host__ my_type *generate_on_device(int device,
+                                              block_allocator *balloc,
+                                              uint64_t ext_offset) {
+    my_type *host_storage;
 
-		cudaDeviceSynchronize();
+    cudaMallocHost((void **)&host_storage, sizeof(my_type));
 
-		cudaFreeHost(host_storage);
+    pinned_type *dev_storages;
 
-		return dev_ptr;
+    int num_storages =
+        poggers::utils::get_num_streaming_multiprocessors(device);
 
+    printf("Booting up %d storages, %llu bytes\n", num_storages,
+           sizeof(pinned_type) * num_storages);
+    cudaMalloc((void **)&dev_storages, sizeof(pinned_type) * num_storages);
 
-	}
+    smid_pinned_block_init_storage_char<num_blocks, block_allocator>
+        <<<(num_storages - 1) / 256 + 1, 256> > >(balloc, ext_offset,
+                                                  dev_storages, num_storages);
 
-	//if you don't specify we go on device 0.
-	template <typename block_allocator, typename memory_allocator>
-	static __host__ my_type * generate_on_device(block_allocator * balloc, memory_allocator * memalloc){
+    cudaDeviceSynchronize();
 
-		return my_type::generate_on_device(0, balloc, memalloc);
-	}
+    host_storage->storages = dev_storages;
 
+    my_type *dev_ptr;
 
-	template <typename block_allocator>
-	static __host__ my_type * generate_on_device(int device, block_allocator * balloc, uint64_t ext_offset){
+    cudaMalloc((void **)&dev_ptr, sizeof(my_type));
 
-		my_type * host_storage;
+    cudaMemcpy(dev_ptr, host_storage, sizeof(my_type), cudaMemcpyHostToDevice);
 
-		cudaMallocHost((void **)&host_storage, sizeof(my_type));
+    cudaDeviceSynchronize();
 
-		pinned_type * dev_storages;
+    cudaFreeHost(host_storage);
 
+    return dev_ptr;
+  }
 
-		int num_storages = poggers::utils::get_num_streaming_multiprocessors(device);
+  // if you don't specify we go on device 0.
+  template <typename block_allocator>
+  static __host__ my_type *generate_on_device(block_allocator *balloc,
+                                              uint64_t ext_offset) {
+    return my_type::generate_on_device(0, balloc, ext_offset);
+  }
 
-		printf("Booting up %d storages, %llu bytes\n", num_storages, sizeof(pinned_type)*num_storages);
-		cudaMalloc((void **)&dev_storages, sizeof(pinned_type)*num_storages);
+  static __host__ void free_on_device(my_type *dev_storage) {
+    my_type *host_storage;
 
-		smid_pinned_block_init_storage_char<num_blocks, block_allocator><<<(num_storages-1)/256+1,256>>>(balloc, ext_offset, dev_storages, num_storages);
+    cudaMallocHost((void **)&host_storage, sizeof(my_type));
 
-		cudaDeviceSynchronize();
+    cudaMemcpy(host_storage, dev_storage, sizeof(my_type),
+               cudaMemcpyDeviceToHost);
 
-		host_storage->storages = dev_storages;
+    cudaDeviceSynchronize();
 
-		my_type * dev_ptr;
+    cudaFree(dev_storage);
 
-		cudaMalloc((void **)&dev_ptr, sizeof(my_type));
+    cudaFree(host_storage->storages);
 
-		cudaMemcpy(dev_ptr, host_storage, sizeof(my_type), cudaMemcpyHostToDevice);
+    cudaFreeHost(host_storage);
 
-		cudaDeviceSynchronize();
+    return;
+  }
 
-		cudaFreeHost(host_storage);
+  __device__ pinned_type *get_pinned_blocks() {
+    return &storages[poggers::utils::get_smid()];
+  }
 
-		return dev_ptr;
+  static __host__ my_type *generate_on_device() {
+    my_type *host_storage;
 
+    cudaMallocHost((void **)&host_storage, sizeof(my_type));
 
-	}
+    pinned_type *dev_storages;
 
-	//if you don't specify we go on device 0.
-	template <typename block_allocator>
-	static __host__ my_type * generate_on_device(block_allocator * balloc, uint64_t ext_offset){
+    int num_storages = poggers::utils::get_num_streaming_multiprocessors(0);
 
-		return my_type::generate_on_device(0, balloc, ext_offset);
-	}
+    printf("Booting up %d storages, %llu bytes\n", num_storages,
+           sizeof(pinned_type) * num_storages);
+    cudaMalloc((void **)&dev_storages, sizeof(pinned_type) * num_storages);
 
+    // smid_pinned_block_init_storage_char<num_blocks,
+    // block_allocator><<<(num_storages-1)/256+1,256>>>(balloc, ext_offset,
+    // dev_storages, num_storages);
 
-	static __host__ void free_on_device(my_type * dev_storage){
+    cudaDeviceSynchronize();
 
-		my_type * host_storage;
+    host_storage->storages = dev_storages;
 
-		cudaMallocHost((void **)&host_storage, sizeof(my_type));
+    my_type *dev_ptr;
 
-		cudaMemcpy(host_storage, dev_storage, sizeof(my_type), cudaMemcpyDeviceToHost);
+    cudaMalloc((void **)&dev_ptr, sizeof(my_type));
 
-		cudaDeviceSynchronize();
+    cudaMemcpy(dev_ptr, host_storage, sizeof(my_type), cudaMemcpyHostToDevice);
 
-		cudaFree(dev_storage);
+    cudaDeviceSynchronize();
 
-		cudaFree(host_storage->storages);
+    cudaFreeHost(host_storage);
 
-		cudaFreeHost(host_storage);
-
-		return;
-
-
-	}
-
-	__device__ pinned_type * get_pinned_blocks(){
-
-		return &storages[poggers::utils::get_smid()];
-
-	}
-
-	static __host__ my_type * generate_on_device(){
-
-		my_type * host_storage;
-
-		cudaMallocHost((void **)&host_storage, sizeof(my_type));
-
-		pinned_type * dev_storages;
-
-		int num_storages = poggers::utils::get_num_streaming_multiprocessors(0);
-
-		printf("Booting up %d storages, %llu bytes\n", num_storages, sizeof(pinned_type)*num_storages);
-		cudaMalloc((void **)&dev_storages, sizeof(pinned_type)*num_storages);
-
-		//smid_pinned_block_init_storage_char<num_blocks, block_allocator><<<(num_storages-1)/256+1,256>>>(balloc, ext_offset, dev_storages, num_storages);
-
-		cudaDeviceSynchronize();
-
-		host_storage->storages = dev_storages;
-
-		my_type * dev_ptr;
-
-		cudaMalloc((void **)&dev_ptr, sizeof(my_type));
-
-		cudaMemcpy(dev_ptr, host_storage, sizeof(my_type), cudaMemcpyHostToDevice);
-
-		cudaDeviceSynchronize();
-
-		cudaFreeHost(host_storage);
-
-		return dev_ptr;
-
-
-
-	}
-
+    return dev_ptr;
+  }
 };
 
+}  // namespace allocators
 
+}  // namespace beta
 
-
-}
-
-}
-
-
-#endif //End of VEB guard
+#endif  // End of VEB guard

@@ -1,299 +1,244 @@
 #ifndef BETA_SHARED_BLOCK_STORAGE
 #define BETA_SHARED_BLOCK_STORAGE
 
-
+#include <cooperative_groups.h>
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 
-#include <poggers/representations/representation_helpers.cuh>
-
-#include <poggers/hash_schemes/murmurhash.cuh>
-
 #include <poggers/allocators/alloc_utils.cuh>
-
 #include <poggers/allocators/uint64_bitarray.cuh>
-
-#include "stdio.h"
-#include "assert.h"
+#include <poggers/counter_blocks/block.cuh>
+#include <poggers/hash_schemes/murmurhash.cuh>
+#include <poggers/representations/representation_helpers.cuh>
 #include <vector>
 
-#include <poggers/counter_blocks/block.cuh>
+#include "assert.h"
+#include "stdio.h"
 
-#include <cooperative_groups.h>
-
-//These need to be enabled for bitarrays
+// These need to be enabled for bitarrays
 #include <cooperative_groups/reduce.h>
 #include <cooperative_groups/scan.h>
-
 
 #define SLAB_PRINT_DEBUG 0
 
 #define SHARED_BLOCK_COUNTER_CUTOFF 30
 
-
 namespace cg = cooperative_groups;
 
-
-//a pointer list managing a set section of device memory
+// a pointer list managing a set section of device memory
 namespace beta {
 
+namespace allocators {
 
-namespace allocators { 
+// should these start initialized? I can try it.
+__global__ void beta_set_block_bitarrs(Block **blocks, uint64_t num_blocks) {
+  uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
 
+  if (tid >= num_blocks) return;
 
-	//should these start initialized? I can try it.
-	__global__ void beta_set_block_bitarrs(Block ** blocks, uint64_t num_blocks){
-		uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+  blocks[tid] = nullptr;
+}
 
-		if (tid >= num_blocks) return;
+// per size pinned blocks have one block per size (wow).
+// in your lifetime.
+// read your block.
+// if
+struct per_size_pinned_blocks {
+  uint64_t num_blocks;
 
-		blocks[tid] = nullptr;
-	}
+  uint64_t *block_bitmap;
 
-	//per size pinned blocks have one block per size (wow).
-	//in your lifetime.
-	//read your block.
-	//if 
-	struct per_size_pinned_blocks {
+  Block **blocks;
 
-		uint64_t num_blocks;
+  static __host__ per_size_pinned_blocks *generate_on_device(
+      uint64_t num_blocks) {
+    if (num_blocks == 0) num_blocks = 1;
 
-		uint64_t * block_bitmap;
+    per_size_pinned_blocks *host_version =
+        poggers::utils::get_host_version<per_size_pinned_blocks>();
 
-		Block ** blocks;
+    uint64_t num_uints = (num_blocks - 1) / 64 + 1;
 
-		static __host__ per_size_pinned_blocks * generate_on_device(uint64_t num_blocks){
+    host_version->block_bitmap =
+        poggers::utils::get_device_version<uint64_t>(num_uints);
 
-			if (num_blocks == 0) num_blocks = 1;
+    cudaMemset(host_version->block_bitmap, 0ULL, num_uints * sizeof(uint64_t));
 
-			per_size_pinned_blocks * host_version = poggers::utils::get_host_version<per_size_pinned_blocks>();
+    host_version->blocks =
+        poggers::utils::get_device_version<Block *>(num_blocks);
 
-			uint64_t num_uints = (num_blocks-1)/64+1;
+    host_version->num_blocks = num_blocks;
 
-			host_version->block_bitmap = poggers::utils::get_device_version<uint64_t>(num_uints);
+    beta_set_block_bitarrs<<<(num_blocks - 1) / 512 + 1, 512>>>(
+        host_version->blocks, num_blocks);
 
-			cudaMemset(host_version->block_bitmap, 0ULL, num_uints*sizeof(uint64_t));
+    return poggers::utils::move_to_device<per_size_pinned_blocks>(host_version);
+  }
 
-			host_version->blocks = poggers::utils::get_device_version<Block *>(num_blocks);
+  static __host__ void free_on_device(per_size_pinned_blocks *dev_version) {
+    per_size_pinned_blocks *host_version =
+        poggers::utils::move_to_host<per_size_pinned_blocks>(dev_version);
 
-			host_version->num_blocks = num_blocks;
+    // malloc_bitarr::free_on_device(host_version->block_bitmap);
 
-			beta_set_block_bitarrs<<<(num_blocks-1)/512+1,512>>>(host_version->blocks, num_blocks);
+    cudaFree(host_version->block_bitmap);
 
-			return poggers::utils::move_to_device<per_size_pinned_blocks>(host_version);
+    cudaFree(host_version->blocks);
 
+    cudaFreeHost(host_version);
+  }
 
-		}
+  __device__ int get_valid_block_index() {
+    int my_smid = poggers::utils::get_smid() % num_blocks;
+    int original_smid = my_smid;
 
+    int counter = 0;
 
-		static __host__ void free_on_device(per_size_pinned_blocks * dev_version){
+    // addition - loop to find valid block.
+    while (blocks[my_smid] == nullptr && my_smid != (original_smid - 1)) {
+      my_smid = (my_smid + 1) % num_blocks;
 
-			per_size_pinned_blocks * host_version = poggers::utils::move_to_host<per_size_pinned_blocks>(dev_version);
+      counter += 1;
+      if (counter >= SHARED_BLOCK_COUNTER_CUTOFF) break;
+    }
 
-			//malloc_bitarr::free_on_device(host_version->block_bitmap);
+    return my_smid;
+  }
 
-			cudaFree(host_version->block_bitmap);
+  __device__ Block *get_my_block(int id) { return blocks[id]; }
 
-			cudaFree(host_version->blocks);
+  __device__ Block *get_alt_block() {
+    int my_smid = poggers::utils::get_smid();
 
-			cudaFreeHost(host_version);
+    my_smid = my_smid * my_smid % num_blocks;
 
-		}
+    return blocks[my_smid];
+  }
 
-		__device__ int get_valid_block_index(){
+  // replace block with nullptr.
+  __device__ bool swap_out_block(int my_smid, Block *block_to_swap) {
+    return (atomicCAS((unsigned long long int *)&blocks[my_smid],
+                      (unsigned long long int)block_to_swap,
+                      0ULL) == (unsigned long long int)block_to_swap);
+  }
 
-			int my_smid = poggers::utils::get_smid() % num_blocks;
-			int original_smid = my_smid;
+  __device__ bool replace_block(Block *old_block, Block *new_block) {
+    int my_smid = poggers::utils::get_smid() % num_blocks;
 
+    return (atomicCAS((unsigned long long int *)&blocks[my_smid],
+                      (unsigned long long int)old_block,
+                      (unsigned long long int)new_block) ==
+            (unsigned long long int)old_block);
+  }
 
-			int counter = 0;
+  __device__ bool swap_out_nullptr(int my_smid, Block *block_to_swap) {
+    return (atomicCAS((unsigned long long int *)&blocks[my_smid], 0ULL,
+                      (unsigned long long int)block_to_swap) == 0ULL);
+  }
 
+  __device__ bool lock_my_block() {
+    int my_smid = poggers::utils::get_smid() % num_blocks;
 
-			//addition - loop to find valid block.
-			while (blocks[my_smid] == nullptr && my_smid != (original_smid-1) ){
-				my_smid = (my_smid+1) % num_blocks;
+    int high = my_smid / 64;
+    int low = my_smid % 64;
 
-				counter +=1;
-				if (counter >= SHARED_BLOCK_COUNTER_CUTOFF) break;
-			}
+    uint64_t mask = BITMASK(low);
 
+    uint64_t old_bits =
+        atomicOr((unsigned long long int *)&block_bitmap[high], mask);
 
-			return my_smid;
+    return !(old_bits & mask);
+  }
 
+  __device__ bool unlock_my_block() {
+    int my_smid = poggers::utils::get_smid() % num_blocks;
 
+    int high = my_smid / 64;
+    int low = my_smid % 64;
 
+    uint64_t mask = BITMASK(low);
 
-		}
+    uint64_t old_bits =
+        atomicAnd((unsigned long long int *)&block_bitmap[high], ~mask);
 
-		__device__ Block * get_my_block(int id){
+    // true if old bit was 1
+    return (old_bits & mask);
+  }
+};
 
-			return blocks[id];
+// container has one of these per size.
+template <uint64_t smallest, uint64_t biggest>
+struct pinned_shared_blocks {
+  using my_type = pinned_shared_blocks<smallest, biggest>;
 
-						
-			
-		}
+  per_size_pinned_blocks **block_containers;
 
+  static __host__ my_type *generate_on_device(uint64_t blocks_per_segment) {
+    my_type *host_version = poggers::utils::get_host_version<my_type>();
 
-		__device__ Block * get_alt_block(){
+    uint64_t num_trees = poggers::utils::get_first_bit_bigger(biggest) -
+                         poggers::utils::get_first_bit_bigger(smallest) + 1;
 
+    per_size_pinned_blocks **host_block_containers =
+        poggers::utils::get_host_version<per_size_pinned_blocks *>(num_trees);
 
-			int my_smid = poggers::utils::get_smid();
+    for (uint64_t i = 0; i < num_trees; i++) {
+      host_block_containers[i] =
+          per_size_pinned_blocks::generate_on_device(blocks_per_segment);
 
-			my_smid = my_smid*my_smid % num_blocks;
+      blocks_per_segment = blocks_per_segment / 2;
+    }
 
-			return blocks[my_smid];
+    host_version->block_containers =
+        poggers::utils::move_to_device<per_size_pinned_blocks *>(
+            host_block_containers, num_trees);
 
-		}
+    return poggers::utils::move_to_device<my_type>(host_version);
+  }
 
+  static __host__ void free_on_device(my_type *dev_version) {
+    my_type *host_version = poggers::utils::move_to_host<my_type>(dev_version);
 
-		//replace block with nullptr.
-		__device__ bool swap_out_block(int my_smid, Block * block_to_swap){
+    uint64_t num_trees = poggers::utils::get_first_bit_bigger(biggest) -
+                         poggers::utils::get_first_bit_bigger(smallest) + 1;
 
+    per_size_pinned_blocks **host_block_containers =
+        poggers::utils::move_to_host<per_size_pinned_blocks *>(
+            host_version->block_containers, num_trees);
 
-			return (atomicCAS((unsigned long long int *)&blocks[my_smid], (unsigned long long  int )block_to_swap, 0ULL) == (unsigned long long int) block_to_swap);
+    for (uint64_t i = 0; i < num_trees; i++) {
+      per_size_pinned_blocks::free_on_device(host_block_containers[i]);
+    }
 
+    cudaFreeHost(host_version);
 
-		}
+    cudaFreeHost(host_block_containers);
+  }
 
-		__device__ bool replace_block(Block * old_block, Block * new_block){
+  __device__ per_size_pinned_blocks *get_tree_local_blocks(int tree) {
+    return block_containers[tree];
+  }
+};
 
-			int my_smid = poggers::utils::get_smid() % num_blocks;
-
-			return (atomicCAS((unsigned long long int *)&blocks[my_smid], (unsigned long long  int )old_block,  (unsigned long long  int )new_block) == (unsigned long long int) old_block);
-
-
-		}
-
-		__device__ bool swap_out_nullptr(int my_smid, Block * block_to_swap){
-
-			return (atomicCAS((unsigned long long int *)&blocks[my_smid], 0ULL, (unsigned long long  int )block_to_swap) == 0ULL);
-
-		}
-
-
-		__device__ bool lock_my_block(){
-			int my_smid = poggers::utils::get_smid() % num_blocks;
-
-
-			int high = my_smid / 64;
-			int low = my_smid % 64;
-
-			uint64_t mask = BITMASK(low);
-
-			uint64_t old_bits = atomicOr((unsigned long long int *)&block_bitmap[high], mask);
-
-			return !(old_bits & mask);
-		}
-
-
-		__device__ bool unlock_my_block(){
-
-			int my_smid = poggers::utils::get_smid() % num_blocks;
-
-			int high = my_smid / 64;
-			int low = my_smid % 64;
-
-			uint64_t mask = BITMASK(low);
-
-			uint64_t old_bits = atomicAnd((unsigned long long int *)&block_bitmap[high], ~mask);
-
-			//true if old bit was 1
-			return (old_bits & mask);
-
-		}
-
-
-	};
-
-
-	//container has one of these per size. 
-	template <uint64_t smallest, uint64_t biggest>
-	struct pinned_shared_blocks {
-
-		using my_type = pinned_shared_blocks<smallest, biggest>;
-
-		per_size_pinned_blocks ** block_containers;
-
-		static __host__ my_type * generate_on_device(uint64_t blocks_per_segment){
-
-
-			my_type * host_version = poggers::utils::get_host_version<my_type>();
-
-			uint64_t num_trees = poggers::utils::get_first_bit_bigger(biggest) - poggers::utils::get_first_bit_bigger(smallest)+1;
-
-
-			per_size_pinned_blocks ** host_block_containers = poggers::utils::get_host_version<per_size_pinned_blocks *>(num_trees);
-
-			for (uint64_t i = 0; i< num_trees; i++){
-
-				host_block_containers[i] = per_size_pinned_blocks::generate_on_device(blocks_per_segment);
-
-				blocks_per_segment = blocks_per_segment/2;
-
-			}
-
-			host_version->block_containers = poggers::utils::move_to_device<per_size_pinned_blocks *>(host_block_containers, num_trees);
-
-			return poggers::utils::move_to_device<my_type>(host_version);
-
-
-		}
-
-		static __host__ void free_on_device(my_type * dev_version){
-
-			my_type * host_version = poggers::utils::move_to_host<my_type>(dev_version);
-
-			uint64_t num_trees = poggers::utils::get_first_bit_bigger(biggest) - poggers::utils::get_first_bit_bigger(smallest)+1;
-
-			per_size_pinned_blocks ** host_block_containers = poggers::utils::move_to_host<per_size_pinned_blocks *>(host_version->block_containers, num_trees);
-
-			for (uint64_t i = 0; i < num_trees; i++){
-
-				per_size_pinned_blocks::free_on_device(host_block_containers[i]);
-
-			}
-
-			cudaFreeHost(host_version);
-
-			cudaFreeHost(host_block_containers);
-
-		}
-
-
-		__device__ per_size_pinned_blocks * get_tree_local_blocks(int tree){
-
-			return block_containers[tree];
-
-		}
-
-
-	};
-
-
-
-//was just curious - this verifies that the host does not boot items on kernel start
-//so __shared just get initialized to 0
+// was just curious - this verifies that the host does not boot items on kernel
+// start so __shared just get initialized to 0
 
 // struct kernel_init_test {
 
 // 	__device__ kernel_init_test(){
-// 		printf("Booting up! controlled by %llu\n", threadIdx.x+blockIdx.x*blockDim.x);
+// 		printf("Booting up! controlled by %llu\n",
+// threadIdx.x+blockIdx.x*blockDim.x);
 // 	}
 
 // 	__device__ ~kernel_init_test(){
-// 		printf("Shutting down! controlled by %llu\n", threadIdx.x+blockIdx.x*blockDim.x);
+// 		printf("Shutting down! controlled by %llu\n",
+// threadIdx.x+blockIdx.x*blockDim.x);
 // 	}
-
-
-
 
 // };
 
+}  // namespace allocators
 
+}  // namespace beta
 
-}
-
-}
-
-
-#endif //GPU_BLOCK_
+#endif  // GPU_BLOCK_
