@@ -10,19 +10,16 @@
 
 
 
-#include <poggers/allocators/ext_veb_nosize.cuh>
-#include <poggers/allocators/alloc_memory_table.cuh>
-#include <poggers/allocators/betta.cuh>
-#include <bits/stdc++.h>
+
+#include <poggers/beta/beta.cuh>
+
+#include <poggers/beta/timer.cuh>
 
 
 #include <stdio.h>
 #include <iostream>
 #include <assert.h>
 #include <chrono>
-
-
-using namespace std::chrono;
 
 
 #define gpuErrorCheck(ans) { gpuAssert((ans), __FILE__, __LINE__); }
@@ -35,222 +32,338 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
    }
 }
 
-double elapsed(high_resolution_clock::time_point t1, high_resolution_clock::time_point t2) {
-   return (duration_cast<duration<double> >(t2 - t1)).count();
+using namespace beta::allocators;
+
+
+// __global__ void test_kernel(veb_tree * tree, uint64_t num_removes, int num_iterations){
+
+
+//    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+//    if (tid >= num_removes)return;
+
+
+//       //printf("Tid %lu\n", tid);
+
+
+//    for (int i=0; i< num_iterations; i++){
+
+
+//       if (!tree->remove(tid)){
+//          printf("BUG\n");
+//       }
+
+//       tree->insert(tid);
+
+//    }
+
+
+
+
+template <uint64_t mem_segment_size, uint64_t smallest>
+__host__ void boot_alloc_table(){
+
+
+   using table_type = alloc_table<mem_segment_size, smallest>;
+
+   table_type * table = table_type::generate_on_device();
+
+   cudaDeviceSynchronize();
+
+   table_type::free_on_device(table);
+
+}
+// }
+
+// __global__ void view_kernel(veb_tree * tree){
+
+//    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+//    if (tid != 0)return;
+
+
+
+// }
+
+template <typename betta_type>
+__global__ void register_all_segments(betta_type * betta, uint64_t num_segments){
+
+   uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+
+   if (tid >= num_segments) return;
+
+   betta->gather_new_segment(0);
+
 }
 
-using namespace poggers::allocators;
 
-__global__ void assert_unique_mallocs(uint64_t * allocs, uint64_t num_allocs){
+template <typename betta_type>
+__global__ void malloc_all_blocks_single_thread(betta_type * betta, uint64_t num_segments, uint64_t blocks_per_segment){
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
-   if (tid >= num_allocs) return;
+   if (tid > 0) return; 
 
-   //uint64_t my_block = (uint64_t) blocks[tid];
-
-   uint64_t alloc = allocs[tid];
+   uint64_t misses = 0;
 
 
-   for (uint64_t i=tid+1; i < num_allocs; i++){
+   for (uint64_t i =0; i < num_segments; i++){
 
-      uint64_t ext_alloc = (uint64_t) allocs[i];
+      printf("%llu/%llu\n", i, num_segments);
 
-      if (alloc == ext_alloc){
-         printf("Collision on %llu and %llu: %llu. Block %llu\n",tid, i, alloc, alloc/4096);
+      for (uint64_t j = 0; j < blocks_per_segment; j++){
+
+         block * new_block = betta->table->get_block(i);
+
+         if (new_block == nullptr){
+
+            atomicAdd((unsigned long long int *)misses, 1);
+
+         }
+
       }
-
    }
+
+   printf("Total alloc misses: %llu/%llu\n", misses, num_segments*blocks_per_segment);
 
 
 }
 
-
-
 template <typename betta_type>
-__global__ void test_malloc_kernel(betta_type * betta, uint64_t alloc_size, uint64_t num_allocs){
+__global__ void malloc_all_blocks(betta_type * betta, uint64_t num_segments, uint64_t blocks_per_segment){
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
-   if (tid >=num_allocs) return;
+   if (tid >= num_segments*blocks_per_segment) return; 
 
+   uint64_t segment_id = tid/blocks_per_segment;
 
-   uint64_t allocation = betta->malloc(alloc_size);
+   bool last_block;
 
-   if (allocation == 0){
-      printf("%llu could not alloc\n", tid);
+   block * new_block = betta->table->get_block(segment_id, last_block);
+
+   if (new_block == nullptr){
+
+      printf("Missed block %llu in section %llu\n", tid, segment_id);
+
    }
 
-   //saved_allocs[tid] = (uint64_t) allocation;
+
+
 
 }
 
-
+//pull all blocks using betta
 template <typename betta_type>
-__global__ void test_malloc_saved_kernel(betta_type * betta, uint64_t * saved_allocs, uint64_t alloc_size, uint64_t num_allocs){
+__global__ void malloc_all_blocks_betta(betta_type * betta, uint64_t num_segments, uint64_t blocks_per_segment){
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
-   if (tid >=num_allocs) return;
+   if (tid >= num_segments*blocks_per_segment) return;
 
+   block * new_block = betta->request_new_block_from_tree(0);
 
-   uint64_t allocation = betta->malloc(alloc_size);
-
-   if (allocation == 0){
-      printf("%llu could not alloc\n", tid);
-   } else {
-
-
-      uint64_t high = allocation/64;
-
-      uint64_t low = allocation % 64;
-
-      if (atomicOr((unsigned long long int *)&saved_allocs[high], SET_BIT_MASK(low)) & SET_BIT_MASK(low)){
-         printf("Duplicate alloc on %llu\n", allocation);
-      }
-
+   if (new_block == nullptr){
+      printf("Failed to get block!\n");
    }
-   //saved_allocs[tid] = (uint64_t) allocation;
 
 }
 
 
 template <typename betta_type>
-__global__ void test_malloc_saved_kernel_single(betta_type * betta, uint64_t * saved_allocs, uint64_t alloc_size, uint64_t num_allocs){
+__global__ void malloc_and_save_blocks(betta_type * betta, block ** blocks, uint64_t num_segments, uint64_t blocks_per_segment){
+
+   betta->create_local_context();
+
+   uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+   if (tid >= num_segments*blocks_per_segment) return;
+
+   block * new_block = betta->request_new_block_from_tree(0);
+
+   if (new_block == nullptr){
+      printf("Alloc failure in 1\n");
+
+      new_block = betta->request_new_block_from_tree(0);
+   }
+
+   blocks[tid] = new_block;
+
+}
+
+
+template <typename betta_type>
+__global__ void malloc_and_save_blocks_tree(betta_type * betta, block ** blocks, uint64_t num_segments, uint64_t blocks_per_segment, int tree_id){
+
+   betta->create_local_context();
+
+
+   uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+   if (tid >= num_segments*blocks_per_segment) return;
+
+   block * new_block = betta->request_new_block_from_tree(tree_id);
+
+   while (new_block == nullptr){
+      //printf("Alloc failure in 2\n");
+
+      new_block = betta->request_new_block_from_tree(tree_id);
+   }
+
+   blocks[tid] = new_block;
+
+}
+
+
+template <typename betta_type>
+__global__ void betta_free_all_blocks(betta_type * betta, block ** blocks, uint64_t num_segments, uint64_t blocks_per_segment){
+
+   betta->create_local_context();
+
+   uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+   if (tid >= num_segments*blocks_per_segment) return;
+
+   block * new_block = blocks[tid];
+
+   if (new_block == nullptr) return;
+
+   betta->free_block(new_block);
+
+}
+
+
+
+template <typename betta_type>
+__global__ void malloc_all_blocks_betta_single_thread(betta_type * betta, uint64_t num_segments, uint64_t blocks_per_segment){
+
+   betta->create_local_context();
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
    if (tid != 0) return;
 
+   uint64_t misses = 0;
 
-   for (uint64_t i = 0; i < num_allocs; i++){
+   for (uint64_t i = 0; i < num_segments*blocks_per_segment; i++){
 
 
-      uint64_t allocation = betta->malloc(alloc_size);
+      block * new_block = betta->request_new_block_from_tree(0);
 
-      if (allocation == 0){
-         printf("%llu could not alloc\n", tid);
+      if (new_block == nullptr){
+         //printf("Failed to get block!\n");
+         misses+=1;
       }
-
-      saved_allocs[i] = allocation;
 
    }
 
-}
-
-template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
-__host__ void beta_random_mallocs(uint64_t num_bytes, uint64_t alloc_size, uint64_t num_allocs){
-
-
-      using betta_type = poggers::allocators::betta_allocator<mem_segment_size, smallest, largest>;
-
-      betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
-
-      cudaDeviceSynchronize();
-
-
-      test_malloc_kernel<betta_type><<<(num_allocs-1)/512+1,512>>>(allocator, alloc_size, num_allocs);
-
-      cudaDeviceSynchronize();
-
-      allocator->print_info();
-
-      cudaDeviceSynchronize();
-
-      betta_type::free_on_device(allocator);
+   printf("Missed %llu/%llu\n", misses, num_segments*blocks_per_segment);
 
 }
 
 
-template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
-__host__ void beta_random_mallocs_save(uint64_t num_bytes, uint64_t alloc_size, uint64_t num_allocs){
+template <typename betta_type>
+__global__ void peek(betta_type * betta){
+
+   uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+   if (tid !=0 ) return;
+}
 
 
-      using betta_type = poggers::allocators::betta_allocator<mem_segment_size, smallest, largest>;
+template <typename betta_type>
+__global__ void peek_blocks(betta_type * betta, block ** blocks){
 
-      betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+   uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
-      uint64_t * allocs;
+   if (tid !=0 ) return;
+}
 
-      cudaMalloc((void **)&allocs, sizeof(uint64_t)*((num_bytes/smallest-1)/64+1));
 
-      cudaDeviceSynchronize();
+__global__ void assert_unique_blocks(block ** blocks, uint64_t num_segments, uint64_t blocks_per_segment){
 
-      auto malloc_start = high_resolution_clock::now();
+   uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
-      test_malloc_saved_kernel<betta_type><<<(num_allocs-1)/512+1,512>>>(allocator, allocs, alloc_size, num_allocs);
+   if (tid >= num_segments*blocks_per_segment) return;
 
-      cudaDeviceSynchronize();
+   uint64_t my_block = (uint64_t) blocks[tid];
 
-      auto malloc_end = high_resolution_clock::now();
+   //if (my_block == 0) return;
 
-      double time_taken = elapsed(malloc_start, malloc_end);
 
-      printf("Done with malloc\n");
+   for (uint64_t i=tid+1; i < num_segments*blocks_per_segment; i++){
 
-      std::cout << std::fixed << "Cycle took " << time_taken << " for " << num_allocs << " allocations, " << 1.0*num_allocs/time_taken << " per second." << std::endl;
+      uint64_t ext_block = (uint64_t) blocks[i];
 
-      cudaDeviceSynchronize();
+      if (ext_block == my_block){
+         printf("Collision on %llu and %llu: %llx\n", tid, i, ext_block);
+      }
 
-      //assert_unique_mallocs<<<(num_allocs-1)/512+1,512>>>(allocs, num_allocs);
+   }
 
-      cudaDeviceSynchronize();
-
-      allocator->print_info();
-
-      cudaDeviceSynchronize();
-
-      cudaFree((allocs));
-
-      betta_type::free_on_device(allocator);
 
 }
 
 
-template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
-__host__ void beta_random_mallocs_save_single(uint64_t num_bytes, uint64_t alloc_size, uint64_t num_allocs){
+template <typename betta_type>
+__global__ void alloc_random_blocks(betta_type * betta){
+
+   betta->create_local_context();
+
+   uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+   block * my_blocks[10];
+
+   uint64_t num_trees = betta_type::get_num_trees();
 
 
-      using betta_type = poggers::allocators::betta_allocator<mem_segment_size, smallest, largest>;
+   for (int i = 0; i < 1; i++){
 
-      betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+      int tree = poggers::hashers::MurmurHash64A (&tid, sizeof(uint64_t), i) % num_trees;
 
-      uint64_t * allocs;
+      my_blocks[i] = betta->request_new_block_from_tree(tree);
 
-      cudaMalloc((void **)&allocs, sizeof(uint64_t)*num_allocs);
-
-      cudaDeviceSynchronize();
+   }
 
 
-      test_malloc_saved_kernel_single<betta_type><<<1, 1>>>(allocator, allocs, alloc_size, num_allocs);
+   for (int i = 0; i < 1; i++){
 
-      cudaDeviceSynchronize();
+      if (my_blocks[i] == nullptr){
+         printf("Failed to alloc\n");
+      } else {
+         betta->free_block(my_blocks[i]);
+      }
 
-      printf("Done with malloc\n");
+      
 
-      cudaDeviceSynchronize();
+   }
 
-      assert_unique_mallocs<<<(num_allocs-1)/512+1,512>>>(allocs, num_allocs);
+   //printf("Done with %llu\n", tid);
 
-      cudaDeviceSynchronize();
 
-      allocator->print_info();
-
-      cudaDeviceSynchronize();
-
-      cudaFree((allocs));
-
-      betta_type::free_on_device(allocator);
 
 }
 
 
+// template <typename betta_type>
+// __global__ void malloc_all_bits( )
 
-//Timing split into sections.
+// template <typename betta_type>
+// __global__ void malloc_all_segments(betta_type * betta, uint64_t num_segments){
+
+//    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+//    if (tid >= num_segments) return;
+
+//    betta
+
+// }
+
+
 template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
-__host__ void beta_section_timing(uint64_t num_bytes){
+__host__ void boot_betta(uint64_t num_bytes){
 
-   using betta_type = poggers::allocators::betta_allocator<mem_segment_size, smallest, largest>;
+   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
 
    betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
 
@@ -284,27 +397,322 @@ __host__ void beta_section_timing(uint64_t num_bytes){
 }
 
 
+
+template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
+__host__ void boot_betta_malloc_free(uint64_t num_bytes){
+
+   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+
+   betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+
+   cudaDeviceSynchronize();
+
+   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+
+   register_all_segments<betta_type><<<(num_segments-1)/512+1,512>>>(allocator, num_segments);
+
+   block ** blocks;
+
+   cudaMalloc((void **)&blocks, sizeof(block *)*num_segments*256);
+
+   printf("Ext sees %llu segments\n", num_segments);
+   cudaDeviceSynchronize();
+
+   poggers::utils::print_mem_in_use();
+
+
+   cudaDeviceSynchronize();
+
+   //malloc_all_blocks_single_thread<betta_type><<<1,1>>>(allocator, num_segments, 256);
+   //malloc_all_blocks<betta_type><<<(num_segments*128-1)/512+1,512>>>(allocator, num_segments*128);
+
+   malloc_and_save_blocks<betta_type><<<(num_segments*256-1)/512+1,512>>>(allocator, blocks, num_segments, 256);
+
+   cudaDeviceSynchronize();
+
+   allocator->print_info();
+
+   cudaDeviceSynchronize();
+
+
+   assert_unique_blocks<<<(num_segments*256 -1)/512+1, 512>>>(blocks, num_segments, 256);
+
+   peek_blocks<betta_type><<<1,1>>>(allocator, blocks);
+
+   cudaDeviceSynchronize();
+
+   betta_free_all_blocks<betta_type><<<(num_segments*256-1)/512+1,512>>>(allocator, blocks, num_segments, 256);
+   cudaDeviceSynchronize();
+
+
+   allocator->print_info();
+
+   cudaDeviceSynchronize();
+
+   cudaFree(blocks);
+
+   betta_type::free_on_device(allocator);
+
+}
+
+
+template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
+__host__ void boot_betta_test_all_sizes(uint64_t num_bytes){
+
+   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+
+   uint64_t num_trees = betta_type::get_num_trees();
+
+   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+
+
+   for (int i = 0; i< num_trees; i++){
+
+      printf("Testing tree %d/%llu\n", i, num_trees);
+
+      uint64_t blocks_per_segment = betta_type::get_blocks_per_segment(i);
+
+      betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+
+      block ** blocks;
+
+      cudaMalloc((void **)&blocks, sizeof(block *)*num_segments*blocks_per_segment);
+
+      cudaDeviceSynchronize();
+
+      printf("Boot done: allocator should be empty\n");
+      allocator->print_info();
+
+
+      cudaDeviceSynchronize();
+
+      malloc_and_save_blocks_tree<betta_type><<<(num_segments*blocks_per_segment-1)/512+1,512>>>(allocator, blocks, num_segments, blocks_per_segment, i);
+
+
+      cudaDeviceSynchronize();
+
+      printf("Should see 0 free\n");
+      allocator->print_info();
+
+      cudaDeviceSynchronize();
+
+      assert_unique_blocks<<<(num_segments*blocks_per_segment -1)/512+1, 512>>>(blocks, num_segments, blocks_per_segment);
+
+      cudaDeviceSynchronize();
+
+      betta_free_all_blocks<betta_type><<<(num_segments*blocks_per_segment-1)/512+1,512>>>(allocator, blocks, num_segments, blocks_per_segment);
+   
+      cudaDeviceSynchronize();
+
+      printf("Should see all free\n");
+      allocator->print_info();
+
+      cudaDeviceSynchronize();
+
+
+      cudaFree(blocks);
+
+      betta_type::free_on_device(allocator);
+
+   }
+
+   cudaDeviceSynchronize();
+
+}
+
+
+template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
+__host__ void one_boot_betta_test_all_sizes(uint64_t num_bytes){
+
+   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+
+   uint64_t num_trees = betta_type::get_num_trees();
+
+   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+
+   betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+
+
+   for (int i = 0; i< num_trees; i++){
+
+      printf("Testing tree %d/%llu\n", i, num_trees);
+
+      uint64_t blocks_per_segment = betta_type::get_blocks_per_segment(i);
+
+      block ** blocks;
+
+      cudaMalloc((void **)&blocks, sizeof(block *)*num_segments*blocks_per_segment);
+
+      cudaDeviceSynchronize();
+
+      printf("Boot done: allocator should be empty\n");
+      allocator->print_info();
+
+
+      cudaDeviceSynchronize();
+
+      beta::utils::timer malloc_timing;
+      malloc_and_save_blocks_tree<betta_type><<<(num_segments*blocks_per_segment-1)/512+1,512>>>(allocator, blocks, num_segments, blocks_per_segment, i);
+      auto malloc_duration = malloc_timing.sync_end();
+
+      cudaDeviceSynchronize();
+
+      printf("Should see 0 free\n");
+      allocator->print_info();
+
+      cudaDeviceSynchronize();
+
+      assert_unique_blocks<<<(num_segments*blocks_per_segment -1)/512+1, 512>>>(blocks, num_segments, blocks_per_segment);
+
+      cudaDeviceSynchronize();
+
+
+      beta::utils::timer free_timing;
+      betta_free_all_blocks<betta_type><<<(num_segments*blocks_per_segment-1)/512+1,512>>>(allocator, blocks, num_segments, blocks_per_segment);
+      auto free_duration = free_timing.sync_end();  
+
+      cudaDeviceSynchronize();
+
+      printf("Should see all free\n");
+      allocator->print_info();
+
+      cudaDeviceSynchronize();
+
+
+      uint64_t total_num_blocks = num_segments*blocks_per_segment;
+
+      malloc_timing.print_throughput("Alloced", total_num_blocks);
+      free_timing.print_throughput("Freed", total_num_blocks);
+
+
+      cudaFree(blocks);
+
+     
+
+   }
+
+   cudaDeviceSynchronize();
+
+   betta_type::free_on_device(allocator);
+
+}
+
+template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
+__host__ void betta_alloc_random(uint64_t num_bytes, uint64_t num_allocs){
+
+   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+
+   uint64_t num_trees = betta_type::get_num_trees();
+
+   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+
+   betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+
+   alloc_random_blocks<betta_type><<<(num_allocs-1)/512+1, 512>>>(allocator);
+
+
+   cudaDeviceSynchronize();
+
+   allocator->print_info();
+
+   cudaDeviceSynchronize();
+
+   betta_type::free_on_device(allocator);
+
+}
+
+
+template<typename allocator_type>
+__global__ void alloc_one_size(allocator_type * allocator, uint64_t num_allocs, uint64_t size){
+
+
+   allocator->create_local_context();
+
+   uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+   if (tid >= num_allocs) return;
+
+
+   uint64_t malloc = allocator->malloc(size);
+
+
+}
+
+
+
+template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
+__host__ void beta_test_allocs(uint64_t num_bytes){
+
+
+   beta::utils::timer boot_timing;
+
+   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+
+   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+
+   uint64_t allocs_per_segment = mem_segment_size/largest;
+
+   uint64_t num_allocs = allocs_per_segment*num_segments;
+
+   printf("Starting test with %lu segments, %lu allocs per segment\n", num_segments, allocs_per_segment);
+
+   betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+
+   //generate bitarry
+
+   uint64_t num_bytes_bitarray = sizeof(uint64_t)*((num_allocs -1)/64+1);
+
+   uint64_t * bits;
+
+   cudaMalloc((void **)&bits, num_bytes_bitarray);
+
+   cudaMemset(bits, 0, num_bytes_bitarray);
+
+
+
+
+   std::cout << "Init in " << boot_timing.sync_end() << " seconds" << std::endl;
+
+
+   beta::utils::timer kernel_timing;
+   alloc_one_size<betta_type><<<(num_allocs-1)/512+1,512>>>(allocator, .5*num_allocs, largest);
+   kernel_timing.sync_end();
+
+
+   kernel_timing.print_throughput("Malloced", .5*num_allocs);
+
+
+
+
+
+   betta_type::free_on_device(allocator);
+
+
+}
+
+
+
+
 //using allocator_type = buddy_allocator<0,0>;
 
 int main(int argc, char** argv) {
 
-   // boot_ext_tree<8ULL*1024*1024, 16ULL>();
- 
-   // boot_ext_tree<8ULL*1024*1024, 4096ULL>();
+   uint64_t num_segments;
+   
+
+   if (argc < 2){
+      num_segments = 100;
+   } else {
+      num_segments = std::stoull(argv[1]);
+   }
 
 
-   // boot_alloc_table<8ULL*1024*1024, 16ULL>();
 
 
-   //boot_betta_malloc_free<16ULL*1024*1024, 16ULL, 64ULL>(30ULL*1000*1000*1000);
-
-   //single thread works - so issue is in memory consistency...
-   beta_random_mallocs_save<16ULL*1024*1024, 16ULL, 16ULL>(2000ULL*16*1024*1024, 16, 6000000);
+   //one_boot_betta_test_all_sizes<16ULL*1024*1024, 16ULL, 16ULL>(num_segments*16*1024*1024);  
 
 
-   //beta_random_mallocs<16ULL*1024*1024, 16ULL, 128ULL>(2000ULL*16*1024*1024, 64, 10000000);
-
-   //betta_alloc_random<16ULL*1024*1024, 16ULL, 128ULL>(2000ULL*16*1024*1024, 100000);
+   beta_test_allocs<16ULL*1024*1024, 1024ULL, 1024ULL>(num_segments*16*1024*1024);
 
    cudaDeviceReset();
    return 0;

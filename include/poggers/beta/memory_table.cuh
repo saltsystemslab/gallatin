@@ -49,10 +49,8 @@ namespace allocators {
 
 
 //alloc table associates chunks of memory with trees
-
 //using uint16_t as there shouldn't be that many trees.
-
-//register atomically inserst tree num, or registers memory from chunk_tree.
+//register atomically insert tree num, or registers memory from chunk_tree.
 
 __global__ void betta_init_counters_kernel(unsigned int * malloc_counters, unsigned int * free_counters, block * blocks, uint64_t num_segments, uint64_t blocks_per_segment){
 
@@ -83,26 +81,26 @@ __global__ void betta_init_counters_kernel(unsigned int * malloc_counters, unsig
 }
 
 
+//The alloc table owns all blocks live in the system
+//and information for each segment
 template<uint64_t bytes_per_segment, uint64_t min_size>
 struct alloc_table {
 
 
 	using my_type = alloc_table<bytes_per_segment, min_size>;
 
-	//triplicate arrays
 
-	//1) who owns it
+	//the tree id of each chunk
 	uint16_t * chunk_ids;
 
-	//2) how much is paritioned
-
-	//3) what are the individual allocations.
+	//list of all blocks live in the system.
 	block * blocks;
 
+	//pair of counters for each segment to track use.
 	unsigned int * malloc_counters;
-
 	unsigned int * free_counters;
 
+	//all memory live in the system.
 	char * memory;
 	
 
@@ -110,12 +108,13 @@ struct alloc_table {
 
 	uint64_t blocks_per_segment;
 
+
+	//generate structure on device and return pointer.
 	static __host__ my_type * generate_on_device(uint64_t max_bytes){
 
 		my_type * host_version;
 
 		cudaMallocHost((void **)&host_version, sizeof(my_type));
-
 
 		uint64_t num_segments = poggers::utils::get_max_chunks<bytes_per_segment>(max_bytes);
 
@@ -151,22 +150,15 @@ struct alloc_table {
 		host_version->memory = poggers::utils::get_device_version<char>(bytes_per_segment*num_segments);
 
 
-		//end of blocks
 
-		//start of metadata
 
-		//end of metadata trees
-
-		//start of malloc_counters
-
+		//generate counters and set them to 0.
 		host_version->malloc_counters = poggers::utils::get_device_version<unsigned int>(num_segments);
-
 		host_version->free_counters = poggers::utils::get_device_version<unsigned int>(num_segments);
-
 		betta_init_counters_kernel<<<(num_segments-1)/512+1,512>>>(host_version->malloc_counters, host_version->free_counters, host_version->blocks, num_segments, blocks_per_segment);
 
-		//cudaMemset(host_version->malloc_counters, 0, sizeof(unsigned int)*num_segments);
-
+			
+		//move to device and free host memory.
 		my_type * dev_version;
 
 		cudaMalloc((void **)&dev_version, sizeof(my_type));
@@ -183,6 +175,7 @@ struct alloc_table {
 
 	}
 
+	//return memory to GPU
 	static __host__ void free_on_device(my_type * dev_version){
 
 		my_type * host_version;
@@ -193,7 +186,6 @@ struct alloc_table {
 
 
 		cudaDeviceSynchronize();
-
 
 		cudaFree(host_version->blocks);
 
@@ -235,6 +227,7 @@ struct alloc_table {
 	}
 
 
+	//get the void pointer to the start of a segment.
 	__device__ char * get_segment_memory_start(uint64_t segment){
 
 		return memory + bytes_per_segment*segment;
@@ -254,7 +247,7 @@ struct alloc_table {
 
 		//should stop interlopers
 		set_tree_id(segment, tree_id);
-		//chunk_ids[segment] = tree_id;
+
 
 		#if BETA_MEM_TABLE_DEBUG
 
@@ -278,6 +271,8 @@ struct alloc_table {
 
 	}
 
+
+	//initialize the blocks in a segment
 	__device__ bool setup_blocks(uint64_t segment, uint64_t num_blocks){
 
 
@@ -319,6 +314,8 @@ struct alloc_table {
 	}
 
 
+	//set the tree id of a segment atomically
+	// returns true on success.
 	__device__ bool set_tree_id(uint64_t segment, uint16_t tree_id){
 
 
@@ -326,30 +323,37 @@ struct alloc_table {
 	}
 
 
+	//atomically read tree id.
+	//this may be faster with global load lcda instruction
 	__device__ uint16_t read_tree_id(uint64_t segment){
 
 		return atomicCAS((unsigned short int *)&chunk_ids[segment],  (unsigned short int) ~0U, (unsigned short int) ~0U);
 
 	}
 
+	//return tree id to ~0
 	__device__ bool reset_tree_id(uint64_t segment, uint16_t tree_id){
 
 		return (atomicCAS((unsigned short int *)&chunk_ids[segment], (unsigned short int)tree_id, (unsigned short int) ~0U) == (unsigned short int) tree_id);
 	}
 
 
+	//atomic wrapper to get block
 	__device__ uint get_block_from_segment(uint64_t segment){
 
 		return atomicAdd(&malloc_counters[segment], 1);
 
 	}
 
+	//atomic wrapper to free block.
 	__device__ uint return_block_to_segment(uint64_t segment){
 
 		return atomicAdd(&free_counters[segment], 1);
 	}
 
-	//in the near future this will be allowed to fail
+	//request a segment from a block
+	//this verifies that the segment is initialized correctly
+	//and returns nullptr on failure.
 	__device__ block * get_block(uint64_t segment_id, uint16_t tree_id, bool &empty){
 
 
@@ -374,15 +378,13 @@ struct alloc_table {
 			empty = true;
 		}
 
-		
-
 		return &blocks[segment_id*blocks_per_segment+my_count];
-
 
 
 	}
 
-
+	//snap a block back to its segment
+	//needed for returning
 	__device__ uint64_t get_segment_from_block_ptr(block * block){
 
 
@@ -393,6 +395,8 @@ struct alloc_table {
 
 	}
 
+
+	//get relative offset of a block in its segment.
 	__device__ int get_relative_block_offset(block * block){
 
 
@@ -402,11 +406,14 @@ struct alloc_table {
 
 	}
 
+	//given a pointer, find the associated block for returns
+	//not yet implemented
 	__device__ block * get_block_from_ptr(void * ptr){
 
 
 	}
 
+	//given a pointer, get the segment the pointer belongs to
 	__device__ uint64_t get_segment_from_ptr(void * ptr){
 
 		uint64_t offset = ((char *) ptr) - memory;
@@ -415,12 +422,14 @@ struct alloc_table {
 
 	}
 
+	//get the tree the segment currently belongs to
 	__device__ int get_tree_from_segment(uint64_t segment){
 
 		return chunk_ids[segment];
 
 	}
 
+	//helper function for moving from power of two exponent to index
 	static __host__ __device__ uint64_t get_p2_from_index(int index){
 
 
@@ -429,6 +438,7 @@ struct alloc_table {
 
 	}
 
+	//given tree id, return size of allocations.
 	static __host__ __device__ uint64_t get_tree_alloc_size(uint16_t tree){
 
 		//scales up by smallest.
@@ -436,11 +446,13 @@ struct alloc_table {
 
 	}
 
-
+	//get relative position of block in list of all blocks
 	__device__ uint64_t get_global_block_offset(block * block){
 		return block - blocks;
 	}
 
+
+	//get max blocks per segment when formatted to a given tree size.
 	static __host__ __device__ uint64_t get_blocks_per_segment(uint16_t tree){
 
 		uint64_t tree_alloc_size = get_tree_alloc_size(tree);

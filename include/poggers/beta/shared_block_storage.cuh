@@ -72,6 +72,8 @@ namespace allocators {
 
 			host_version->blocks = poggers::utils::get_device_version<block *>(num_blocks);
 
+			host_version->num_blocks = num_blocks;
+
 			beta_set_block_bitarrs<<<(num_blocks-1)/512+1,512>>>(host_version->blocks, num_blocks);
 
 			return poggers::utils::move_to_device<per_size_pinned_blocks>(host_version);

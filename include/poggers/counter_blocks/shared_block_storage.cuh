@@ -17,7 +17,7 @@
 #include "assert.h"
 #include <vector>
 
-#include <poggers/beta/block.cuh>
+#include <poggers/counter_blocks/block.cuh>
 
 #include <cooperative_groups.h>
 
@@ -27,6 +27,8 @@
 
 
 #define SLAB_PRINT_DEBUG 0
+
+#define SHARED_BLOCK_COUNTER_CUTOFF 30
 
 
 namespace cg = cooperative_groups;
@@ -40,7 +42,7 @@ namespace allocators {
 
 
 	//should these start initialized? I can try it.
-	__global__ void beta_set_block_bitarrs(block ** blocks, uint64_t num_blocks){
+	__global__ void beta_set_block_bitarrs(Block ** blocks, uint64_t num_blocks){
 		uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
 		if (tid >= num_blocks) return;
@@ -56,9 +58,9 @@ namespace allocators {
 
 		uint64_t num_blocks;
 
-		malloc_bitarr * block_bitmap;
+		uint64_t * block_bitmap;
 
-		block ** blocks;
+		Block ** blocks;
 
 		static __host__ per_size_pinned_blocks * generate_on_device(uint64_t num_blocks){
 
@@ -66,9 +68,15 @@ namespace allocators {
 
 			per_size_pinned_blocks * host_version = poggers::utils::get_host_version<per_size_pinned_blocks>();
 
-			host_version->block_bitmap = malloc_bitarr::generate_on_device(num_blocks, false);
+			uint64_t num_uints = (num_blocks-1)/64+1;
 
-			host_version->blocks = poggers::utils::get_device_version<block *>(num_blocks);
+			host_version->block_bitmap = poggers::utils::get_device_version<uint64_t>(num_uints);
+
+			cudaMemset(host_version->block_bitmap, 0ULL, num_uints*sizeof(uint64_t));
+
+			host_version->blocks = poggers::utils::get_device_version<Block *>(num_blocks);
+
+			host_version->num_blocks = num_blocks;
 
 			beta_set_block_bitarrs<<<(num_blocks-1)/512+1,512>>>(host_version->blocks, num_blocks);
 
@@ -82,7 +90,9 @@ namespace allocators {
 
 			per_size_pinned_blocks * host_version = poggers::utils::move_to_host<per_size_pinned_blocks>(dev_version);
 
-			malloc_bitarr::free_on_device(host_version->block_bitmap);
+			//malloc_bitarr::free_on_device(host_version->block_bitmap);
+
+			cudaFree(host_version->block_bitmap);
 
 			cudaFree(host_version->blocks);
 
@@ -90,21 +100,41 @@ namespace allocators {
 
 		}
 
-		__device__ block * get_my_block(){
-
-
+		__device__ int get_valid_block_index(){
 
 			int my_smid = poggers::utils::get_smid() % num_blocks;
+			int original_smid = my_smid;
 
 
-			return blocks[my_smid];
+			int counter = 0;
+
+
+			//addition - loop to find valid block.
+			while (blocks[my_smid] == nullptr && my_smid != (original_smid-1) ){
+				my_smid = (my_smid+1) % num_blocks;
+
+				counter +=1;
+				if (counter >= SHARED_BLOCK_COUNTER_CUTOFF) break;
+			}
+
+
+			return my_smid;
+
+
+
+
+		}
+
+		__device__ Block * get_my_block(int id){
+
+			return blocks[id];
 
 						
 			
 		}
 
 
-		__device__ block * get_alt_block(){
+		__device__ Block * get_alt_block(){
 
 
 			int my_smid = poggers::utils::get_smid();
@@ -116,16 +146,16 @@ namespace allocators {
 		}
 
 
-		__device__ bool swap_out_block(block * block_to_swap){
+		//replace block with nullptr.
+		__device__ bool swap_out_block(int my_smid, Block * block_to_swap){
 
-			int my_smid = poggers::utils::get_smid() % num_blocks;
 
 			return (atomicCAS((unsigned long long int *)&blocks[my_smid], (unsigned long long  int )block_to_swap, 0ULL) == (unsigned long long int) block_to_swap);
 
 
 		}
 
-		__device__ bool replace_block(block * old_block, block * new_block){
+		__device__ bool replace_block(Block * old_block, Block * new_block){
 
 			int my_smid = poggers::utils::get_smid() % num_blocks;
 
@@ -134,9 +164,7 @@ namespace allocators {
 
 		}
 
-		__device__ bool swap_out_nullptr(block * block_to_swap){
-
-			int my_smid = poggers::utils::get_smid() % num_blocks;
+		__device__ bool swap_out_nullptr(int my_smid, Block * block_to_swap){
 
 			return (atomicCAS((unsigned long long int *)&blocks[my_smid], 0ULL, (unsigned long long  int )block_to_swap) == 0ULL);
 
@@ -146,7 +174,15 @@ namespace allocators {
 		__device__ bool lock_my_block(){
 			int my_smid = poggers::utils::get_smid() % num_blocks;
 
-			return block_bitmap->insert(my_smid);
+
+			int high = my_smid / 64;
+			int low = my_smid % 64;
+
+			uint64_t mask = BITMASK(low);
+
+			uint64_t old_bits = atomicOr((unsigned long long int *)&block_bitmap[high], mask);
+
+			return !(old_bits & mask);
 		}
 
 
@@ -154,7 +190,15 @@ namespace allocators {
 
 			int my_smid = poggers::utils::get_smid() % num_blocks;
 
-			return block_bitmap->remove(my_smid);
+			int high = my_smid / 64;
+			int low = my_smid % 64;
+
+			uint64_t mask = BITMASK(low);
+
+			uint64_t old_bits = atomicAnd((unsigned long long int *)&block_bitmap[high], ~mask);
+
+			//true if old bit was 1
+			return (old_bits & mask);
 
 		}
 

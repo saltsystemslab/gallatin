@@ -90,11 +90,11 @@ ConfigureExecutable(beta_veb_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/beta_veb_tes
 
 ConfigureExecutable(beta_slab_one_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/beta_slab_one_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
-ConfigureExecutable(new_beta_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/new_beta_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
-
 
 ConfigureExecutable(counter_block_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/counter_block_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
 ConfigureExecutable(bandwidth_test "${CMAKE_CURRENT_SOURCE_DIR}/src/bandwidth_test.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
 ConfigureExecutable(counter_slab_one_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/counter_slab_one_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
+
+ConfigureExecutable(shared_counter_slab_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/shared_counter_slab_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
