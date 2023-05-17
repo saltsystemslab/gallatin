@@ -131,7 +131,7 @@ struct layer {
 
     cudaMemset(dev_bits, 0, sizeof(uint64_t) * ext_num_blocks);
 
-    init_bits<<<(items_in_universe - 1) / 256 + 1, 256> > >(dev_bits,
+    init_bits<<<(items_in_universe - 1) / 256 + 1, 256>>>(dev_bits,
                                                             items_in_universe);
 
     cudaDeviceSynchronize();
@@ -699,7 +699,7 @@ struct veb_tree {
     uint64_t num_threads = (max_value - 1) / 64 + 1;
 
     veb_report_fill_kernel<veb_tree>
-        <<<(num_threads - 1) / 512 + 1, 512> > >(this, num_threads, fill_count);
+        <<<(num_threads - 1) / 512 + 1, 512>>>(this, num_threads, fill_count);
 
     cudaDeviceSynchronize();
 

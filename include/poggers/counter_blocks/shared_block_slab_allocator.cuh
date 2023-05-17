@@ -256,12 +256,20 @@ struct shared_slab_allocator {
       // get offset from block.
       uint64_t allocation = my_block->block_malloc(coalesced_team);
 
-      if (allocation == ~0ULL) {
+      bool should_replace = (allocation == ~0ULL);
+
+      should_replace = coalesced_team.ballot(should_replace);
+
+      if (should_replace) {
+      	//this should be a re-coalesce
         if (coalesced_team.thread_rank() == 0) {
           replace_block(malloc_container_index, my_block);
         }
 
-      } else {
+      } 
+
+
+      if (allocation != ~0ULL) {
         return (void *)(extra_memory +
                         (block_id * 4096 + allocation) * offset_size);
       }

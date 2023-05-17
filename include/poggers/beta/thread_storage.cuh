@@ -324,7 +324,7 @@ struct pinned_thread_storage {
 
     cudaMalloc((void **)&dev_locks, sizeof(warp_lock) * num_storages);
 
-    init_thread_storage<<<(num_storages - 1) / 256 + 1, 256> > >(
+    init_thread_storage<<<(num_storages - 1) / 256 + 1, 256>>>(
         dev_storages, dev_locks, num_storages);
 
     cudaDeviceSynchronize();

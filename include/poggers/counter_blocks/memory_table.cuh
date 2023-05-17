@@ -126,10 +126,10 @@ struct alloc_table {
     Block *ext_blocks;
 
     cudaMalloc((void **)&ext_blocks,
-               sizeof(block) * blocks_per_segment * num_segments);
+               sizeof(Block) * blocks_per_segment * num_segments);
 
     cudaMemset(ext_blocks, 0U,
-               sizeof(block) * (num_segments * blocks_per_segment));
+               sizeof(Block) * (num_segments * blocks_per_segment));
 
     host_version->blocks = ext_blocks;
 

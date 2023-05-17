@@ -35,8 +35,7 @@
 #include <cstdio>
 #include <iostream>
 #include <poggers/allocators/alloc_utils.cuh>
-#include <poggers/beta/allocator_context.cuh>
-#include <poggers/counter blocks/one_size_allocator.cuh>
+#include <poggers/counter_blocks/one_size_allocator.cuh>
 #include <poggers/counter_blocks/block.cuh>
 #include <poggers/counter_blocks/memory_table.cuh>
 #include <poggers/counter_blocks/shared_block_storage.cuh>
@@ -51,6 +50,8 @@ namespace beta {
 namespace allocators {
 
 #define REQUEST_BLOCK_MAX_ATTEMPTS 1
+
+#define BETA_MAX_ATTEMPTS 150
 
 // alloc table associates chunks of memory with trees
 
@@ -71,6 +72,36 @@ __global__ void boot_segment_trees(veb_tree **segment_trees,
   }
 }
 
+
+//boot the allocator memory blocks during initialization
+//this loops through the blocks and initializes half as many at each iteration.
+template <typename allocator>
+__global__ void boot_shared_block_container(allocator * alloc, int max_tree_id, int max_smid){
+
+	uint64_t tid = poggers::utils::get_tid();
+
+	int tree_id = 0;
+
+	while (tree_id < max_tree_id){
+
+		if (tid >= max_smid) return;
+
+		alloc->boot_block(tree_id, tid);
+
+		max_smid = max_smid/2;
+
+		if (max_smid < 2) max_smid = 2;
+
+		tree_id+=1;
+
+	}
+
+
+	
+
+
+}
+
 // main allocator structure
 // template arguments are
 //  - size of each segment in bytes
@@ -81,7 +112,6 @@ struct beta_allocator {
   using my_type = beta_allocator<bytes_per_segment, smallest, biggest>;
   using sub_tree_type = veb_tree;
   using pinned_block_type = pinned_shared_blocks<smallest, biggest>;
-  using thread_storage_type = pinned_thread_storage;
 
   // internal structures
   veb_tree *segment_tree;
@@ -91,8 +121,6 @@ struct beta_allocator {
   sub_tree_type **sub_trees;
 
   pinned_block_type *local_blocks;
-
-  thread_storage_type **storage_containers;
 
   int num_trees;
 
@@ -113,10 +141,11 @@ struct beta_allocator {
     host_version->segment_tree = veb_tree::generate_on_device(max_chunks, seed);
 
     // estimate the max_bits
+    uint64_t blocks_per_pinned_block = 128;
     uint64_t num_bits = bytes_per_segment / (4096 * smallest);
 
     host_version->local_blocks =
-        pinned_block_type::generate_on_device(num_bits);
+        pinned_block_type::generate_on_device(blocks_per_pinned_block);
 
     uint64_t num_bytes = 0;
 
@@ -145,17 +174,6 @@ struct beta_allocator {
       ext_sub_trees[i] = temp_tree;
     }
 
-    // boot pinned storage
-
-    thread_storage_type **host_pinned_storage =
-        poggers::utils::get_host_version<thread_storage_type *>(num_trees);
-
-    for (int i = 0; i < num_trees; i++) {
-      host_pinned_storage[i] = thread_storage_type::generate_on_device();
-    }
-
-    host_version->storage_containers =
-        move_to_device<thread_storage_type *>(host_pinned_storage, num_trees);
     host_version->sub_trees =
         move_to_device<sub_tree_type *>(ext_sub_trees, num_trees);
 
@@ -170,7 +188,15 @@ struct beta_allocator {
 
     printf("Booted BETA with %llu trees\n", num_trees);
 
-    return move_to_device(host_version);
+
+    auto device_version = move_to_device(host_version);
+
+    boot_shared_block_container<my_type><<<(blocks_per_pinned_block-1)/128+1, 128>>>(device_version,num_trees, blocks_per_pinned_block);
+
+    cudaDeviceSynchronize();
+
+    return device_version;
+
   }
 
   // return the index of the largest bit set
@@ -201,15 +227,6 @@ struct beta_allocator {
     alloc_table<bytes_per_segment, smallest>::free_on_device(
         host_version->table);
 
-    thread_storage_type **host_pinned_storage =
-        poggers::utils::move_to_host<thread_storage_type *>(
-            host_version->storage_containers, num_trees);
-
-    for (int i = 0; i < num_trees; i++) {
-      thread_storage_type::free_on_device(host_pinned_storage[i]);
-    }
-
-    cudaFreeHost(host_pinned_storage);
 
     veb_tree::free_on_device(host_version->segment_tree);
 
@@ -220,39 +237,17 @@ struct beta_allocator {
     cudaFreeHost(host_version);
   }
 
-  // generate context
-  //  this boots the warp lock for the thread allocators.
-  __device__ context *generate_kernel_context(bool load_context) {
-    __shared__ context local_context;
-
-    if (load_context) {
-      local_context.init_context_lock_only();
-    }
-
-    return &local_context;
-  }
-
-  // create the context for the first time
-  //  this must be called at the start of the kernel
-  __device__ context *create_local_context() {
-    return generate_kernel_context(true);
-  }
-
-  // regenerate the context
-  //  this is called in malloc to generate the warp lock.
-  __device__ context *reload_kernel_context() {
-    return generate_kernel_context(false);
-  }
-
   // given a pointer, return the segment it belongs to
-  __device__ inline uint64_t snap_pointer_to_block(void *ext_ptr) {
-    char *memory_start = table->get_segment_memory_start(segment);
+  // __device__ inline uint64_t snap_pointer_to_block(void *ext_ptr) {
 
-    uint64_t snapped_offset =
-        ((uint64_t)(ext_ptr - memory_start)) / bytes_per_segment;
 
-    return snapped_offset;
-  }
+  //   char *memory_start = table->get_segment_memory_start(segment);
+
+  //   uint64_t snapped_offset =
+  //       ((uint64_t)(ext_ptr - memory_start)) / bytes_per_segment;
+
+  //   return snapped_offset;
+  // }
 
   // Cast an offset back into a memory pointer
   // this requires the offset and the tree_id so that we know how far to scale
@@ -273,6 +268,56 @@ struct beta_allocator {
     return (void *)(memory_start + relative_offset * alloc_size);
   }
 
+
+
+  //initialize a block for the first time.
+  __device__ void boot_block(int tree_id, int smid){
+
+  	Block * new_block = request_new_block_from_tree(tree_id);
+
+  	if (new_block == nullptr){
+  		printf("Failed to initialize block %d from tree %d", smid, tree_id);
+  		return;
+  	}
+
+  	per_size_pinned_blocks * local_shared_block_storage =
+          local_blocks->get_tree_local_blocks(tree_id);
+
+    if(!local_shared_block_storage->swap_out_nullptr(smid, new_block)){
+    	printf("Error: Block in position %d for tree %d already initialized\n", smid, tree_id);
+    }
+
+  }
+
+
+  //replace block with a new one pulled from the system
+  //gets called when a block is detected to be empty.
+  __device__ bool replace_block(int tree_id, int smid, Block * my_block, per_size_pinned_blocks * my_pinned_blocks){
+
+  	if (my_pinned_blocks->swap_out_block(smid, my_block)){
+
+
+  		Block * new_block = request_new_block_from_tree(tree_id);
+
+  		if (new_block == nullptr){
+  			return false;
+  		}
+
+  		if (!my_pinned_blocks->swap_out_nullptr(smid, new_block)){
+  			printf("Incorrect behavior when swapping out block index %d for tree %d\n", smid, tree_id);
+  			free_block(new_block);
+  			return false;
+  		}
+
+  	}
+
+  	return true;
+
+
+  }
+
+
+
   // malloc an individual allocation
   // returns an offset that can be cast into the associated void *
   __device__ uint64_t malloc(uint64_t bytes_needed) {
@@ -287,92 +332,76 @@ struct beta_allocator {
 
     } else {
       // get local block storage and thread storage
-      per_size_pinned_blocks *my_local_blocks =
+      per_size_pinned_blocks * local_shared_block_storage =
           local_blocks->get_tree_local_blocks(tree_id);
-      auto *my_local_thread_storage =
-          storage_containers[tree_id]->get_thread_storage();
 
-      // and regenerate context
-      auto context = reload_kernel_context();
+      int shared_block_storage_index;
+      Block * my_block;
 
-      // global attempt loop
+      int num_attempts = 0;
+
       // this cycles until we either receive an allocation or fail to request a
       // new block
-      while (true) {
+      while (num_attempts < BETA_MAX_ATTEMPTS) {
+
+      	cg::coalesced_group coalesced_team = cg::coalesced_threads();
+
+      	if (coalesced_team.thread_rank() == 0){
+      		shared_block_storage_index = local_shared_block_storage->get_valid_block_index();
+      		my_block = local_shared_block_storage->get_my_block(shared_block_storage_index);
+      	}
+
+      	//recoalesce and share block.
+      	shared_block_storage_index = coalesced_team.shfl(shared_block_storage_index, 0);
+      	my_block = coalesced_team.shfl(my_block, 0);
+
+        //cycle if we read an old block
+      	if (my_block == nullptr){
+      		num_attempts+=1;
+      		continue;
+      	}
+
+
         // select block to pull from and get global stats
-        Block my_block = my_local_blocks->get_my_block();
-        uint64_t global_offset = table->get_global_block_offset(my_block);
+        uint64_t global_block_id = table->get_global_block_offset(my_block);
 
-        if (my_block == nullptr) {
-          // if block is nullptr, attempt to reset with new block
-          if (my_local_blocks->lock_my_block()) {
-            Block new_block = request_new_block_from_tree(tree_id);
+    	//TODO: add check here that global block id does not exceed bounds
 
-            // failure to get a block is failure.
-            if (new_block == nullptr) {
-              my_local_blocks->unlock_my_block();
-              return ~0ULL;
-            }
+    	uint64_t allocation = my_block->block_malloc(coalesced_team);
 
-            if (!my_local_blocks->swap_out_nullptr(new_block)) {
-              // this isn't bad - just means read was stale.
-              free_block(new_block);
-            }
+    	bool should_replace = (allocation == ~0ULL);
 
-            my_local_blocks->unlock_my_block();
+      	should_replace = coalesced_team.ballot(should_replace);
 
-            __threadfence();
-            continue;
 
-          } else {
-            // did not acquire right to get new block, retry
-            continue;
-          }
-        }
+    	if (should_replace){
 
-        // at this point we have a block! good to go.
-        // this subroutine returns allocation or ~0ULL on failure.
-        uint64_t allocation =
-            alloc_with_locks(context->get_local_lock(), global_offset, my_block,
-                             my_local_thread_storage);
+    		if (coalesced_team.thread_rank() == 0){
+    			replace_block(tree_id, shared_block_storage_index, my_block, local_shared_block_storage);
+    		}
 
-        // bool alloced = alloc_with_locks(allocation, my_block,
-        // my_local_thread_storage);
+    	}
 
-        if (allocation == ~0ULL) {
-          // on allocation failure, replace block
-          if (my_local_blocks->lock_my_block()) {
-            Block new_block = request_new_block_from_tree(tree_id);
-            if (new_block == nullptr) {
-              my_local_blocks->unlock_my_block();
-              return ~0ULL;
-            }
+    	if (allocation != ~0ULL){
 
-            if (!my_local_blocks->replace_block(my_block, new_block)) {
-              // this is not an err, block was already set
-              free_block(new_block);
-              __threadfence();
+    		return allocation + global_block_id*4096;
 
-              new_block = nullptr;
-            }
+    	}
 
-            my_local_blocks->unlock_my_block();
-          }
 
-          __threadfence();
-          continue;
-        }
+    	num_attempts+=1;
 
-        // allocation is done, return.
-        return allocation;
-      }
     }
 
-    return 0;
+    return ~0ULL;
+
   }
+
+}
 
   // get a new segment for a given tree!
   __device__ bool gather_new_segment(uint16_t tree) {
+
     // request new segment
     uint64_t id = segment_tree->malloc_first();
 
@@ -449,7 +478,7 @@ struct beta_allocator {
       bool last_block = false;
 
       // valid segment, get new block.
-      Block new_block = table->get_block(segment, tree, last_block);
+      Block * new_block = table->get_block(segment, tree, last_block);
 
       if (last_block) {
         // if the segment is fully allocated, it can be detached

@@ -6,7 +6,7 @@
 #include <cuda_runtime_api.h>
 
 #include <poggers/allocators/alloc_utils.cuh>
-#include <poggers/allocators/uint64_bitarray.cuh>
+//#include <poggers/allocators/uint64_bitarray.cuh>
 #include <poggers/counter_blocks/block.cuh>
 #include <poggers/hash_schemes/murmurhash.cuh>
 #include <poggers/representations/representation_helpers.cuh>

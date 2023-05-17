@@ -35,13 +35,8 @@
 #include <cstdio>
 #include <iostream>
 
-// #include <poggers/representations/representation_helpers.cuh>
-
-// #include <poggers/hash_schemes/murmurhash.cuh>
-
 #include <poggers/allocators/alloc_utils.cuh>
 
-// #include <poggers/allocators/uint64_bitarray.cuh>
 
 #include <cooperative_groups.h>
 

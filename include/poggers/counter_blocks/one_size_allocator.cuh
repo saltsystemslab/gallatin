@@ -32,7 +32,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iostream>
-#include <poggers/beta/veb.cuh>
+#include <poggers/counter_blocks/veb.cuh>
 
 #ifndef DEBUG_PRINTS
 #define DEBUG_PRINTS 0
