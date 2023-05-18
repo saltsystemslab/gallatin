@@ -45,6 +45,9 @@
 #define BETA_DEBUG_PRINTS 0
 #endif
 
+
+#define BETA_SHARED_BLOCK_MIN 4
+
 namespace beta {
 
 namespace allocators {
@@ -90,7 +93,7 @@ __global__ void boot_shared_block_container(allocator * alloc, int max_tree_id, 
 
 		max_smid = max_smid/2;
 
-		if (max_smid < 2) max_smid = 2;
+		if (max_smid < BETA_SHARED_BLOCK_MIN) max_smid = BETA_SHARED_BLOCK_MIN;
 
 		tree_id+=1;
 
@@ -145,7 +148,7 @@ struct beta_allocator {
     uint64_t num_bits = bytes_per_segment / (4096 * smallest);
 
     host_version->local_blocks =
-        pinned_block_type::generate_on_device(blocks_per_pinned_block, 2);
+        pinned_block_type::generate_on_device(blocks_per_pinned_block, BETA_SHARED_BLOCK_MIN);
 
     uint64_t num_bytes = 0;
 
@@ -310,14 +313,24 @@ struct beta_allocator {
   		Block * new_block = request_new_block_from_tree(tree_id);
 
   		if (new_block == nullptr){
+
+        #if BETA_DEBUG_PRINTS
+
         printf("Failed to acquire block\n");
         Block * new_block = request_new_block_from_tree(tree_id);
+
+        #endif
 
   			return false;
   		}
 
   		if (!my_pinned_blocks->swap_out_nullptr(smid, new_block)){
+
+        #if BETA_DEBUG_PRINTS
   			printf("Incorrect behavior when swapping out block index %d for tree %d\n", smid, tree_id);
+
+        #endif
+
   			free_block(new_block);
   			return false;
   		}
@@ -333,15 +346,17 @@ struct beta_allocator {
 
   // malloc an individual allocation
   // returns an offset that can be cast into the associated void *
-  __device__ uint64_t malloc(uint64_t bytes_needed) {
-    int tree_id = get_first_bit_bigger(smallest) - smallest_bits;
+  __device__ uint64_t malloc_offset(uint64_t bytes_needed) {
+
+
+    uint16_t tree_id = get_first_bit_bigger(bytes_needed) - smallest_bits;
 
     if (tree_id >= num_trees) {
       // get big allocation
       // this is currently unfinished, is a todo after ouroboros
-      printf("Larger allocations not yet implemented\n");
+      printf("Larger allocations not yet implemented: %u >= %u\n", tree_id, num_trees);
 
-      return 0;
+      return ~0ULL;
 
     } else {
       // get local block storage and thread storage
@@ -350,6 +365,8 @@ struct beta_allocator {
 
       int shared_block_storage_index;
       Block * my_block;
+
+    
 
       int num_attempts = 0;
 
@@ -374,11 +391,25 @@ struct beta_allocator {
       	shared_block_storage_index = coalesced_team.shfl(shared_block_storage_index, 0);
       	my_block = coalesced_team.shfl(my_block, 0);
 
+
+
         //cycle if we read an old block
       	if (my_block == nullptr){
       		num_attempts+=1;
       		continue;
       	}
+
+        uint16_t alt_tree_id = table->get_tree_id_of_block(my_block);
+        if (alt_tree_id != tree_id){
+
+          #if BETA_DEBUG_PRINTS
+          printf("Mismatch in tree ids in malloc: %u != %u\n", alt_tree_id, tree_id);
+
+          #endif
+
+          table->get_tree_id_of_block(my_block);
+        }
+
 
 
         // select block to pull from and get global stats
@@ -418,6 +449,30 @@ struct beta_allocator {
 
 }
 
+
+  __device__ void * malloc(uint64_t size){
+
+    uint16_t tree_id = get_first_bit_bigger(smallest) - smallest_bits;
+
+    uint64_t offset = malloc_offset(size);
+
+    if (offset == ~0ULL) return nullptr;
+
+    return offset_to_allocation(offset, tree_id);
+
+
+  }
+
+
+  __device__ void free(void * ptr){
+
+    uint64_t offset = table->allocation_to_offset(ptr);
+
+    free_offset(offset);
+
+  }
+
+
   // get a new segment for a given tree!
   __device__ bool gather_new_segment(uint16_t tree) {
 
@@ -429,10 +484,24 @@ struct beta_allocator {
       return false;
     }
 
+    #if BETA_DEBUG_PRINTS
+
+    if (segment_tree->query(id)){
+      printf("Failed to reserve index %llu\n", id);
+    }
+
+    #endif
+
     // otherwise, both initialized
     // register segment
     if (!table->setup_segment(id, tree)) {
-      // printf("Failed to acquire updatable segment\n");
+
+
+      #if BETA_DEBUG_PRINTS
+      printf("Failed to acquire updatable segment\n");
+      #endif
+
+      atomicExch((unsigned long long int *) 0ULL, 0ULL);
 
       segment_tree->insert_force_update(id);
       // abort, but not because no segments are available.
@@ -539,7 +608,14 @@ struct beta_allocator {
       // should be fine, no one can update till this point
       sub_trees[tree]->remove(segment);
 
-      table->reset_tree_id(segment, tree);
+      if (!table->reset_tree_id(segment, tree)){
+
+        #if BETA_DEBUG_PRINTS
+        printf("Failed to reset tree id for segment %llu\n", segment);
+        assert(1==0);
+        #endif
+
+      }
       __threadfence();
 
       // insert with threadfence
@@ -548,7 +624,7 @@ struct beta_allocator {
   }
 
   // return a uint64_t to the system
-  __device__ void free(uint64_t malloc) {
+  __device__ void free_offset(uint64_t malloc) {
 
     // get block
 
@@ -565,6 +641,12 @@ struct beta_allocator {
     }
 
     return;
+  }
+
+  __device__ uint64_t allocation_to_offset(void * ptr){
+
+    return table->allocation_to_offset(ptr);
+
   }
 
 

@@ -43,7 +43,7 @@
 #define DEBUG_PRINTS 0
 #endif
 
-#define BETA_MEM_TABLE_DEBUG 1
+#define BETA_MEM_TABLE_DEBUG 0
 
 namespace beta {
 
@@ -220,7 +220,13 @@ struct alloc_table {
     uint64_t tree_alloc_size = get_tree_alloc_size(tree_id);
 
     // should stop interlopers
-    set_tree_id(segment, tree_id);
+    if (!set_tree_id(segment, tree_id)){
+      #if BETA_MEM_TABLE_DEBUG
+      printf("Failed to set tree id\n");
+      #endif
+    }
+
+    __threadfence();
 
 #if BETA_MEM_TABLE_DEBUG
 
@@ -232,6 +238,14 @@ struct alloc_table {
           "Memory free counter for segment %llu not properly reset: value is "
           "%u\n",
           segment, old_free_count);
+    }
+
+    uint16_t alt_tree_id = read_tree_id(segment);
+
+    if (alt_tree_id != tree_id){
+
+      printf("Failed to set tree id: %u != %u\n", alt_tree_id, tree_id);
+
     }
 
 #endif
@@ -321,6 +335,11 @@ struct alloc_table {
 
     // tree changed in interim.
     if (global_tree_id != tree_id) {
+
+      #if BETA_MEM_TABLE_DEBUG
+      printf("Err: tree ids differ: %u != %u\n", global_tree_id, tree_id);
+      #endif
+
       return_block_to_segment(segment_id);
     }
 
@@ -328,7 +347,21 @@ struct alloc_table {
       empty = true;
     }
 
-    return get_block_from_global_block_id(segment_id*blocks_per_segment+my_count);
+
+    uint64_t global_offset = segment_id*blocks_per_segment+my_count;
+
+    Block * new_block = get_block_from_global_block_id(segment_id*blocks_per_segment+my_count);
+
+    #if BETA_MEM_TABLE_DEBUG
+    uint64_t alt_block_offset = get_global_block_offset(new_block);
+
+    if (global_offset != alt_block_offset){
+      printf("Casting issue with block offset: %llu != %llu\n", global_offset, alt_block_offset);
+    }
+
+    #endif
+
+    return new_block;
     
     }
 
@@ -403,21 +436,83 @@ struct alloc_table {
 
   }
 
-  __device__ void * offset_to_allocation(uint64_t allocation, uint16_t tree_id){
+  __device__ void * offset_to_allocation(uint64_t offset, uint16_t tree_id){
 
-  	uint64_t segment_id = allocation/get_max_allocations_per_segment();
+  	uint64_t segment_id = offset/get_max_allocations_per_segment();
 
-  	uint64_t relative_offset = allocation % get_max_allocations_per_segment();
+  	uint64_t relative_offset = offset % get_max_allocations_per_segment();
 
   	char * segment_mem_start = get_segment_memory_start(segment_id);
 
+    #if BETA_MEM_TABLE_DEBUG
+    uint16_t alt_tree_id = read_tree_id(segment_id);
+
+    //printf("Tree id %u and alt_id %u", tree_id, alt_tree_id);
+
+    if (alt_tree_id != tree_id){
+      printf("Tree id mismatch when casting: %d != %d\n", tree_id, alt_tree_id);
+    }
+
+    #endif
 
   	uint64_t alloc_size = get_tree_alloc_size(tree_id);
+
+    //printf("allocation %llu has relative_offset %llu and alloc size %llu\n", allocation, relative_offset, alloc_size);
 
   	return (void *) (segment_mem_start + relative_offset*alloc_size);
 
 
   }
+
+  //convert pointer to offset format used by main allocator
+  __device__ uint64_t allocation_to_offset(void * ptr){
+
+    //based on raw_bytes, get segment
+    uint64_t raw_bytes = ((char *) ptr) - memory;
+
+    uint64_t segment_id = raw_bytes/bytes_per_segment;
+
+    uint16_t tree_id = read_tree_id(segment_id);
+
+    #if BETA_MEM_TABLE_DEBUG
+    if (tree_id > 10){
+      printf("Large tree id in alloc to offset: %u\n", tree_id);
+    }
+    #endif
+
+    uint64_t alloc_size = get_tree_alloc_size(tree_id);
+
+    uint64_t segment_bytes = raw_bytes % bytes_per_segment;
+
+    #if BETA_MEM_TABLE_DEBUG
+    char * segment_mem_start = get_segment_memory_start(segment_id);
+
+    uint64_t raw_segment_bytes = ((char * ) ptr) - segment_mem_start;
+
+    if (raw_segment_bytes != segment_bytes){
+      printf("Mismatch in segment bytes: %llu != %llu\n", raw_segment_bytes, segment_bytes);
+    }
+    #endif
+
+    //printf("pointer %llx has raw bytes %llu segment_bytes %llu, alloc size %llu\n", (uint64_t) ptr, raw_bytes, segment_bytes, alloc_size);
+
+    //should be a clean division
+    uint64_t relative_offset = segment_bytes/alloc_size;
+
+    return segment_id*get_max_allocations_per_segment() + relative_offset;
+
+
+  }
+
+
+  __device__ uint16_t get_tree_id_of_block(Block * block_ptr){
+
+    uint64_t segment = get_segment_from_block_ptr(block_ptr);
+
+    return read_tree_id(segment);
+
+  }
+
 
   // free block, returns true if this block was the last section needed.
   __device__ bool free_block(Block *block_ptr, bool &need_to_reregister) {
@@ -428,6 +523,12 @@ struct alloc_table {
     uint old_count = return_block_to_segment(segment);
 
     uint16_t global_tree_id = read_tree_id(segment);
+
+    #if BETA_MEM_TABLE_DEBUG
+    if (global_tree_id > 10){
+      printf("Large tree id in free block %u\n", global_tree_id);
+    }
+    #endif
 
     uint64_t num_blocks = get_blocks_per_segment(global_tree_id);
 
@@ -451,6 +552,8 @@ struct alloc_table {
 
     return false;
   }
+
+
 };
 
 }  // namespace allocators

@@ -622,7 +622,7 @@ __global__ void alloc_one_size(allocator_type * allocator, uint64_t num_allocs, 
    if (tid >= num_allocs) return;
 
 
-   uint64_t malloc = allocator->malloc(size);
+   uint64_t malloc = allocator->malloc_offset(size);
 
    if (malloc == ~0ULL){
       printf("Fail\n");
@@ -694,13 +694,13 @@ __global__ void alloc_one_size_correctness(allocator_type * allocator, uint64_t 
    if (tid >= num_allocs) return;
 
 
-   uint64_t malloc = allocator->malloc(size);
+   uint64_t malloc = allocator->malloc_offset(size);
 
 
    uint64_t attempts = 0;
 
    while (malloc == ~0ULL && attempts < 1){
-      malloc = allocator->malloc(size);
+      malloc = allocator->malloc_offset(size);
       attempts+=1;
    }
 
@@ -708,6 +708,16 @@ __global__ void alloc_one_size_correctness(allocator_type * allocator, uint64_t 
       atomicAdd((unsigned long long int *)misses, 1ULL);
       return;
    }
+
+
+   char * alloc_ptr = (char *) allocator->offset_to_allocation(malloc, 0);
+
+   uint64_t casted_allocation = allocator->allocation_to_offset(alloc_ptr);
+
+   if (casted_allocation != malloc){
+      printf("Cast issue\n");
+   }
+
 
    uint64_t high = malloc / 64;
 
@@ -746,7 +756,7 @@ __global__ void free_one_size_correctness(allocator_type * allocator, uint64_t n
 
    if (old_bits & bitmask){
 
-      allocator->free(tid);
+      allocator->free_offset(tid);
 
    }
 
@@ -853,21 +863,46 @@ __global__ void alloc_churn_kernel(allocator_type * allocator, uint64_t num_allo
 
    uint64_t hash = tid;
 
-   poggers::hashers::murmurHasher;
-
 
    //each loop, pick a random size and allocate from it.
    for (int i = 0; i < num_rounds; i++){
 
-      uint64_t hash = poggers::hashers::MurmurHash64A(&hash, sizeof(uint64_t), i);
+      hash = poggers::hashers::MurmurHash64A(&hash, sizeof(uint64_t), i);
 
       int my_tree_id = hash % num_trees;
 
       uint64_t my_alloc_size = (size << my_tree_id);
 
-      uint64_t allocation = allocator->malloc(my_alloc_size);
+      //printf("thread %llu working with tree %d, size %llu\n", tid, my_tree_id, my_alloc_size);
+
+      uint64_t allocation = allocator->malloc_offset(my_alloc_size);
+
+      if (allocation == ~0ULL){
+
+         atomicAdd((unsigned long long int *)misses, 1ULL);
+         continue;
+
+      }
 
       char * alloc_ptr = (char *) allocator->offset_to_allocation(allocation, my_tree_id);
+
+      uint64_t casted_allocation = allocator->allocation_to_offset(alloc_ptr);
+
+      if (casted_allocation != allocation){
+
+         //printf("Mismatch: Alloc offset %llu is not equal to original %llu: Tree size %d. Diff %llu\n", casted_allocation, allocation, my_tree_id, allocation-casted_allocation);
+
+         //debug info to determine where mismatch occurs:
+
+         uint64_t max_allocs = allocator->get_max_allocations_per_segment();
+
+         if (casted_allocation/max_allocs != allocation/max_allocs){
+            printf("%llu vs %llu\n", casted_allocation/max_allocs, allocation/max_allocs);
+         }
+         
+
+
+      }
 
       alloc_ptr[0] = 't';
 
@@ -890,7 +925,7 @@ __global__ void alloc_churn_kernel(allocator_type * allocator, uint64_t num_allo
          printf("Double free attempting for allocation %llu, block %d alloc %llu", allocation, allocation/4096, allocation % 4096);
       }
 
-      allocator->free(allocation);
+      allocator->free_offset(allocation);
 
 
    }
@@ -949,7 +984,7 @@ __host__ void beta_full_churn(uint64_t num_bytes, uint64_t num_threads, int num_
    kernel_timing.sync_end();
 
    kernel_timing.print_throughput("Malloc/freed", num_threads*num_rounds);
-   printf("Missed: %llu\n", misses[0]);
+   printf("Missed: %llu/%llu %f\n", misses[0], num_threads*num_rounds, 1.0*misses[0]/(num_threads*num_rounds));
 
 
    allocator->print_info();
@@ -998,9 +1033,9 @@ int main(int argc, char** argv) {
    //one_boot_betta_test_all_sizes<16ULL*1024*1024, 16ULL, 16ULL>(num_segments*16*1024*1024);  
 
 
-   //beta_test_allocs_correctness<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds);
+   beta_test_allocs_correctness<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds);
 
-   beta_full_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
+   //beta_full_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
 
    cudaDeviceReset();
    return 0;

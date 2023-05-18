@@ -71,6 +71,13 @@ struct Block {
   __device__ bool block_free() {
     uint old = atomicAdd((unsigned int *)&free_counter, 1ULL);
 
+    #if BETA_BLOCK_DEBUG
+
+    if (old >= 4096){
+      printf("Block double free\n");
+    }
+    #endif
+
     return (old == 4095);
   }
 
