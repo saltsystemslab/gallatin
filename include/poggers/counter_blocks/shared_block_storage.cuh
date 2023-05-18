@@ -173,7 +173,7 @@ struct pinned_shared_blocks {
 
   per_size_pinned_blocks **block_containers;
 
-  static __host__ my_type *generate_on_device(uint64_t blocks_per_segment) {
+  static __host__ my_type *generate_on_device(uint64_t blocks_per_segment, uint16_t min) {
     my_type *host_version = poggers::utils::get_host_version<my_type>();
 
     uint64_t num_trees = poggers::utils::get_first_bit_bigger(biggest) -
@@ -187,6 +187,8 @@ struct pinned_shared_blocks {
           per_size_pinned_blocks::generate_on_device(blocks_per_segment);
 
       blocks_per_segment = blocks_per_segment / 2;
+
+      if (blocks_per_segment < min) blocks_per_segment = min;
     }
 
     host_version->block_containers =
@@ -194,6 +196,11 @@ struct pinned_shared_blocks {
             host_block_containers, num_trees);
 
     return poggers::utils::move_to_device<my_type>(host_version);
+  }
+
+
+  static __host__ my_type *generate_on_device(uint64_t blocks_per_segment){
+  	return generate_on_device(blocks_per_segment, 1);
   }
 
   static __host__ void free_on_device(my_type *dev_version) {

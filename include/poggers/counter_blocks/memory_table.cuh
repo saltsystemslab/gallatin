@@ -328,7 +328,15 @@ struct alloc_table {
       empty = true;
     }
 
-    return &blocks[segment_id * blocks_per_segment + my_count];
+    return get_block_from_global_block_id(segment_id*blocks_per_segment+my_count);
+    
+    }
+
+  //given a global block_id, return the block
+  __device__ Block * get_block_from_global_block_id(uint64_t global_block_id){
+
+  	return &blocks[global_block_id];
+
   }
 
   // snap a block back to its segment
@@ -384,6 +392,31 @@ struct alloc_table {
     uint64_t tree_alloc_size = get_tree_alloc_size(tree);
 
     return bytes_per_segment / (tree_alloc_size * 4096);
+  }
+
+  //get maximum # of allocations per segment
+  //useful for converting alloc offsets into void *
+  static __host__ __device__ uint64_t get_max_allocations_per_segment(){
+
+  	//get size of smallest tree
+  	return bytes_per_segment / min_size;
+
+  }
+
+  __device__ void * offset_to_allocation(uint64_t allocation, uint16_t tree_id){
+
+  	uint64_t segment_id = allocation/get_max_allocations_per_segment();
+
+  	uint64_t relative_offset = allocation % get_max_allocations_per_segment();
+
+  	char * segment_mem_start = get_segment_memory_start(segment_id);
+
+
+  	uint64_t alloc_size = get_tree_alloc_size(tree_id);
+
+  	return (void *) (segment_mem_start + relative_offset*alloc_size);
+
+
   }
 
   // free block, returns true if this block was the last section needed.

@@ -683,6 +683,8 @@ __host__ void beta_test_allocs(uint64_t num_bytes){
 
 }
 
+
+
 template<typename allocator_type>
 __global__ void alloc_one_size_correctness(allocator_type * allocator, uint64_t num_allocs, uint64_t size, uint64_t * bitarray, uint64_t * misses){
 
@@ -697,7 +699,7 @@ __global__ void alloc_one_size_correctness(allocator_type * allocator, uint64_t 
 
    uint64_t attempts = 0;
 
-   while (malloc == ~0ULL && attempts < 250){
+   while (malloc == ~0ULL && attempts < 1){
       malloc = allocator->malloc(size);
       attempts+=1;
    }
@@ -716,7 +718,36 @@ __global__ void alloc_one_size_correctness(allocator_type * allocator, uint64_t 
    uint64_t bits = atomicOr((unsigned long long int *) &bitarray[high], (unsigned long long int) bitmask);
 
    if (bits & bitmask){
-      printf("Double malloc bug in %llu: block %llu alloc %llu", malloc, malloc/4096, malloc % 4096);
+      printf("Double malloc bug in %llu: block %llu alloc %llu\n", malloc, malloc/4096, malloc % 4096);
+   }
+
+   __threadfence();
+
+
+}
+
+
+template<typename allocator_type>
+__global__ void free_one_size_correctness(allocator_type * allocator, uint64_t num_allocs, uint64_t size, uint64_t * bitarray){
+
+
+   uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+   if (tid >= num_allocs) return;
+
+
+   uint64_t high = tid / 64;
+
+   uint64_t low = tid % 64;
+
+   auto bitmask = SET_BIT_MASK(low);
+
+   uint64_t old_bits = atomicAnd((unsigned long long int *)&bitarray[high], (unsigned long long int) ~bitmask);
+
+   if (old_bits & bitmask){
+
+      allocator->free(tid);
+
    }
 
    __threadfence();
@@ -729,7 +760,7 @@ __global__ void alloc_one_size_correctness(allocator_type * allocator, uint64_t 
 //pull from blocks
 //this kernel tests correctness, and outputs misses in a counter.
 template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
-__host__ void beta_test_allocs_correctness(uint64_t num_bytes){
+__host__ void beta_test_allocs_correctness(uint64_t num_bytes, int num_rounds){
 
 
    beta::utils::timer boot_timing;
@@ -738,7 +769,7 @@ __host__ void beta_test_allocs_correctness(uint64_t num_bytes){
 
    uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
-   uint64_t allocs_per_segment = mem_segment_size/largest;
+   uint64_t allocs_per_segment = mem_segment_size/smallest;
 
    uint64_t num_allocs = allocs_per_segment*num_segments;
 
@@ -771,19 +802,29 @@ __host__ void beta_test_allocs_correctness(uint64_t num_bytes){
 
    std::cout << "Init in " << boot_timing.sync_end() << " seconds" << std::endl;
 
+   for (int i = 0; i < num_rounds; i++){
 
-   beta::utils::timer kernel_timing;
-   alloc_one_size_correctness<betta_type><<<(num_allocs-1)/512+1,512>>>(allocator, .9*num_allocs, largest, bits, misses);
-   kernel_timing.sync_end();
+      beta::utils::timer kernel_timing;
+      alloc_one_size_correctness<betta_type><<<(num_allocs-1)/512+1,512>>>(allocator, .9*num_allocs, smallest, bits, misses);
+      kernel_timing.sync_end();
 
+      beta::utils::timer free_timing;
+      free_one_size_correctness<betta_type><<<(num_allocs-1)/512+1,512>>>(allocator, num_allocs, smallest, bits);
+      free_timing.sync_end();
 
-   kernel_timing.print_throughput("Malloced", .9*num_allocs);
+      kernel_timing.print_throughput("Malloced", .9*num_allocs);
 
-   printf("Missed: %llu\n", misses[0]);
+      free_timing.print_throughput("Freed", .9*num_allocs);
 
-   cudaDeviceSynchronize();
+      printf("Missed: %llu\n", misses[0]);
 
-   allocator->print_info();
+      cudaDeviceSynchronize();
+
+      misses[0] = 0;
+
+      allocator->print_info();
+
+   }
 
    cudaFree(misses);
 
@@ -799,11 +840,144 @@ __host__ void beta_test_allocs_correctness(uint64_t num_bytes){
 }
 
 
+template<typename allocator_type>
+__global__ void alloc_churn_kernel(allocator_type * allocator, uint64_t num_allocs, int num_rounds, uint64_t size, uint64_t * bitarray, uint64_t * misses){
+
+
+   uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+   if (tid >= num_allocs) return;
+
+
+   int num_trees = allocator->get_num_trees();
+
+   uint64_t hash = tid;
+
+   poggers::hashers::murmurHasher;
+
+
+   //each loop, pick a random size and allocate from it.
+   for (int i = 0; i < num_rounds; i++){
+
+      uint64_t hash = poggers::hashers::MurmurHash64A(&hash, sizeof(uint64_t), i);
+
+      int my_tree_id = hash % num_trees;
+
+      uint64_t my_alloc_size = (size << my_tree_id);
+
+      uint64_t allocation = allocator->malloc(my_alloc_size);
+
+      char * alloc_ptr = (char *) allocator->offset_to_allocation(allocation, my_tree_id);
+
+      alloc_ptr[0] = 't';
+
+      uint64_t high = allocation / 64;
+
+      uint64_t low = allocation % 64;
+
+      auto bitmask = SET_BIT_MASK(low);
+
+      uint64_t bits = atomicOr((unsigned long long int *) &bitarray[high], (unsigned long long int) bitmask);
+
+      if (bits & bitmask){
+         printf("Double allocation bug in %llu: block %llu alloc %llu\n", allocation, allocation/4096, allocation % 4096);
+      }
+
+      //and unset bits before freeing
+      uint64_t old_bits = atomicAnd((unsigned long long int *)&bitarray[high], (unsigned long long int) ~bitmask);
+
+      if (!(old_bits & bitmask)){
+         printf("Double free attempting for allocation %llu, block %d alloc %llu", allocation, allocation/4096, allocation % 4096);
+      }
+
+      allocator->free(allocation);
+
+
+   }
+
+}
+
+
+
+//pull from blocks
+//this kernel tests correctness, and outputs misses in a counter.
+template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
+__host__ void beta_full_churn(uint64_t num_bytes, uint64_t num_threads, int num_rounds){
+
+
+   beta::utils::timer boot_timing;
+
+   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+
+   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+
+   uint64_t allocs_per_segment = mem_segment_size/smallest;
+
+   uint64_t num_allocs = allocs_per_segment*num_segments;
+
+   printf("Starting test with %lu segments, %lu allocs per segment, %lu threads for %d rounds in kernel\n", num_segments, allocs_per_segment, num_threads, num_rounds);
+
+
+   betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+
+
+
+   //generate bitarrary - this covers the worst-case for alloc ranges.
+   uint64_t num_bytes_bitarray = sizeof(uint64_t)*((num_allocs -1)/64+1);
+
+   uint64_t * bits;
+
+   cudaMalloc((void **)&bits, num_bytes_bitarray);
+
+   cudaMemset(bits, 0, num_bytes_bitarray);
+
+
+   uint64_t * misses;
+   cudaMallocManaged((void **)&misses, sizeof(uint64_t));
+
+   cudaDeviceSynchronize();
+
+   misses[0] = 0;
+
+
+
+
+   std::cout << "Init in " << boot_timing.sync_end() << " seconds" << std::endl;
+
+   beta::utils::timer kernel_timing;
+   alloc_churn_kernel<betta_type><<<(num_allocs-1)/512+1, 512>>>(allocator, num_threads, num_rounds, smallest, bits, misses);
+   kernel_timing.sync_end();
+
+   kernel_timing.print_throughput("Malloc/freed", num_threads*num_rounds);
+   printf("Missed: %llu\n", misses[0]);
+
+
+   allocator->print_info();
+
+   cudaFree(misses);
+
+   cudaFree(bits);
+
+
+
+
+
+   betta_type::free_on_device(allocator);
+
+   cudaDeviceSynchronize();
+
+}
+
+
+
+
 //using allocator_type = buddy_allocator<0,0>;
 
 int main(int argc, char** argv) {
 
    uint64_t num_segments;
+
+   int num_rounds = 1;
    
 
    if (argc < 2){
@@ -812,13 +986,21 @@ int main(int argc, char** argv) {
       num_segments = std::stoull(argv[1]);
    }
 
+   if (argc < 3){
+      num_rounds = 1;
+   } else {
+      num_rounds = std::stoull(argv[2]);
+   }
+
 
 
 
    //one_boot_betta_test_all_sizes<16ULL*1024*1024, 16ULL, 16ULL>(num_segments*16*1024*1024);  
 
 
-   beta_test_allocs_correctness<16ULL*1024*1024, 16ULL, 16ULL>(num_segments*16*1024*1024);
+   //beta_test_allocs_correctness<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds);
+
+   beta_full_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
 
    cudaDeviceReset();
    return 0;
