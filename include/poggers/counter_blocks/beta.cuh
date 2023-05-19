@@ -349,7 +349,7 @@ struct beta_allocator {
   __device__ uint64_t malloc_offset(uint64_t bytes_needed) {
 
     //without this threads requesting less than 16 bytes freak out.
-    if (bytes_needed < smallest) bytes_needed = smallest_bits;
+    if (bytes_needed < smallest) bytes_needed = smallest;
 
     uint16_t tree_id = get_first_bit_bigger(bytes_needed) - smallest_bits;
 
