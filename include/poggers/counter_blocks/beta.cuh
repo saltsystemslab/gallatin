@@ -348,6 +348,8 @@ struct beta_allocator {
   // returns an offset that can be cast into the associated void *
   __device__ uint64_t malloc_offset(uint64_t bytes_needed) {
 
+    //without this threads requesting less than 16 bytes freak out.
+    if (bytes_needed < smallest) bytes_needed = smallest_bits;
 
     uint16_t tree_id = get_first_bit_bigger(bytes_needed) - smallest_bits;
 
