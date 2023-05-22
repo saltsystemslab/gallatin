@@ -622,7 +622,7 @@ __global__ void alloc_one_size(allocator_type * allocator, uint64_t num_allocs, 
    if (tid >= num_allocs) return;
 
 
-   uint64_t malloc = allocator->malloc(size);
+   uint64_t malloc = allocator->malloc_offset(size);
 
    if (malloc == ~0ULL){
       printf("Fail\n");
@@ -643,11 +643,11 @@ __host__ void beta_test_allocs(uint64_t num_bytes){
 
    uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
-   uint64_t allocs_per_segment = mem_segment_size/largest;
+   uint64_t max_allocs_per_segment = mem_segment_size/largest;
 
-   uint64_t num_allocs = allocs_per_segment*num_segments;
+   uint64_t num_allocs = max_allocs_per_segment*num_segments;
 
-   printf("Starting test with %lu segments, %lu allocs per segment\n", num_segments, allocs_per_segment);
+   printf("Starting test with %lu segments, %lu allocs per segment\n", num_segments, max_allocs_per_segment);
 
    betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
 
@@ -694,13 +694,13 @@ __global__ void alloc_one_size_correctness(allocator_type * allocator, uint64_t 
    if (tid >= num_allocs) return;
 
 
-   uint64_t malloc = allocator->malloc(size);
+   uint64_t malloc = allocator->malloc_offset(size);
 
 
    uint64_t attempts = 0;
 
    while (malloc == ~0ULL && attempts < 1){
-      malloc = allocator->malloc(size);
+      malloc = allocator->malloc_offset(size);
       attempts+=1;
    }
 
@@ -746,7 +746,7 @@ __global__ void free_one_size_correctness(allocator_type * allocator, uint64_t n
 
    if (old_bits & bitmask){
 
-      allocator->free(tid);
+      allocator->free_offset(tid);
 
    }
 
@@ -760,7 +760,7 @@ __global__ void free_one_size_correctness(allocator_type * allocator, uint64_t n
 //pull from blocks
 //this kernel tests correctness, and outputs misses in a counter.
 template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
-__host__ void beta_test_allocs_correctness(uint64_t num_bytes, int num_rounds){
+__host__ void beta_test_allocs_correctness(uint64_t num_bytes, int num_rounds, uint64_t size){
 
 
    beta::utils::timer boot_timing;
@@ -769,11 +769,19 @@ __host__ void beta_test_allocs_correctness(uint64_t num_bytes, int num_rounds){
 
    uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
-   uint64_t allocs_per_segment = mem_segment_size/smallest;
+   uint64_t max_allocs_per_segment = mem_segment_size/smallest;
 
-   uint64_t num_allocs = allocs_per_segment*num_segments;
+   uint64_t max_num_allocs = max_allocs_per_segment*num_segments;
 
-   printf("Starting test with %lu segments, %lu allocs per segment\n", num_segments, allocs_per_segment);
+
+   uint64_t allocs_per_segment_size = mem_segment_size/size;
+
+   if (allocs_per_segment_size >= max_allocs_per_segment) allocs_per_segment_size = max_allocs_per_segment;
+
+   uint64_t num_allocs = allocs_per_segment_size*num_segments;
+
+   printf("Starting test with %lu segments, %lu allocs per segment\n", num_segments, max_allocs_per_segment);
+   printf("Actual allocs per segment %llu total allocs %llu\n", allocs_per_segment_size, num_allocs);
 
 
    betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
@@ -781,7 +789,7 @@ __host__ void beta_test_allocs_correctness(uint64_t num_bytes, int num_rounds){
 
 
    //generate bitarry
-   uint64_t num_bytes_bitarray = sizeof(uint64_t)*((num_allocs -1)/64+1);
+   uint64_t num_bytes_bitarray = sizeof(uint64_t)*((max_num_allocs -1)/64+1);
 
    uint64_t * bits;
 
@@ -865,7 +873,7 @@ __global__ void alloc_churn_kernel(allocator_type * allocator, uint64_t num_allo
 
       uint64_t my_alloc_size = (size << my_tree_id);
 
-      uint64_t allocation = allocator->malloc(my_alloc_size);
+      uint64_t allocation = allocator->malloc_offset(my_alloc_size);
 
       char * alloc_ptr = (char *) allocator->offset_to_allocation(allocation, my_tree_id);
 
@@ -890,7 +898,7 @@ __global__ void alloc_churn_kernel(allocator_type * allocator, uint64_t num_allo
          printf("Double free attempting for allocation %llu, block %d alloc %llu", allocation, allocation/4096, allocation % 4096);
       }
 
-      allocator->free(allocation);
+      allocator->free_offset(allocation);
 
 
    }
@@ -911,11 +919,11 @@ __host__ void beta_full_churn(uint64_t num_bytes, uint64_t num_threads, int num_
 
    uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
-   uint64_t allocs_per_segment = mem_segment_size/smallest;
+   uint64_t max_allocs_per_segment = mem_segment_size/smallest;
 
-   uint64_t num_allocs = allocs_per_segment*num_segments;
+   uint64_t num_allocs = max_allocs_per_segment*num_segments;
 
-   printf("Starting test with %lu segments, %lu allocs per segment, %lu threads for %d rounds in kernel\n", num_segments, allocs_per_segment, num_threads, num_rounds);
+   printf("Starting test with %lu segments, %lu allocs per segment, %lu threads for %d rounds in kernel\n", num_segments, max_allocs_per_segment, num_threads, num_rounds);
 
 
    betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
@@ -979,6 +987,7 @@ int main(int argc, char** argv) {
 
    int num_rounds = 1;
    
+   uint64_t size;
 
    if (argc < 2){
       num_segments = 100;
@@ -993,14 +1002,19 @@ int main(int argc, char** argv) {
    }
 
 
+   if (argc < 4){
+      size = 16;
+   } else {
+      size = std::stoull(argv[3]);
+   }
 
 
    //one_boot_betta_test_all_sizes<16ULL*1024*1024, 16ULL, 16ULL>(num_segments*16*1024*1024);  
 
 
-   //beta_test_allocs_correctness<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds);
+   beta_test_allocs_correctness<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
 
-   beta_full_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
+   //beta_full_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
 
    cudaDeviceReset();
    return 0;

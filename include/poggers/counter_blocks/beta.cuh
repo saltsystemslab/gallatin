@@ -333,7 +333,10 @@ struct beta_allocator {
 
   // malloc an individual allocation
   // returns an offset that can be cast into the associated void *
-  __device__ uint64_t malloc(uint64_t bytes_needed) {
+  __device__ uint64_t malloc_offset(uint64_t bytes_needed) {
+
+    if (bytes_needed < smallest) bytes_needed = smallest;
+
     int tree_id = get_first_bit_bigger(smallest) - smallest_bits;
 
     if (tree_id >= num_trees) {
@@ -361,7 +364,6 @@ struct beta_allocator {
         __threadfence();
 
       	cg::coalesced_group full_warp_team = cg::coalesced_threads();
-
 
         cg::coalesced_group coalesced_team = labeled_partition(full_warp_team, tree_id);
 
@@ -548,7 +550,7 @@ struct beta_allocator {
   }
 
   // return a uint64_t to the system
-  __device__ void free(uint64_t malloc) {
+  __device__ void free_offset(uint64_t malloc) {
 
     // get block
 
