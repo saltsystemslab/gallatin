@@ -330,6 +330,63 @@ struct beta_allocator {
   }
 
 
+  __device__ uint16_t get_tree_id_from_size(uint64_t size){
+
+      if (size < smallest) return 0;
+
+      return get_first_bit_bigger(size) - smallest_bits;
+
+  }
+
+
+
+  __device__ void * malloc(uint64_t size){
+
+    uint16_t tree_id = get_tree_id_from_size(size);
+
+    uint64_t offset = malloc_offset(size);
+
+    if (offset == ~0ULL) return nullptr;
+
+
+    #if BETA_DEBUG_PRINTS
+
+      uint64_t segment = table->get_segment_from_offset(offset);
+
+      uint16_t alt_tree_id = table->read_tree_id(segment);
+
+
+      if (alt_tree_id != tree_id){
+        printf("Mismatch in tree ids for alloc of size %llu: %llu != %llu\n", size, tree_id, alt_tree_id)
+      }
+
+    #endif
+
+
+    return offset_to_allocation(offset, tree_id);
+
+
+  }
+
+
+
+  __device__ void free(void * allocation){
+
+
+
+    //this logic is verifie allocation to offset
+    uint64_t segment = table->get_segment_from_ptr(allocation);
+
+    uint16_t tree_id = table->read_tree_id(segment);
+
+    uint64_t offset = allocation_to_offset(allocation, tree_id);
+
+    return free_offset(offset);
+
+
+  }
+
+
 
   // malloc an individual allocation
   // returns an offset that can be cast into the associated void *
@@ -337,7 +394,7 @@ struct beta_allocator {
 
     if (bytes_needed < smallest) bytes_needed = smallest;
 
-    int tree_id = get_first_bit_bigger(smallest) - smallest_bits;
+    uint16_t tree_id = get_first_bit_bigger(bytes_needed) - smallest_bits;
 
     if (tree_id >= num_trees) {
       // get big allocation
@@ -459,6 +516,7 @@ struct beta_allocator {
     atomicAnd(&locks, ~SET_BIT_MASK(tree));
   }
 
+
   // gather a new block for a tree.
   // this attempts to pull from a memory segment.
   //  and will atteach a new segment if now
@@ -579,6 +637,18 @@ struct beta_allocator {
       return table->offset_to_allocation(offset, tree_id);
 
   }
+
+
+  //given a void * and the known size (expressed as tree id), translate to offset in global space.
+  __device__ uint64_t allocation_to_offset(void * allocation, uint16_t tree_id){
+
+    
+      return table->allocation_to_offset(allocation, tree_id);
+    
+  }
+
+
+
 
   // print useful allocator info.
   // this returns the number of segments owned by each tree

@@ -321,7 +321,7 @@ struct alloc_table {
 
     // tree changed in interim.
     if (global_tree_id != tree_id) {
-      return_block_to_segment(segment_id);
+      return_block_to_segment(segment_id); 
     }
 
     if (my_count == (num_blocks - 1)) {
@@ -415,6 +415,43 @@ struct alloc_table {
   	uint64_t alloc_size = get_tree_alloc_size(tree_id);
 
   	return (void *) (segment_mem_start + relative_offset*alloc_size);
+
+
+  }
+
+
+  //given a known tree id, snap an allocation back to the correct offset
+  __device__ uint64_t allocation_to_offset(void * alloc, uint16_t tree_id){
+
+
+      uint64_t byte_offset = (uint64_t) ((char *) alloc - memory);
+
+      //segment id_should agree with upper function.
+      uint64_t segment_id = byte_offset/bytes_per_segment;
+
+
+      #if BETA_DEBUG_PRINTS
+
+      uint64_t alt_segment = get_segment_from_ptr(alloc);
+
+      if (segment_id != alt_segment){
+        printf("Mismatch on segments in allocation to offset, %llu != %llu\n", segment_id, alt_segment)
+      }
+
+
+
+      #endif
+
+
+
+
+
+      char * segment_start = (char *) get_segment_memory_start(segment_id);
+
+      uint64_t segment_byte_offset = (uint64_t) ((char *) alloc - segment_start);
+
+      return segment_byte_offset/get_tree_alloc_size(tree_id) + segment_id*get_max_allocations_per_segment();
+
 
 
   }
