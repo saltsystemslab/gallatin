@@ -42,7 +42,7 @@
 #include <poggers/hash_schemes/murmurhash.cuh>
 
 #ifndef BETA_DEBUG_PRINTS
-#define BETA_DEBUG_PRINTS 0
+#define BETA_DEBUG_PRINTS 1
 #endif
 
 namespace beta {
@@ -52,6 +52,7 @@ namespace allocators {
 #define REQUEST_BLOCK_MAX_ATTEMPTS 10
 
 #define BETA_MAX_ATTEMPTS 150
+#define MALLOC_LOOP_ATTEMPTS 5
 
 // alloc table associates chunks of memory with trees
 
@@ -344,6 +345,8 @@ struct beta_allocator {
 
     uint16_t tree_id = get_tree_id_from_size(size);
 
+    uint64_t attempt_counter = 0;
+
     uint64_t offset = malloc_offset(size);
 
     if (offset == ~0ULL) return nullptr;
@@ -355,9 +358,18 @@ struct beta_allocator {
 
       uint16_t alt_tree_id = table->read_tree_id(segment);
 
+      uint64_t block_id = offset/4096;
+
+      Block * my_block = table->get_block_from_global_block_id(block_id);
+
+      uint64_t block_segment = table->get_segment_from_block_ptr(my_block);
+
+      uint64_t relative_offset = table->get_relative_block_offset(my_block);
+
+      uint64_t block_tree = table->read_tree_id(block_segment);
 
       if (alt_tree_id != tree_id){
-        printf("Mismatch in tree ids for alloc of size %llu: %llu != %llu\n", size, tree_id, alt_tree_id)
+        printf("Mismatch for offset: %llu in tree ids for alloc of size %llu: %u != %u...Block %llu segment %llu offset %llu tree %u\n", offset, size, tree_id, alt_tree_id, block_id, block_segment, relative_offset, block_tree);
       }
 
     #endif
@@ -417,27 +429,48 @@ struct beta_allocator {
       // new block
       while (num_attempts < BETA_MAX_ATTEMPTS) {
 
-        //reload memory at start of each loop
-        __threadfence();
+      //reload memory at start of each loop
+      __threadfence();
 
-      	cg::coalesced_group full_warp_team = cg::coalesced_threads();
+    	cg::coalesced_group full_warp_team = cg::coalesced_threads();
 
-        cg::coalesced_group coalesced_team = labeled_partition(full_warp_team, tree_id);
+      cg::coalesced_group coalesced_team = labeled_partition(full_warp_team, tree_id);
 
-      	if (coalesced_team.thread_rank() == 0){
-      		shared_block_storage_index = local_shared_block_storage->get_valid_block_index();
-      		my_block = local_shared_block_storage->get_my_block(shared_block_storage_index);
-      	}
+    	if (coalesced_team.thread_rank() == 0){
+    		shared_block_storage_index = local_shared_block_storage->get_valid_block_index();
+    		my_block = local_shared_block_storage->get_my_block(shared_block_storage_index);
+    	}
 
-      	//recoalesce and share block.
-      	shared_block_storage_index = coalesced_team.shfl(shared_block_storage_index, 0);
-      	my_block = coalesced_team.shfl(my_block, 0);
+    	//recoalesce and share block.
+    	shared_block_storage_index = coalesced_team.shfl(shared_block_storage_index, 0);
+    	my_block = coalesced_team.shfl(my_block, 0);
 
-        //cycle if we read an old block
-      	if (my_block == nullptr){
-      		num_attempts+=1;
-      		continue;
-      	}
+      //cycle if we read an old block
+    	if (my_block == nullptr){
+    		num_attempts+=1;
+    		continue;
+    	}
+
+      #if BETA_DEBUG_PRINTS
+
+
+      uint64_t alt_block_segment = table->get_segment_from_block_ptr(my_block);
+
+      uint16_t alt_tree_id = table->read_tree_id(alt_block_segment);
+
+      uint64_t block_id = table->get_global_block_offset(my_block);
+
+      uint64_t relative_block_id = table->get_relative_block_offset(my_block);
+
+      if (tree_id != alt_tree_id){
+        //this triggers, yeet
+        printf("Block %llu: segment %llu relative %llu not init for malloc: %u != %u\n", block_id, alt_block_segment, relative_block_id, tree_id, alt_tree_id);
+
+      }
+
+      #endif
+
+
 
 
         // select block to pull from and get global stats
@@ -671,7 +704,7 @@ struct beta_allocator {
 
       uint64_t sub_max = host_trees[i]->report_max();
 
-      printf("Tree %d owns %llu/%llu\n", i, sub_segments, sub_max);
+      printf("Tree %d: size %lu, owns %llu/%llu\n", i, table->get_tree_alloc_size(i), sub_segments, sub_max);
     }
 
     cudaFreeHost(host_trees);

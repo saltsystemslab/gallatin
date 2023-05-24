@@ -138,6 +138,8 @@ struct alloc_table {
     host_version->memory = poggers::utils::get_device_version<char>(
         bytes_per_segment * num_segments);
 
+    cudaMemset(host_version->memory, 0, bytes_per_segment*num_segments);
+
     // generate counters and set them to 0.
     host_version->malloc_counters =
         poggers::utils::get_device_version<unsigned int>(num_segments);
@@ -220,9 +222,13 @@ struct alloc_table {
     uint64_t tree_alloc_size = get_tree_alloc_size(tree_id);
 
     // should stop interlopers
-    set_tree_id(segment, tree_id);
+    bool did_set = set_tree_id(segment, tree_id);
 
 #if BETA_MEM_TABLE_DEBUG
+
+    if (!did_set){
+      printf("Failed to set tree id for segment %llu\n", segment);
+    }
 
     uint old_free_count =
         atomicExch((unsigned int *)&free_counters[segment], 0U);
@@ -328,7 +334,21 @@ struct alloc_table {
       empty = true;
     }
 
-    return get_block_from_global_block_id(segment_id*blocks_per_segment+my_count);
+    Block * my_block = get_block_from_global_block_id(segment_id*blocks_per_segment+my_count);
+
+
+    #if BETA_MEM_TABLE_DEBUG
+
+      uint64_t alt_segment = get_segment_from_block_ptr(my_block);
+
+
+      if (alt_segment != segment_id){
+        printf("Segment mismatch in get_block: %llu != %llu\n", segment_id, alt_segment);
+      }
+
+    #endif
+
+    return my_block;
     
     }
 
@@ -364,6 +384,12 @@ struct alloc_table {
     uint64_t offset = ((char *)ptr) - memory;
 
     return offset / bytes_per_segment;
+  }
+
+  __device__ uint64_t get_segment_from_offset(uint64_t offset){
+
+    return offset/get_max_allocations_per_segment();
+
   }
 
   // get the tree the segment currently belongs to
