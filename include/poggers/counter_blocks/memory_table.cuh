@@ -53,8 +53,8 @@ namespace allocators {
 // using uint16_t as there shouldn't be that many trees.
 // register atomically insert tree num, or registers memory from chunk_tree.
 
-__global__ void betta_init_counters_kernel(unsigned int *malloc_counters,
-                                           unsigned int *free_counters,
+__global__ void betta_init_counters_kernel(int *malloc_counters,
+                                           int *free_counters,
                                            Block *blocks, uint64_t num_segments,
                                            uint64_t blocks_per_segment) {
   uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -88,8 +88,9 @@ struct alloc_table {
   Block *blocks;
 
   // pair of counters for each segment to track use.
-  unsigned int *malloc_counters;
-  unsigned int *free_counters;
+  int *malloc_counters;
+  int *free_counters;
+  int *segment_free_counters;
 
   // all memory live in the system.
   char *memory;
@@ -142,12 +143,13 @@ struct alloc_table {
 
     // generate counters and set them to 0.
     host_version->malloc_counters =
-        poggers::utils::get_device_version<unsigned int>(num_segments);
+        poggers::utils::get_device_version<int>(num_segments);
     host_version->free_counters =
-        poggers::utils::get_device_version<unsigned int>(num_segments);
+        poggers::utils::get_device_version<int>(num_segments);
     betta_init_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
         host_version->malloc_counters, host_version->free_counters,
         host_version->blocks, num_segments, blocks_per_segment);
+
 
     // move to device and free host memory.
     my_type *dev_version;
@@ -224,6 +226,8 @@ struct alloc_table {
     // should stop interlopers
     bool did_set = set_tree_id(segment, tree_id);
 
+    int num_blocks = get_blocks_per_segment(tree_id);
+
 #if BETA_MEM_TABLE_DEBUG
 
     if (!did_set){
@@ -242,41 +246,18 @@ struct alloc_table {
 
 #endif
 
-    atomicExch((unsigned int *)&malloc_counters[segment], 0U);
+
+    //Segments now give out negative counters...
+    //this allows us to A) specify # of blocks exactly on construction.
+    // and B) still give out exact addresses when requesting (still 1 atomic.)
+    //the trigger for a failed block alloc is going negative
+    atomicExch((int *)&malloc_counters[segment], num_blocks-1);
+    atomicExch((int *)&free_counters[segment], num_blocks-1);
 
     // gate to init is init_new_universe
     return true;
   }
 
-  // initialize the blocks in a segment
-  __device__ bool setup_blocks(uint64_t segment, uint64_t num_blocks) {
-    __threadfence();
-
-    uint64_t base_offset = blocks_per_segment * segment;
-
-    for (uint64_t i = 0; i < num_blocks; i++) {
-      Block *block = &blocks[base_offset + i];
-
-      block->init();
-
-      uint64_t global_offset = get_global_block_offset(block);
-
-      // if (global_offset != base_offset+i){
-      // 	printf("Issue in setting blocks\n");
-      // }
-
-      // if (global_offset*4096 != 4096*(base_offset+i)){
-      // 	printf("Rounding issue\n");
-      // }
-
-      // block->attach_allocation(global_offset*4096);
-
-      __threadfence();
-    }
-
-    return (atomicCAS(&malloc_counters[segment], 2 * blocks_per_segment, 0) ==
-            2 * blocks_per_segment);
-  }
 
   // set the tree id of a segment atomically
   //  returns true on success.
@@ -301,13 +282,13 @@ struct alloc_table {
   }
 
   // atomic wrapper to get block
-  __device__ uint get_block_from_segment(uint64_t segment) {
-    return atomicAdd(&malloc_counters[segment], 1);
+  __device__ int get_block_from_segment(uint64_t segment) {
+    return atomicSub(&malloc_counters[segment], 1);
   }
 
   // atomic wrapper to free block.
-  __device__ uint return_block_to_segment(uint64_t segment) {
-    return atomicAdd(&free_counters[segment], 1);
+  __device__ int return_block_to_segment(uint64_t segment) {
+    return atomicSub(&free_counters[segment], 1);
   }
 
   // request a segment from a block
@@ -315,22 +296,30 @@ struct alloc_table {
   // and returns nullptr on failure.
   __device__ Block *get_block(uint64_t segment_id, uint16_t tree_id,
                               bool &empty) {
-    uint my_count = get_block_from_segment(segment_id);
+    int my_count = get_block_from_segment(segment_id);
 
     uint16_t global_tree_id = read_tree_id(segment_id);
 
-    uint64_t num_blocks = get_blocks_per_segment(global_tree_id);
+    //uint64_t num_blocks = get_blocks_per_segment(global_tree_id);
 
-    if (my_count >= num_blocks) {
+    if (my_count < 0) {
       return nullptr;
     }
 
     // tree changed in interim.
     if (global_tree_id != tree_id) {
+
+      #if BETA_MEM_TABLE_DEBUG
+
+      printf("Read old/corrupt tree value: %u != %u\n", global_tree_id, tree_id);
+
+      #endif
+
+      //BUG - this can cause a fake free - should never occur... likely why we drop sometimes.
       return_block_to_segment(segment_id); 
     }
 
-    if (my_count == (num_blocks - 1)) {
+    if (my_count == 0) {
       empty = true;
     }
 
@@ -488,23 +477,23 @@ struct alloc_table {
 
     uint64_t segment = get_segment_from_block_ptr(block_ptr);
 
-    uint old_count = return_block_to_segment(segment);
+    int old_count = return_block_to_segment(segment);
 
     uint16_t global_tree_id = read_tree_id(segment);
 
     uint64_t num_blocks = get_blocks_per_segment(global_tree_id);
 
-    if (old_count == (num_blocks - 1)) {
+    if (old_count == 0) {
       // can maybe free section.
       // attempt CAS
       // on success, you are the exclusive owner of the segment.
 
-      uint leftover = atomicExch((unsigned int *)&free_counters[segment], 0U);
+      int leftover = atomicExch((unsigned int *)&free_counters[segment], 0U);
 
 #if BETA_MEM_TABLE_DEBUG
 
-      if (leftover != num_blocks) {
-        printf("Weird leftover: %u != %lu\n", leftover, num_blocks);
+      if (leftover != -1) {
+        printf("Weird leftover: %d != -1\n", leftover);
       }
 
 #endif

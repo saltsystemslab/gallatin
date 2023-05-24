@@ -54,6 +54,9 @@ namespace allocators {
 #define BETA_MAX_ATTEMPTS 150
 #define MALLOC_LOOP_ATTEMPTS 5
 
+
+#define MIN_PINNED_CUTOFF 4
+
 // alloc table associates chunks of memory with trees
 
 // using uint16_t as there shouldn't be that many trees.
@@ -64,7 +67,7 @@ using namespace poggers::utils;
 
 __global__ void boot_segment_trees(veb_tree **segment_trees,
                                    uint64_t max_chunks, int num_trees) {
-  uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+  uint64_t tid = poggers::utils::get_tid();
 
   if (tid >= max_chunks) return;
 
@@ -74,14 +77,34 @@ __global__ void boot_segment_trees(veb_tree **segment_trees,
 }
 
 
+//sanity check: are the VEB trees empty?
+__global__ void assert_empty(veb_tree ** segment_trees, int num_trees){
+
+  uint64_t tid = poggers::utils::get_tid();
+
+  if (tid != 0) return;
+
+
+  for (int i =0; i< num_trees; i++){
+
+    uint64_t alloc = segment_trees[i]->malloc_first();
+
+    if (alloc != veb_tree::fail()){
+      printf("Failed to clean VEB tree %d: Index %llu live\n", i, alloc);
+    }
+  }
+
+
+}
+
 //boot the allocator memory blocks during initialization
 //this loops through the blocks and initializes half as many at each iteration.
 template <typename allocator>
-__global__ void boot_shared_block_container(allocator * alloc, int max_tree_id, int max_smid){
+__global__ void boot_shared_block_container(allocator * alloc, uint16_t max_tree_id, int max_smid, int cutoff){
 
 	uint64_t tid = poggers::utils::get_tid();
 
-	int tree_id = 0;
+	uint16_t tree_id = 0;
 
 	while (tree_id < max_tree_id){
 
@@ -91,17 +114,44 @@ __global__ void boot_shared_block_container(allocator * alloc, int max_tree_id, 
 
 		max_smid = max_smid/2;
 
-		if (max_smid < 2) max_smid = 2;
+		if (max_smid < cutoff) max_smid = cutoff;
 
 		tree_id+=1;
 
 	}
 
+}
 
-	
 
+
+template <typename allocator>
+__global__ void boot_shared_block_container_one_thread(allocator * alloc, uint16_t max_tree_id, int max_smid, int cutoff){
+
+  uint64_t tid = poggers::utils::get_tid();
+
+  uint16_t tree_id = 0;
+
+  if (tid != 0) return;
+
+
+  while (tree_id < max_tree_id){
+
+    for (int i = 0; i < max_smid; i++){
+
+      alloc->boot_block(tree_id, i);
+
+    }
+
+    max_smid = max_smid/2;
+
+    if (max_smid < cutoff) max_smid = cutoff;
+
+    tree_id +=1;
+
+  }
 
 }
+
 
 // main allocator structure
 // template arguments are
@@ -146,7 +196,7 @@ struct beta_allocator {
     uint64_t num_bits = bytes_per_segment / (4096 * smallest);
 
     host_version->local_blocks =
-        pinned_block_type::generate_on_device(blocks_per_pinned_block, 2);
+        pinned_block_type::generate_on_device(blocks_per_pinned_block, MIN_PINNED_CUTOFF);
 
     uint64_t num_bytes = 0;
 
@@ -181,6 +231,19 @@ struct beta_allocator {
     boot_segment_trees<<<(max_chunks - 1) / 512 + 1, 512>>>(
         host_version->sub_trees, max_chunks, num_trees);
 
+   
+
+    #if BETA_DEBUG_PRINTS
+
+    cudaDeviceSynchronize();
+
+
+    assert_empty<<<1,1>>>(host_version->sub_trees, num_trees);
+
+    cudaDeviceSynchronize();
+
+    #endif
+
     host_version->locks = 0;
 
     host_version
@@ -192,7 +255,7 @@ struct beta_allocator {
 
     auto device_version = move_to_device(host_version);
 
-    boot_shared_block_container<my_type><<<(blocks_per_pinned_block-1)/128+1, 128>>>(device_version,num_trees, blocks_per_pinned_block);
+    boot_shared_block_container<my_type><<<(blocks_per_pinned_block-1)/128+1, 128>>>(device_version,num_trees, blocks_per_pinned_block, MIN_PINNED_CUTOFF);
 
     cudaDeviceSynchronize();
 
@@ -272,7 +335,7 @@ struct beta_allocator {
 
 
   //initialize a block for the first time.
-  __device__ void boot_block(int tree_id, int smid){
+  __device__ void boot_block(uint16_t tree_id, int smid){
 
     per_size_pinned_blocks * local_shared_block_storage =
           local_blocks->get_tree_local_blocks(tree_id);
@@ -288,9 +351,27 @@ struct beta_allocator {
   	Block * new_block = request_new_block_from_tree(tree_id);
 
   	if (new_block == nullptr){
-  		printf("Failed to initialize block %d from tree %d", smid, tree_id);
+  		printf("Failed to initialize block %d from tree %u", smid, tree_id);
   		return;
   	}
+
+
+    #if BETA_DEBUG_PRINTS
+
+
+    uint64_t alt_block_segment = table->get_segment_from_block_ptr(new_block);
+
+    uint16_t alt_tree_id = table->read_tree_id(alt_block_segment);
+
+
+    uint64_t block_id = table->get_global_block_offset(new_block);
+
+    if (tree_id != alt_tree_id){
+        //this triggers, yeet
+        printf("Boot Block %llu: segment %llu not init for malloc: %u != %u\n", block_id, alt_block_segment, tree_id, alt_tree_id);
+
+      }
+    #endif
 
 
 
@@ -393,6 +474,16 @@ struct beta_allocator {
 
     uint64_t offset = allocation_to_offset(allocation, tree_id);
 
+    #if BETA_DEBUG_PRINTS
+    
+      uint64_t offset_segment = table->get_segment_from_offset(offset);
+
+      if (segment != offset_segment){
+        printf("Free segment Ids Mismatch: %llu != %llu\n", segment, offset_segment);
+      }
+
+    #endif
+
     return free_offset(offset);
 
 
@@ -480,9 +571,12 @@ struct beta_allocator {
 
     	uint64_t allocation = my_block->block_malloc(coalesced_team);
 
-    	bool should_replace = (allocation == 4095 || allocation == ~0ULL);
+    	//bool should_replace = (allocation == 4095 || allocation == ~0ULL);
 
-      	should_replace = coalesced_team.ballot(should_replace);
+      bool should_replace = (allocation == 4095);
+
+
+      should_replace = coalesced_team.ballot(should_replace);
 
 
     	if (should_replace){
@@ -632,7 +726,13 @@ struct beta_allocator {
       // should be fine, no one can update till this point
       sub_trees[tree]->remove(segment);
 
-      table->reset_tree_id(segment, tree);
+      if (!table->reset_tree_id(segment, tree)){
+
+        #if BETA_DEBUG_PRINTS
+        printf("Failed to reset tree id for segment %llu, old ID %u\n", segment, tree);
+
+        #endif
+      }
       __threadfence();
 
       // insert with threadfence
