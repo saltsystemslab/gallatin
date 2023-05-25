@@ -210,6 +210,23 @@ struct alloc_table {
     chunk_ids[segment] = size;
   }
 
+
+  //pack the tree id, #blocks, and a rollover bit into one uint.
+  //this allows for a single atomicSub to determine a unique position (if one exists)
+  //and uniquely identify the stride of the block.
+  __device__ uint initialize_counter(uint16_t tree, int num_blocks){
+
+
+    //rollover bit - contains
+    uint rollover_bit = blocks_per_segment;
+
+    //should place the tree bits nicely.
+    uint tree_bits = tree*rollover_bit*2;
+
+
+
+  }
+
   // get the void pointer to the start of a segment.
   __device__ char *get_segment_memory_start(uint64_t segment) {
     return memory + bytes_per_segment * segment;
@@ -234,15 +251,15 @@ struct alloc_table {
       printf("Failed to set tree id for segment %llu\n", segment);
     }
 
-    uint old_free_count =
-        atomicExch((unsigned int *)&free_counters[segment], 0U);
+    // int old_free_count =
+    //     atomicExch((unsigned int *)&free_counters[segment], 0U);
 
-    if (old_free_count != 0) {
-      printf(
-          "Memory free counter for segment %llu not properly reset: value is "
-          "%u\n",
-          segment, old_free_count);
-    }
+    // if (old_free_count != -1) {
+    //   printf(
+    //       "Memory free counter for segment %llu not properly reset: value is "
+    //       "%d\n",
+    //       segment, old_free_count);
+    // }
 
 #endif
 
@@ -251,8 +268,10 @@ struct alloc_table {
     //this allows us to A) specify # of blocks exactly on construction.
     // and B) still give out exact addresses when requesting (still 1 atomic.)
     //the trigger for a failed block alloc is going negative
+    uint64_t total_mallocs = num_blocks*4096;
+
     atomicExch((int *)&malloc_counters[segment], num_blocks-1);
-    atomicExch((int *)&free_counters[segment], num_blocks-1);
+    atomicExch((int *)&free_counters[segment], total_mallocs-1);
 
     // gate to init is init_new_universe
     return true;
@@ -325,6 +344,8 @@ struct alloc_table {
 
     Block * my_block = get_block_from_global_block_id(segment_id*blocks_per_segment+my_count);
 
+    my_block->reset_block();
+
 
     #if BETA_MEM_TABLE_DEBUG
 
@@ -364,15 +385,11 @@ struct alloc_table {
     return offset % blocks_per_segment;
   }
 
-  // given a pointer, find the associated block for returns
-  // not yet implemented
-  __device__ Block *get_block_from_ptr(void *ptr) {}
-
   // given a pointer, get the segment the pointer belongs to
   __device__ uint64_t get_segment_from_ptr(void *ptr) {
-    uint64_t offset = ((char *)ptr) - memory;
+    uint64_t byte_offset = ((char *)ptr) - memory;
 
-    return offset / bytes_per_segment;
+    return byte_offset / bytes_per_segment;
   }
 
   __device__ uint64_t get_segment_from_offset(uint64_t offset){
@@ -467,6 +484,20 @@ struct alloc_table {
 
       return segment_byte_offset/get_tree_alloc_size(tree_id) + segment_id*get_max_allocations_per_segment();
 
+
+
+  }
+
+
+  __device__ bool segment_individual_free(uint64_t segment){
+
+    //uint64_t segment = get_segment_from_ptr(allocation);
+
+    uint64_t count = return_block_to_segment(segment);
+
+    if (count == 0) return true;
+
+    return false;
 
 
   }

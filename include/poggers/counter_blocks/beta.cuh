@@ -465,29 +465,40 @@ struct beta_allocator {
 
   __device__ void free(void * allocation){
 
-
-
     //this logic is verifie allocation to offset
     uint64_t segment = table->get_segment_from_ptr(allocation);
 
-    uint16_t tree_id = table->read_tree_id(segment);
+    if (table->segment_individual_free(segment)){
 
-    uint64_t offset = allocation_to_offset(allocation, tree_id);
+      //need to return entire segment.
 
-    #if BETA_DEBUG_PRINTS
-    
-      uint64_t offset_segment = table->get_segment_from_offset(offset);
+      uint16_t tree = table->read_tree_id(segment);
 
-      if (segment != offset_segment){
-        printf("Free segment Ids Mismatch: %llu != %llu\n", segment, offset_segment);
+      // if (!sub_trees[tree]->remove(segment)){
+
+      //   #if BETA_DEBUG_PRINTS
+      //   printf("Failed to remove segment %llu from tree %u\n", segment, tree);
+      //   #endif
+
+      // }
+
+      if (!table->reset_tree_id(segment, tree)){
+
+        #if BETA_DEBUG_PRINTS
+        printf("Failed to reset tree %d for segment %llu\n", tree, segment);
+
+        #endif
+
       }
 
-    #endif
+      __threadfence();
 
-    return free_offset(offset);
+      //segment is reset, pass back
+      segment_tree->insert_force_update(segment);
 
+    }
 
-  }
+}
 
 
 
@@ -689,7 +700,13 @@ struct beta_allocator {
       if (last_block) {
         // if the segment is fully allocated, it can be detached
         // and returned to the segment tree when empty
-        sub_trees[tree]->remove(segment);
+        if (!sub_trees[tree]->remove(segment)){
+
+          #if BETA_DEBUG_PRINTS
+          printf("Failed to remove segment %llu from tree %d in malloc\n", segment, tree);
+          #endif
+
+        }
 
         if (acquire_tree_lock(tree)) {
           gather_new_segment(tree);
@@ -724,7 +741,7 @@ struct beta_allocator {
 
       // pull from tree
       // should be fine, no one can update till this point
-      sub_trees[tree]->remove(segment);
+      //sub_trees[tree]->remove(segment);
 
       if (!table->reset_tree_id(segment, tree)){
 
