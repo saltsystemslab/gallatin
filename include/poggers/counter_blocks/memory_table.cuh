@@ -43,11 +43,51 @@
 #define DEBUG_PRINTS 0
 #endif
 
+
+//This locks the ability of blocks to be returned to the system.
+//so blocks accumulate as normal, but segments are not recycled.
+//used to test consistency of 
+#define DEBUG_NO_FREE 0
+
 #define BETA_MEM_TABLE_DEBUG 1
 
 namespace beta {
 
 namespace allocators {
+
+
+//get the total # of allocs freed in the system.
+//max # blocks - this says something about the current state
+template <typename table>
+__global__ void count_block_free_kernel(table * alloc_table, uint64_t num_blocks, uint64_t * counter){
+
+  uint64_t tid = poggers::utils::get_tid();
+
+  if (tid >= num_blocks) return;
+
+  uint64_t fill = alloc_table->blocks[tid].free_counter;
+
+  atomicAdd((unsigned long long int *)counter, fill);
+
+
+}
+
+
+template <typename table>
+__global__ void count_block_live_kernel(table * alloc_table, uint64_t num_blocks, uint64_t * counter){
+
+  uint64_t tid = poggers::utils::get_tid();
+
+  if (tid >= num_blocks) return;
+
+  uint64_t fill = alloc_table->blocks[tid].malloc_counter;
+
+  if (fill > 4096) fill = 4096;
+
+  atomicAdd((unsigned long long int *)counter, fill);
+
+
+}
 
 // alloc table associates chunks of memory with trees
 // using uint16_t as there shouldn't be that many trees.
@@ -295,7 +335,7 @@ struct alloc_table {
   // this verifies that the segment is initialized correctly
   // and returns nullptr on failure.
   __device__ Block *get_block(uint64_t segment_id, uint16_t tree_id,
-                              bool &empty) {
+                              bool &empty, bool &valid) {
     int my_count = get_block_from_segment(segment_id);
 
     uint16_t global_tree_id = read_tree_id(segment_id);
@@ -305,6 +345,10 @@ struct alloc_table {
     if (my_count < 0) {
       return nullptr;
     }
+
+    //to start, we set valid true
+    //if it turns out we have read from the wrong size we set it false.
+    valid = true;
 
     // tree changed in interim.
     if (global_tree_id != tree_id) {
@@ -316,7 +360,9 @@ struct alloc_table {
       #endif
 
       //BUG - this can cause a fake free - should never occur... likely why we drop sometimes.
-      return_block_to_segment(segment_id); 
+      //return_block_to_segment(segment_id); 
+
+      valid = false;
     }
 
     if (my_count == 0) {
@@ -472,8 +518,7 @@ struct alloc_table {
   }
 
   // free block, returns true if this block was the last section needed.
-  __device__ bool free_block(Block *block_ptr, bool &need_to_reregister) {
-    need_to_reregister = false;
+  __device__ bool free_block(Block *block_ptr) {
 
     uint64_t segment = get_segment_from_block_ptr(block_ptr);
 
@@ -482,6 +527,14 @@ struct alloc_table {
     uint16_t global_tree_id = read_tree_id(segment);
 
     uint64_t num_blocks = get_blocks_per_segment(global_tree_id);
+
+    #if BETA_MEM_TABLE_DEBUG
+
+      if (old_count < 0){
+        printf("Too many frees in segment %llu\n", segment);
+      }
+
+    #endif
 
     if (old_count == 0) {
       // can maybe free section.
@@ -498,11 +551,98 @@ struct alloc_table {
 
 #endif
 
+      #if !DEBUG_NO_FREE
+
       return true;
+
+      #endif
+
     }
 
     return false;
   }
+
+
+
+  __host__ uint64_t report_free(){
+
+    uint64_t * counter;
+
+    cudaMallocManaged((void **)&counter, sizeof(uint64_t));
+
+    cudaDeviceSynchronize();
+
+    counter[0] = 0;
+
+    cudaDeviceSynchronize();
+
+
+    //this will probs break
+
+    uint64_t local_num_segments;
+
+    cudaMemcpy(&local_num_segments, &this->num_segments, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+
+    uint64_t local_blocks_per_segment;
+
+    cudaMemcpy(&local_blocks_per_segment, &this->blocks_per_segment, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+
+    cudaDeviceSynchronize();
+
+    uint64_t total_num_blocks = local_blocks_per_segment*local_num_segments;
+
+    count_block_free_kernel<my_type><<<(total_num_blocks-1)/256+1,256>>>(this, total_num_blocks, counter);
+
+    cudaDeviceSynchronize();
+
+    uint64_t return_val = counter[0];
+
+    cudaFree(counter);
+
+    return return_val;
+
+  }
+
+  __host__ uint64_t report_live(){
+
+    uint64_t * counter;
+
+    cudaMallocManaged((void **)&counter, sizeof(uint64_t));
+
+    cudaDeviceSynchronize();
+
+    counter[0] = 0;
+
+    cudaDeviceSynchronize();
+
+
+    //this will probs break
+
+    uint64_t local_num_segments;
+
+    cudaMemcpy(&local_num_segments, &this->num_segments, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+
+    uint64_t local_blocks_per_segment;
+
+    cudaMemcpy(&local_blocks_per_segment, &this->blocks_per_segment, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+
+    cudaDeviceSynchronize();
+
+    uint64_t total_num_blocks = local_blocks_per_segment*local_num_segments;
+
+    count_block_live_kernel<my_type><<<(total_num_blocks-1)/256+1,256>>>(this, total_num_blocks, counter);
+
+    cudaDeviceSynchronize();
+
+    uint64_t return_val = counter[0];
+
+    cudaFree(counter);
+
+    return return_val;
+
+  }
+
+
 };
 
 }  // namespace allocators

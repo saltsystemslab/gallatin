@@ -1193,7 +1193,7 @@ __global__ void pointer_churn_kernel(allocator_type * allocator, uint64_t num_al
 
       uint64_t counter = 0;
 
-      while (allocation == nullptr && counter < 5){
+      while (allocation == nullptr && counter < 0){
 
          allocation = (uint64_t *) allocator->malloc(my_alloc_size);
 
@@ -1268,11 +1268,11 @@ __host__ void beta_pointer_churn(uint64_t num_bytes, uint64_t num_threads, int n
    std::cout << "Init in " << boot_timing.sync_end() << " seconds" << std::endl;
 
    beta::utils::timer kernel_timing;
-   pointer_churn_kernel<betta_type><<<(num_allocs-1)/512+1, 512>>>(allocator, num_threads, num_rounds, smallest, misses);
+   pointer_churn_kernel<betta_type><<<(num_allocs-1)/256+1, 256>>>(allocator, num_threads, num_rounds, smallest, misses);
    kernel_timing.sync_end();
 
    kernel_timing.print_throughput("Malloc/freed", num_threads*num_rounds);
-   printf("Missed: %llu\n", misses[0]);
+   printf("Missed: %llu/%llu: %f\n", misses[0], num_threads*num_rounds, 1.0*(misses[0])/(num_threads*num_rounds));
 
 
    allocator->print_info();
@@ -1445,10 +1445,10 @@ int main(int argc, char** argv) {
    //beta_full_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
 
 
-   //beta_pointer_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
+   beta_pointer_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
 
 
-   beta_churn_no_free<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments);
+   //beta_churn_no_free<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments);
 
 
 
