@@ -49,7 +49,8 @@
 #include <cooperative_groups/reduce.h>
 #include <cooperative_groups/scan.h>
 
-#define BETA_BLOCK_DEBUG 0
+//doesn't hurt to have on  ¯\_(ツ)_/¯
+#define BETA_BLOCK_DEBUG 1
 
 namespace beta {
 
@@ -71,11 +72,12 @@ struct Block {
   __device__ bool block_free() {
     uint old = atomicAdd((unsigned int *)&free_counter, 1ULL);
 
+
+
     #if BETA_BLOCK_DEBUG
 
-    if (old >= 4096){
-      printf("Block double free\n");
-    }
+    if (old > 4095) printf("Double free to block: %u frees\n", old+1);
+
     #endif
 
     return (old == 4095);
@@ -112,6 +114,8 @@ struct Block {
 #endif
 
     atomicExch((unsigned int *)&malloc_counter, 0ULL);
+
+
   }
 };
 

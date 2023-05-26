@@ -460,7 +460,11 @@ struct veb_tree {
 
     uint64_t old = layers[layer]->insert(high, low);
 
-    if ((old & SET_BIT_MASK(low))) return false;
+    if ((old & SET_BIT_MASK(low))){
+
+      printf("Bit %d already set...\n", low);
+      return false;
+    } 
 
     while (__popcll(old) == 0 && float_up(layer, high, low)) {
       old = layers[layer]->insert(high, low);
