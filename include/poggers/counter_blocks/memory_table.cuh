@@ -49,7 +49,7 @@
 //used to test consistency of 
 #define DEBUG_NO_FREE 0
 
-#define BETA_MEM_TABLE_DEBUG 1
+#define BETA_MEM_TABLE_DEBUG 0
 
 namespace beta {
 

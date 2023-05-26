@@ -42,7 +42,7 @@
 #include <poggers/hash_schemes/murmurhash.cuh>
 
 #ifndef BETA_DEBUG_PRINTS
-#define BETA_DEBUG_PRINTS 1
+#define BETA_DEBUG_PRINTS 0
 #endif
 
 namespace beta {

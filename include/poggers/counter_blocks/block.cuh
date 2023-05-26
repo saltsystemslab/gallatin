@@ -49,6 +49,7 @@
 #include <cooperative_groups/reduce.h>
 #include <cooperative_groups/scan.h>
 
+//doesn't hurt to have on  ¯\_(ツ)_/¯
 #define BETA_BLOCK_DEBUG 1
 
 namespace beta {
@@ -112,6 +113,8 @@ struct Block {
 #endif
 
     atomicExch((unsigned int *)&malloc_counter, 0ULL);
+
+
   }
 };
 
