@@ -49,7 +49,7 @@
 //used to test consistency of 
 #define DEBUG_NO_FREE 0
 
-#define BETA_MEM_TABLE_DEBUG 0
+#define BETA_MEM_TABLE_DEBUG 1
 
 namespace beta {
 
@@ -101,8 +101,8 @@ __global__ void betta_init_counters_kernel(int *malloc_counters,
 
   if (tid >= num_segments) return;
 
-  malloc_counters[tid] = 0;
-  free_counters[tid] = 0;
+  malloc_counters[tid] = -1;
+  free_counters[tid] = -1;
 
   uint64_t base_offset = blocks_per_segment * tid;
 
@@ -275,9 +275,9 @@ struct alloc_table {
     }
 
     uint old_free_count =
-        atomicExch((unsigned int *)&free_counters[segment], 0U);
+        atomicExch((unsigned int *)&free_counters[segment], -1);
 
-    if (old_free_count != 0) {
+    if (old_free_count != -1) {
       printf(
           "Memory free counter for segment %llu not properly reset: value is "
           "%u\n",
@@ -291,8 +291,17 @@ struct alloc_table {
     //this allows us to A) specify # of blocks exactly on construction.
     // and B) still give out exact addresses when requesting (still 1 atomic.)
     //the trigger for a failed block alloc is going negative
-    atomicExch((int *)&malloc_counters[segment], num_blocks-1);
-    atomicExch((int *)&free_counters[segment], num_blocks-1);
+
+    int old_free = atomicExch((int *)&free_counters[segment], num_blocks-1);
+    int old_malloc = atomicExch((int *)&malloc_counters[segment], num_blocks-1);
+
+    #if BETA_MEM_TABLE_DEBUG
+
+    if (old_malloc >= 0){
+      printf("Did not fully reset segment %llu: %d malloc %d free\n", segment, old_malloc, old_free);
+    }
+    #endif
+
 
     // gate to init is init_new_universe
     return true;
@@ -328,7 +337,25 @@ struct alloc_table {
 
   // atomic wrapper to free block.
   __device__ int return_block_to_segment(uint64_t segment) {
+
+
+    #if BETA_MEM_TABLE_DEBUG
+
+    int free_count = atomicSub(&free_counters[segment], 1);
+
+    int malloc_count = atomicCAS(&malloc_counters[segment], 0, 0);
+
+    if (malloc_count >= free_count){
+      printf("Mismatch: malloc %d >= freed %d", malloc_count, free_count);
+    }
+
+    return free_count;
+
+    #else 
+
     return atomicSub(&free_counters[segment], 1);
+
+    #endif
   }
 
   // request a segment from a block
@@ -350,17 +377,15 @@ struct alloc_table {
     //if it turns out we have read from the wrong size we set it false.
     valid = true;
 
-    // tree changed in interim.
+    // tree changed in interim - this can happen in correct behavior.
+    // we correct by releasing back to the system, potentially rolling the segment back.
     if (global_tree_id != tree_id) {
 
       #if BETA_MEM_TABLE_DEBUG
 
-      printf("Read old/corrupt tree value: %u != %u\n", global_tree_id, tree_id);
+      printf("Segment %llu: Read old tree value: %u != %u\n", segment_id, tree_id, global_tree_id);
 
       #endif
-
-      //BUG - this can cause a fake free - should never occur... likely why we drop sometimes.
-      //return_block_to_segment(segment_id); 
 
       valid = false;
     }
@@ -541,7 +566,7 @@ struct alloc_table {
       // attempt CAS
       // on success, you are the exclusive owner of the segment.
 
-      int leftover = atomicExch((unsigned int *)&free_counters[segment], 0U);
+      int leftover = atomicExch((int *)&free_counters[segment], -1);
 
 #if BETA_MEM_TABLE_DEBUG
 

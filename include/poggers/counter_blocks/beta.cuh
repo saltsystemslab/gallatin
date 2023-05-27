@@ -42,7 +42,7 @@
 #include <poggers/hash_schemes/murmurhash.cuh>
 
 #ifndef BETA_DEBUG_PRINTS
-#define BETA_DEBUG_PRINTS 0
+#define BETA_DEBUG_PRINTS 1
 #endif
 
 namespace beta {
@@ -450,7 +450,18 @@ struct beta_allocator {
       uint64_t block_tree = table->read_tree_id(block_segment);
 
       if (alt_tree_id != tree_id){
-        printf("Mismatch for offset: %llu in tree ids for alloc of size %llu: %u != %u...Block %llu segment %llu offset %llu tree %u\n", offset, size, tree_id, alt_tree_id, block_id, block_segment, relative_offset, block_tree);
+
+        uint16_t next_segment_id = table->read_tree_id(block_segment+1);
+
+        uint16_t prev_segment_id = table->read_tree_id(block_segment-1);
+
+        //read the counters
+        int malloc_status = atomicCAS((int *)&table->malloc_counters[segment], 0, 0);
+        int free_status = atomicCAS((int *)&table->free_counters[segment], 0, 0);
+
+        //test here verifies that segment is being reset...
+        //It is not a misread of the segment≥
+        printf("Mismatch for offset: %llu in tree ids for alloc of size %llu: %u != %u...Block %llu segment %llu offset %llu tree %u... prev is %u Next is %u. Malloc %d, free %d.\n", offset, size, tree_id, alt_tree_id, block_id, block_segment, relative_offset, block_tree, prev_segment_id, next_segment_id, malloc_status, free_status);
       }
 
     #endif
@@ -490,6 +501,14 @@ struct beta_allocator {
     uint64_t segment = table->get_segment_from_ptr(allocation);
 
     uint16_t tree_id = table->read_tree_id(segment);
+
+
+    #if BETA_DEBUG_PRINTS
+    if (tree_id > 10){
+      printf("Segment %llu reports large tree %u\n", segment, tree_id);
+    }
+
+    #endif
 
     uint64_t offset = allocation_to_offset(allocation, tree_id);
 
@@ -644,6 +663,10 @@ struct beta_allocator {
 
     	}
 
+      //sync is necessary for block transistion - illegal to free block until detached.
+      __threadfence();
+      coalesced_team.sync();
+
     	if (allocation != ~0ULL){
 
     		return allocation + global_block_id*4096;
@@ -675,7 +698,10 @@ struct beta_allocator {
     // otherwise, both initialized
     // register segment
     if (!table->setup_segment(new_segment_id, tree)) {
-      // printf("Failed to acquire updatable segment\n");
+      
+      #if BETA_DEBUG_PRINTS
+      printf("Failed to acquire updatable segment\n");
+      #endif
 
       //segment_tree->insert_force_update(new_segment_id);
       // abort, but not because no segments are available.
@@ -832,16 +858,16 @@ struct beta_allocator {
       #endif
 
 
-      #if BETA_DEBUG_PRINTS
-
-      //printf("Releasing segment %llu\n", segment);
-
-      #endif
-
 
       // returning segment
       // don't need to reset anything, just pull from table and threadfence
       uint16_t tree = table->read_tree_id(segment);
+
+      #if BETA_DEBUG_PRINTS
+
+      //printf("Segment %llu being freed from tree %u\n", segment, tree);
+
+      #endif
 
       // pull from tree
       // should be fine, no one can update till this point

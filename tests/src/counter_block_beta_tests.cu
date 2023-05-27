@@ -1189,11 +1189,15 @@ __global__ void pointer_churn_kernel(allocator_type * allocator, uint64_t num_al
 
       uint64_t my_alloc_size = (size << my_tree_id);
 
+      __threadfence();
+
       uint64_t * allocation = (uint64_t *) allocator->malloc(my_alloc_size);
 
       uint64_t counter = 0;
 
-      while (allocation == nullptr && counter < 0){
+      while (allocation == nullptr && counter < 10){
+
+         __threadfence();
 
          allocation = (uint64_t *) allocator->malloc(my_alloc_size);
 
@@ -1440,12 +1444,12 @@ int main(int argc, char** argv) {
    //beta_test_allocs_correctness<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
 
 
-   beta_test_allocs_pointer<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
+   //beta_test_allocs_pointer<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
 
    //beta_full_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
 
 
-   //beta_pointer_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
+   beta_pointer_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
 
 
    //beta_churn_no_free<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments);
