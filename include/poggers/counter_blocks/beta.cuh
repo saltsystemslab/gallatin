@@ -635,21 +635,6 @@ struct beta_allocator {
 
       #endif
 
-      uint16_t alt_tree_id = table->get_tree_id_of_block(my_block);
-        
-
-      if (alt_tree_id != tree_id){
-
-          #if BETA_DEBUG_PRINTS
-          printf("Mismatch in tree ids in malloc: %u != %u\n", alt_tree_id, tree_id);
-
-          #endif
-
-          table->get_tree_id_of_block(my_block);
-        }
-
-
-
         // select block to pull from and get global stats
       uint64_t global_block_id = table->get_global_block_offset(my_block);
 
@@ -691,27 +676,6 @@ struct beta_allocator {
 }
 
 
-  __device__ void * malloc(uint64_t size){
-
-    uint16_t tree_id = get_first_bit_bigger(smallest) - smallest_bits;
-
-    uint64_t offset = malloc_offset(size);
-
-    if (offset == ~0ULL) return nullptr;
-
-    return offset_to_allocation(offset, tree_id);
-
-
-  }
-
-
-  __device__ void free(void * ptr){
-
-    uint64_t offset = table->allocation_to_offset(ptr);
-
-    free_offset(offset);
-
-  }
 
 
   // get a new segment for a given tree!
