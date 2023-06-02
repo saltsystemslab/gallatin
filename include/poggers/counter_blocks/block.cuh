@@ -52,11 +52,14 @@
 //doesn't hurt to have on  ¯\_(ツ)_/¯
 #define BETA_BLOCK_DEBUG 1
 
+#define BETA_BLOCK_PIN_BIT 16
+
 namespace beta {
 
 namespace allocators {
 
 struct Block {
+
   uint malloc_counter;
   uint free_counter;
 
@@ -65,21 +68,97 @@ struct Block {
     free_counter = 0ULL;
   }
 
+
+  //pinning occurs before attachment, this should always succeed
+  __device__ bool pin(){
+
+    uint old = atomicCAS((unsigned int *)&free_counter, 0U, SET_BIT_MASK(BETA_BLOCK_PIN_BIT));
+
+    if (old != 0U){
+      printf("Failed to pin: old is %u\n", old);
+    }
+
+    return (old == 0U);
+
+  }
+
+
+  __device__ uint unpin(){
+
+    return atomicSub((unsigned int *)&free_counter, SET_BIT_MASK(BETA_BLOCK_PIN_BIT));
+
+  }
+
+  //returns true if pinned
+  __device__ bool atomic_check_pinned(){
+
+    uint old = atomicCAS((unsigned int *)&free_counter, 0U, 0U);
+
+    return (old & SET_BIT_MASK(BETA_BLOCK_PIN_BIT));
+
+
+  }
+
+  //unset the pin
+  //returns true if the pin 
+  __device__ bool unpin_and_check_free(){
+
+
+    uint old = unpin();
+
+    if (!(old & SET_BIT_MASK(BETA_BLOCK_PIN_BIT))){
+      #if BETA_BLOCK_DEBUG
+
+        printf("Failed to unpin: %u\n", old);
+      #endif
+
+    }
+
+    uint count = old & ~SET_BIT_MASK(BETA_BLOCK_PIN_BIT);
+
+    //old should never be more than 4096
+    //unless pin is set.
+    #if BETA_BLOCK_DEBUG
+      if (count > 4096){
+        printf("Count in block exceeded max possible: %u\n", count);
+      }
+    #endif
+
+    return (count == 4096);
+
+  }
+
+
+  __device__ bool free_and_check_unpinned(){
+
+    uint old = block_free();
+
+    if (old & SET_BIT_MASK(BETA_BLOCK_PIN_BIT)) return false;
+
+    //count is 1 less as we have added to it
+    uint count = old & ~SET_BIT_MASK(BETA_BLOCK_PIN_BIT);
+
+    #if BETA_BLOCK_DEBUG
+
+    if (count >= 4096){
+      printf("Double free in block: true count %u\n", count+1);
+    }
+
+    #endif
+
+    return (count == 4095);
+
+
+  }
+
   // helper functions
 
   // frees must succeed - precondition - fail on double free but print error.
   // uint64_t must be clipped ahead of time. 0 - 4096
-  __device__ bool block_free() {
+  __device__ uint block_free() {
     uint old = atomicAdd((unsigned int *)&free_counter, 1ULL);
 
-
-    #if BETA_BLOCK_DEBUG
-
-    if (old > 4095) printf("Double free to block: %u frees\n", old+1);
-
-    #endif
-
-    return (old == 4095);
+    return old;
   }
 
   __device__ uint64_t block_malloc(cg::coalesced_group &active_threads) {
@@ -116,6 +195,27 @@ struct Block {
 
 
   }
+
+
+  //debug check - has anyone tampered with the block before setup?
+  //if true, we know that the blocks are being handled improperly - resetting
+  //keeps block static until new segment allocation.
+  __device__ bool atomic_check_block(){
+
+    uint old_free = atomicExch((unsigned int *)&free_counter, 0ULL);
+    uint old_malloc = atomicExch((unsigned int *)&malloc_counter, 0ULL);
+
+    if (old_free != 0 || old_malloc != 0){
+      printf("Block was tampered with %u malloc %u free\n", old_malloc, old_free);
+      return true;
+    }
+
+
+    return false;
+
+  }
+
+
 };
 
 }  // namespace allocators

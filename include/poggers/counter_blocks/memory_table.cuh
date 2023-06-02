@@ -274,8 +274,8 @@ struct alloc_table {
       printf("Failed to set tree id for segment %llu\n", segment);
     }
 
-    uint old_free_count =
-        atomicExch((unsigned int *)&free_counters[segment], -1);
+    int old_free_count =
+        atomicExch((int *)&free_counters[segment], -1);
 
     if (old_free_count != -1) {
       printf(
@@ -300,6 +300,26 @@ struct alloc_table {
     if (old_malloc >= 0){
       printf("Did not fully reset segment %llu: %d malloc %d free\n", segment, old_malloc, old_free);
     }
+    #endif
+
+
+    #if BETA_MEM_TABLE_DEBUG
+
+    Block * segment_blocks = get_block_from_global_block_id(blocks_per_segment*segment);
+
+    for (int i = 0; i < num_blocks; i++){
+
+      Block * local_block = segment_blocks+i;
+
+      if (local_block->atomic_check_pinned()){
+        printf("Block %d in reset segment %llu still pinned\n", i, segment);
+      }
+
+      local_block->atomic_check_block();
+
+
+    }
+
     #endif
 
 
@@ -405,6 +425,8 @@ struct alloc_table {
       if (alt_segment != segment_id){
         printf("Segment mismatch in get_block: %llu != %llu\n", segment_id, alt_segment);
       }
+
+      my_block->atomic_check_block();
 
     #endif
 

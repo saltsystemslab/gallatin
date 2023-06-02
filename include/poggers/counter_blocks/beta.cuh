@@ -57,6 +57,10 @@ namespace allocators {
 
 #define MIN_PINNED_CUTOFF 4
 
+//Full Block Allocs allow threads to pull an entire block as their allocation.
+#define BETA_FULL_BLOCK_ALLOCS 0
+#define BETA_LARGEST_ALLOCS 0
+
 // alloc table associates chunks of memory with trees
 
 // using uint16_t as there shouldn't be that many trees.
@@ -371,7 +375,21 @@ struct beta_allocator {
         printf("Boot Block %llu: segment %llu not init for malloc: %u != %u\n", block_id, alt_block_segment, tree_id, alt_tree_id);
 
       }
+
+
+    new_block->atomic_check_block();
+
     #endif
+
+
+
+    if (!new_block->pin()){
+
+      #if BETA_DEBUG_PRINTS
+      printf("Block %llu in segment %llu Failed to pin in boot\n", block_id, alt_block_segment);
+
+      #endif
+    }
 
 
 
@@ -388,15 +406,44 @@ struct beta_allocator {
 
   	if (my_pinned_blocks->swap_out_block(smid, my_block)){
 
+      __threadfence();
+
+      if (my_block->unpin_and_check_free()){
+
+        #if !DEBUG_NO_FREE
+        my_block->reset_block();
+        #endif
+
+        free_block(my_block);
+
+        //threadfence for funsies
+        __threadfence();  
+      }
+
 
   		Block * new_block = request_new_block_from_tree(tree_id);
 
   		if (new_block == nullptr){
         printf("Failed to acquire block\n");
-        Block * new_block = request_new_block_from_tree(tree_id);
+        //Block * new_block = request_new_block_from_tree(tree_id);
 
   			return false;
   		}
+
+      if (!my_block->pin()){
+
+        #if BETA_DEBUG_PRINTS
+
+        uint64_t segment = table->get_segment_from_block_ptr(my_block);
+
+        uint64_t block_id = table->get_global_block_offset(my_block);
+
+
+        printf("Block %llu in segment %llu Failed to pin\n", block_id, segment);
+
+        #endif
+
+      }
 
   		if (!my_pinned_blocks->swap_out_nullptr(smid, new_block)){
   			printf("Incorrect behavior when swapping out block index %d for tree %d\n", smid, tree_id);
@@ -404,9 +451,16 @@ struct beta_allocator {
   			return false;
   		}
 
-  	}
+      return true;
 
-  	return true;
+  	} else {
+      #if BETA_DEBUG_PRINTS
+
+      printf("Failed to swap out block in replace_block\n");
+      #endif
+
+      return false;
+    }
 
 
   }
@@ -547,6 +601,9 @@ struct beta_allocator {
       return 0;
 
     } else {
+
+      __threadfence();
+      
       // get local block storage and thread storage
       per_size_pinned_blocks * local_shared_block_storage =
           local_blocks->get_tree_local_blocks(tree_id);
@@ -908,7 +965,7 @@ struct beta_allocator {
 
     Block * my_block = table->get_block_from_global_block_id(block_id);
 
-    if (my_block->block_free()){
+    if (my_block->free_and_check_unpinned()){
 
 
       #if !DEBUG_NO_FREE
