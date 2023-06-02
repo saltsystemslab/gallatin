@@ -566,8 +566,9 @@ struct beta_allocator {
       cg::coalesced_group coalesced_team = labeled_partition(full_warp_team, tree_id);
 
     	if (coalesced_team.thread_rank() == 0){
-    		shared_block_storage_index = local_shared_block_storage->get_valid_block_index();
-    		my_block = local_shared_block_storage->get_my_block(shared_block_storage_index);
+
+        my_block = local_shared_block_storage->get_valid_block(shared_block_storage_index);
+
     	}
 
     	//recoalesce and share block.
@@ -635,19 +636,6 @@ struct beta_allocator {
 
       #endif
 
-      uint16_t alt_tree_id = table->get_tree_id_of_block(my_block);
-        
-
-      if (alt_tree_id != tree_id){
-
-          #if BETA_DEBUG_PRINTS
-          printf("Mismatch in tree ids in malloc: %u != %u\n", alt_tree_id, tree_id);
-
-          #endif
-
-          table->get_tree_id_of_block(my_block);
-        }
-
 
 
         // select block to pull from and get global stats
@@ -665,13 +653,32 @@ struct beta_allocator {
       should_replace = coalesced_team.ballot(should_replace);
 
 
-    	if (should_replace){
+      //changed version - we now hold the only pointer to the block
+      //either swap it in or replace it with new block.
+      if (coalesced_team.thread_rank() == 0){
 
-    		if (coalesced_team.thread_rank() == 0){
-    			replace_block(tree_id, shared_block_storage_index, my_block, local_shared_block_storage);
-    		}
+      if (should_replace){
 
-    	}
+        my_block = request_new_block_from_tree(tree_id);
+
+      }
+
+
+      if (!local_shared_block_storage->swap_out_nullptr(shared_block_storage_index, my_block)){
+
+        #if BETA_DEBUG_PRINTS
+          
+          printf("Block in index %d of tree %u failed to be reinserted\n", shared_block_storage_index, tree_id);
+
+        #endif
+      }
+
+      }
+
+      coalesced_team.sync();
+
+
+ 
 
     	if (allocation != ~0ULL){
 
@@ -690,28 +697,6 @@ struct beta_allocator {
 
 }
 
-
-  __device__ void * malloc(uint64_t size){
-
-    uint16_t tree_id = get_first_bit_bigger(smallest) - smallest_bits;
-
-    uint64_t offset = malloc_offset(size);
-
-    if (offset == ~0ULL) return nullptr;
-
-    return offset_to_allocation(offset, tree_id);
-
-
-  }
-
-
-  __device__ void free(void * ptr){
-
-    uint64_t offset = table->allocation_to_offset(ptr);
-
-    free_offset(offset);
-
-  }
 
 
   // get a new segment for a given tree!

@@ -136,6 +136,49 @@ struct per_size_pinned_blocks {
                       (unsigned long long int)block_to_swap) == 0ULL);
   }
 
+
+  //this function returns a valid block (if one exists)
+  // in the first loop of this shared storage
+  // this scheme maintains exclusive access to the block
+  // by acquiring via atomicExch, thereby avoiding stale pointers
+  __device__ Block * get_valid_block(int & my_smid){
+
+    my_smid = poggers::utils::get_smid() % num_blocks;
+
+    int original_smid = my_smid;
+
+    while (true){
+
+
+       Block * swapped = exchange_block(my_smid);
+
+       if (swapped != nullptr){
+
+        return swapped;
+
+       }
+
+
+       my_smid = (my_smid+1) % num_blocks;
+
+       //captures exactly one loop before returning.
+       if (my_smid == original_smid) return nullptr;
+
+    }
+
+
+
+
+
+  }
+
+  //swap a block to nullptr, returning the ptr to said block
+  __device__ Block * exchange_block(int my_smid){
+
+    return (Block *) atomicExch((unsigned long long int *)&blocks[my_smid], 0ULL);
+
+  }
+
   __device__ bool lock_my_block() {
     int my_smid = poggers::utils::get_smid() % num_blocks;
 

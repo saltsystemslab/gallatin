@@ -710,15 +710,6 @@ __global__ void alloc_one_size_correctness(allocator_type * allocator, uint64_t 
       return;
    }
 
-
-<<<<<<< HEAD
-   char * alloc_ptr = (char *) allocator->offset_to_allocation(malloc, 0);
-
-   uint64_t casted_allocation = allocator->allocation_to_offset(alloc_ptr);
-
-   if (casted_allocation != malloc){
-      printf("Cast issue\n");
-=======
    //if allocation is valid, check if context changing is valid.
 
    uint16_t tree_id = allocator->get_tree_id_from_size(size);
@@ -736,10 +727,6 @@ __global__ void alloc_one_size_correctness(allocator_type * allocator, uint64_t 
       my_ptr = allocator->offset_to_allocation(malloc, tree_id);
       alt_offset = allocator->allocation_to_offset(my_ptr, tree_id);
 
-
-
-
->>>>>>> development
    }
 
 
@@ -1051,23 +1038,12 @@ __global__ void alloc_churn_kernel(allocator_type * allocator, uint64_t num_allo
 
       uint64_t my_alloc_size = (size << my_tree_id);
 
-<<<<<<< HEAD
-      //printf("thread %llu working with tree %d, size %llu\n", tid, my_tree_id, my_alloc_size);
 
-      uint64_t allocation = allocator->malloc_offset(my_alloc_size);
-
-      if (allocation == ~0ULL){
-
-         atomicAdd((unsigned long long int *)misses, 1ULL);
-         continue;
-
-=======
       uint64_t allocation = allocator->malloc_offset(my_alloc_size);
 
       if (allocation == ~0ULL){
          atomicAdd((unsigned long long int *)misses, 1ULL);
          continue;
->>>>>>> development
       }
 
       char * alloc_ptr = (char *) allocator->offset_to_allocation(allocation, my_tree_id);
@@ -1474,26 +1450,19 @@ int main(int argc, char** argv) {
    //one_boot_betta_test_all_sizes<16ULL*1024*1024, 16ULL, 16ULL>(num_segments*16*1024*1024);  
 
 
-<<<<<<< HEAD
-   beta_test_allocs_correctness<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds);
-
-   //beta_full_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
-=======
    //beta_test_allocs_correctness<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
 
 
-   beta_test_allocs_pointer<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
+   //beta_test_allocs_pointer<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
 
    //beta_full_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
 
 
-   //beta_pointer_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
+   beta_pointer_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
 
 
    //beta_churn_no_free<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments);
 
-
->>>>>>> development
 
    cudaDeviceReset();
    return 0;
