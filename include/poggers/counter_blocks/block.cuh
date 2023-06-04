@@ -52,6 +52,12 @@
 //doesn't hurt to have on  ¯\_(ツ)_/¯
 #define BETA_BLOCK_DEBUG 1
 
+//defines how many bits up we shift - 
+//there is lots of unused space in the universe so we pick an arbitrary value.
+#define BETA_BLOCK_TREE_OFFSET 20
+
+//todo: static asserts to bound
+
 namespace beta {
 
 namespace allocators {
@@ -117,6 +123,74 @@ struct Block {
 
 
   }
+
+
+  __device__ void reset_free(){
+
+    uint old = atomicExch((unsigned int *)&free_counter, 0ULL);
+
+    #if BETA_BLOCK_DEBUG
+
+    if (old != 4096) {
+      printf("Double free issue %u != 4096\n", old);
+    }
+
+  #endif
+
+  }
+
+  //setting
+  __device__ void init_malloc(uint16_t tree_size){
+
+
+    uint big_tree_size = tree_size;
+
+    uint shifted_tree_size = tree_size << BETA_BLOCK_TREE_OFFSET;
+
+    atomicExch((unsigned int *)&malloc_counter, shifted_tree_size);
+
+  }
+
+
+  //atomically increment the counter and add the old value
+  __device__ uint block_malloc_tree(cg::coalesced_group &active_threads){
+
+    uint old_count;
+
+    if (active_threads.thread_rank() == 0) {
+      old_count =
+          atomicAdd((unsigned int *)&malloc_counter, active_threads.size());
+    }
+
+    old_count = active_threads.shfl(old_count, 0);
+
+    return old_count;
+
+  }
+
+  //return true if the 
+  __device__ bool check_valid(uint old_count, uint16_t tree_size){
+
+    uint block_tree_size = (old_count >> BETA_BLOCK_TREE_OFFSET);
+
+    return (block_tree_size == tree_size);
+
+  }
+
+  __device__ uint extract_count(cg::coalesced_group &active_threads, uint old_count){
+
+    uint true_count = (old_count & BITMASK(BETA_BLOCK_TREE_OFFSET));
+
+    uint my_value = true_count + active_threads.thread_rank();
+
+    if (my_value < 4096) {
+      return my_value;
+    }
+
+    return ~0ULL;
+
+  }
+
 };
 
 }  // namespace allocators

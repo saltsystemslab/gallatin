@@ -42,7 +42,7 @@
 #include <poggers/hash_schemes/murmurhash.cuh>
 
 #ifndef BETA_DEBUG_PRINTS
-#define BETA_DEBUG_PRINTS 0
+#define BETA_DEBUG_PRINTS 1
 #endif
 
 
@@ -638,12 +638,14 @@ struct beta_allocator {
         // select block to pull from and get global stats
       uint64_t global_block_id = table->get_global_block_offset(my_block);
 
-    	//TODO: add check here that global block id does not exceed bounds
+      //new blocks contain a counter for the tree id
+      //blocks pull merged counter, create allocation
+      //and verify.
+      uint merged_count = my_block->block_malloc_tree(coalesced_team);
 
-    	uint64_t allocation = my_block->block_malloc(coalesced_team);
+    	uint64_t allocation = my_block->extract_count(coalesced_team, merged_count);
 
-    	//bool should_replace = (allocation == 4095 || allocation == ~0ULL);
-
+    	
       bool should_replace = (allocation == 4095);
 
 
@@ -658,9 +660,31 @@ struct beta_allocator {
 
     	}
 
+
+      coalesced_team.sync();
+
+     
+
+
+
     	if (allocation != ~0ULL){
 
-    		return allocation + global_block_id*4096;
+
+        //after malloc, check our assumptions
+        uint64_t final_offset = allocation + global_block_id*4096;
+
+        if (my_block->check_valid(merged_count, tree_id)){
+
+          return final_offset;
+
+        } else {
+
+
+          printf("Invalid block check\n");
+
+          free_offset(final_offset);
+
+        }
 
     	}
 
@@ -904,7 +928,7 @@ struct beta_allocator {
 
 
       #if !DEBUG_NO_FREE
-      my_block->reset_block();
+      my_block->reset_free();
       #endif
 
       free_block(my_block);

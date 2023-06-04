@@ -40,7 +40,7 @@
 #include <poggers/hash_schemes/murmurhash.cuh>
 
 #ifndef DEBUG_PRINTS
-#define DEBUG_PRINTS 0
+#define DEBUG_PRINTS 1
 #endif
 
 
@@ -381,6 +381,9 @@ struct alloc_table {
 
     Block * my_block = get_block_from_global_block_id(segment_id*blocks_per_segment+my_count);
 
+    //change for preventing stale reads
+    //blocks new internally record segment information.
+    my_block->init_malloc(tree_id);
 
     #if BETA_MEM_TABLE_DEBUG
 
