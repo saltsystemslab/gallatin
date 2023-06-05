@@ -1184,7 +1184,7 @@ __global__ void pointer_churn_kernel(allocator_type * allocator, uint64_t num_al
 
       hash = poggers::hashers::MurmurHash64A(&hash, sizeof(uint64_t), i);
 
-      int my_tree_id = hash % num_trees;
+      int my_tree_id = hash % (num_trees);
 
 
       uint64_t my_alloc_size = (size << my_tree_id);

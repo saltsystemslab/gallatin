@@ -52,6 +52,8 @@
 //doesn't hurt to have on  ¯\_(ツ)_/¯
 #define BETA_BLOCK_DEBUG 1
 
+#define BETA_BLOCK_TREE_OFFSET 20
+
 namespace beta {
 
 namespace allocators {
@@ -116,6 +118,98 @@ struct Block {
 
 
   }
+
+
+  __device__ void reset_free(){
+
+    uint old = atomicExch((unsigned int *)&free_counter, 0ULL);
+
+    #if BETA_BLOCK_DEBUG
+
+    if (old != 4096) {
+      printf("Double free issue %u != 4096\n", old);
+    }
+
+    #endif
+
+  }
+
+  //setting
+  __device__ void init_malloc(uint16_t tree_size){
+
+
+    uint big_tree_size = tree_size;
+
+    uint shifted_tree_size = tree_size << BETA_BLOCK_TREE_OFFSET;
+
+    atomicExch((unsigned int *)&malloc_counter, shifted_tree_size);
+
+  }
+
+
+  //atomically increment the counter and add the old value
+  __device__ uint block_malloc_tree(cg::coalesced_group &active_threads){
+
+    uint old_count;
+
+    if (active_threads.thread_rank() == 0) {
+      old_count =
+          atomicAdd((unsigned int *)&malloc_counter, active_threads.size());
+    }
+
+    old_count = active_threads.shfl(old_count, 0);
+
+    return old_count;
+
+  }
+
+  //set the malloc bits in the block to 4096
+  //this guarantees that no other threads can allocate
+  __device__ uint malloc_fill_block(){
+
+    uint old = atomicAdd((unsigned int *)&free_counter, 4096);
+
+    if (old != 0){
+
+      printf("Old in fill block is %u\n", old);
+
+    }
+
+    return atomicAdd((unsigned int *)&malloc_counter, 4096);
+
+  }
+
+  //return true if the 
+  __device__ bool check_valid(uint old_count, uint16_t tree_size){
+
+    uint block_tree_size = (old_count >> BETA_BLOCK_TREE_OFFSET);
+
+    return (block_tree_size == tree_size);
+
+  }
+
+  __device__ uint64_t extract_count(cg::coalesced_group &active_threads, uint old_count){
+
+    uint true_count = (old_count & BITMASK(BETA_BLOCK_TREE_OFFSET));
+
+    uint my_value = true_count + active_threads.thread_rank();
+
+    if (my_value < 4096) {
+      return my_value;
+    }
+
+    return ~0ULL;
+
+  }
+
+
+  __device__ uint64_t clip_count(uint old_count){
+
+    return (old_count & BITMASK(BETA_BLOCK_TREE_OFFSET));
+
+  }
+
+
 };
 
 }  // namespace allocators

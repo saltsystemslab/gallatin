@@ -49,7 +49,7 @@
 //used to test consistency of 
 #define DEBUG_NO_FREE 0
 
-#define BETA_MEM_TABLE_DEBUG 1
+#define BETA_MEM_TABLE_DEBUG 0
 
 namespace beta {
 
@@ -80,7 +80,9 @@ __global__ void count_block_live_kernel(table * alloc_table, uint64_t num_blocks
 
   if (tid >= num_blocks) return;
 
-  uint64_t fill = alloc_table->blocks[tid].malloc_counter;
+  uint64_t merged_fill = alloc_table->blocks[tid].malloc_counter;
+
+  uint64_t fill = alloc_table->blocks[tid].clip_count(merged_fill);
 
   if (fill > 4096) fill = 4096;
 
@@ -148,7 +150,7 @@ struct alloc_table {
     uint64_t num_segments =
         poggers::utils::get_max_chunks<bytes_per_segment>(max_bytes);
 
-    printf("Booting memory table with %llu chunks\n", num_segments);
+    //printf("Booting memory table with %llu chunks\n", num_segments);
 
     uint16_t *ext_chunks;
 
@@ -274,13 +276,13 @@ struct alloc_table {
       printf("Failed to set tree id for segment %llu\n", segment);
     }
 
-    uint old_free_count =
-        atomicExch((unsigned int *)&free_counters[segment], -1);
+    int old_free_count =
+        atomicExch(&free_counters[segment], -1);
 
     if (old_free_count != -1) {
       printf(
           "Memory free counter for segment %llu not properly reset: value is "
-          "%u\n",
+          "%d\n",
           segment, old_free_count);
     }
 
@@ -292,8 +294,8 @@ struct alloc_table {
     // and B) still give out exact addresses when requesting (still 1 atomic.)
     //the trigger for a failed block alloc is going negative
 
-    int old_free = atomicExch((int *)&free_counters[segment], num_blocks-1);
-    int old_malloc = atomicExch((int *)&malloc_counters[segment], num_blocks-1);
+    int old_free = atomicExch(&free_counters[segment], num_blocks-1);
+    int old_malloc = atomicExch(&malloc_counters[segment], num_blocks-1);
 
     #if BETA_MEM_TABLE_DEBUG
 
@@ -396,6 +398,7 @@ struct alloc_table {
 
     Block * my_block = get_block_from_global_block_id(segment_id*blocks_per_segment+my_count);
 
+    my_block->init_malloc(tree_id);
 
     #if BETA_MEM_TABLE_DEBUG
 
@@ -566,7 +569,7 @@ struct alloc_table {
       // attempt CAS
       // on success, you are the exclusive owner of the segment.
 
-      int leftover = atomicExch((int *)&free_counters[segment], -1);
+      int leftover = atomicExch(&free_counters[segment], -1);
 
 #if BETA_MEM_TABLE_DEBUG
 

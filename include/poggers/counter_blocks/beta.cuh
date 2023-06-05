@@ -42,7 +42,7 @@
 #include <poggers/hash_schemes/murmurhash.cuh>
 
 #ifndef BETA_DEBUG_PRINTS
-#define BETA_DEBUG_PRINTS 1
+#define BETA_DEBUG_PRINTS 0
 #endif
 
 namespace beta {
@@ -201,7 +201,7 @@ struct beta_allocator {
     uint64_t num_bytes = 0;
 
     do {
-      printf("Bits is %llu, bytes is %llu\n", num_bits, num_bytes);
+      //printf("Bits is %llu, bytes is %llu\n", num_bits, num_bytes);
 
       num_bytes += ((num_bits - 1) / 64 + 1) * 8;
 
@@ -426,6 +426,19 @@ struct beta_allocator {
 
     uint16_t tree_id = get_tree_id_from_size(size);
 
+    if (tree_id >= num_trees){
+
+      int smallest_tree_bits = get_first_bit_bigger(smallest*4096);
+
+      int block_tree = ((int) tree_id) - smallest_tree_bits;
+
+      if (block_tree < 0) block_tree = 0;
+
+      printf("Snapped tree id to size %d\n", block_tree);
+      tree_id = (uint16_t) block_tree;
+
+    }
+
     uint64_t attempt_counter = 0;
 
     uint64_t offset = malloc_offset(size);
@@ -540,11 +553,49 @@ struct beta_allocator {
     uint16_t tree_id = get_first_bit_bigger(bytes_needed) - smallest_bits;
 
     if (tree_id >= num_trees) {
+
+      //first, determine if the allocation can be satisfied by a full block
+      int smallest_tree_bits = get_first_bit_bigger(smallest*4096);
+
+      int block_tree = ((int) tree_id) - smallest_tree_bits;
+
+      if (block_tree < num_trees){
+
+        if (block_tree < 0) block_tree = 0;
+
+        printf("Alloc of %llu bytes pulling from block in tree %d\n", bytes_needed, block_tree);
+
+        Block * my_block = request_new_block_from_tree((uint16_t ) block_tree);
+
+        if (my_block == nullptr){
+          return ~0ULL;
+        }
+
+        uint64_t global_block_id = table->get_global_block_offset(my_block);
+
+        uint old = my_block->malloc_fill_block();
+
+        if (old != 0){
+          printf("Block was already set %u\n", old);
+        }
+
+
+        return global_block_id*4096;
+
+
+      } else {
+
+        printf("Segment-size allocations not supported\n");
+        return ~0ULL;
+
+      }
+
+
       // get big allocation
       // this is currently unfinished, is a todo after ouroboros
-      printf("Larger allocations not yet implemented\n");
+      printf("This code should not trigger\n");
 
-      return 0;
+      return ~0ULL;
 
     } else {
       // get local block storage and thread storage
@@ -597,7 +648,10 @@ struct beta_allocator {
 
         if (alt_tree_id > num_trees){
 
-          printf("Reading from broken segment %llu\n", alt_block_segment);
+          //this error occurs when the tree id stored differs - this is an indicator of stale pointers
+
+          //stale pointers are now detected and pruned
+          printf("Reading from broken segment %llu, alt value %u != %u\n", alt_block_segment, alt_tree_id, tree_id);
           return ~0ULL;
 
         }
@@ -645,7 +699,13 @@ struct beta_allocator {
 
     	//TODO: add check here that global block id does not exceed bounds
 
-    	uint64_t allocation = my_block->block_malloc(coalesced_team);
+      uint merged_count = my_block->block_malloc_tree(coalesced_team);
+
+    	uint64_t allocation = my_block->extract_count(coalesced_team, merged_count);
+
+      if (allocation >= 4096 && allocation != ~0ULL){
+        printf("Allocation too big\n");
+      } 
 
     	//bool should_replace = (allocation == 4095 || allocation == ~0ULL);
 
@@ -669,7 +729,15 @@ struct beta_allocator {
 
     	if (allocation != ~0ULL){
 
-    		return allocation + global_block_id*4096;
+        if (!my_block->check_valid(merged_count, tree_id)){
+          printf("Gave out wrong offset\n");
+          free_offset(allocation+global_block_id*4096);
+
+        } else {
+          return allocation + global_block_id*4096;
+        }
+
+    		
 
     	}
 
@@ -912,7 +980,7 @@ struct beta_allocator {
 
 
       #if !DEBUG_NO_FREE
-      my_block->reset_block();
+      my_block->reset_free();
       #endif
 
       free_block(my_block);
