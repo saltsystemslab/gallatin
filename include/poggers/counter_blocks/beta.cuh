@@ -52,7 +52,7 @@ namespace allocators {
 #define REQUEST_BLOCK_MAX_ATTEMPTS 10
 
 #define BETA_MAX_ATTEMPTS 150
-#define MALLOC_LOOP_ATTEMPTS 5
+#define BETA_MALLOC_LOOP_ATTEMPTS 5
 
 
 #define MIN_PINNED_CUTOFF 4
@@ -442,6 +442,13 @@ struct beta_allocator {
     uint64_t attempt_counter = 0;
 
     uint64_t offset = malloc_offset(size);
+
+    while (offset == ~0ULL && attempt_counter < BETA_MALLOC_LOOP_ATTEMPTS){
+
+        offset = malloc_offset(size);
+        attempt_counter+=1;
+        
+    }
 
     if (offset == ~0ULL) return nullptr;
 
