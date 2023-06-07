@@ -26,6 +26,9 @@
 
 // The alloc table is an array of uint64_t, uint64_t pairs that store
 
+
+#define BETA_TRAP_ON_ERR 1
+
 // inlcudes
 #include <cuda.h>
 #include <cuda_runtime_api.h>
@@ -183,11 +186,13 @@ struct beta_allocator {
   // this takes in the number of bytes owned by the allocator (does not include
   // the space of the allocator itself.)
   static __host__ my_type *generate_on_device(uint64_t max_bytes,
-                                              uint64_t seed) {
+                                              uint64_t seed, bool print_info=true) {
     my_type *host_version = get_host_version<my_type>();
 
     // plug in to get max chunks
     uint64_t max_chunks = get_max_chunks<bytes_per_segment>(max_bytes);
+
+    uint64_t total_mem = max_bytes;
 
     host_version->segment_tree = veb_tree::generate_on_device(max_chunks, seed);
 
@@ -250,7 +255,10 @@ struct beta_allocator {
         ->table = alloc_table<bytes_per_segment, smallest>::generate_on_device(
         max_bytes);  // host_version->segment_tree->get_allocator_memory_start());
 
-    printf("Booted BETA with %llu trees\n", num_trees);
+    if (print_info){
+      printf("Booted BETA with %llu trees in range %llu-%llu and %f GB of memory %llu segments\n", num_trees, smallest, biggest, 1.0*total_mem/1024/1024/1024, max_chunks);
+    }
+    
 
 
     auto device_version = move_to_device(host_version);
@@ -343,7 +351,14 @@ struct beta_allocator {
 
     if (smid >= local_shared_block_storage->num_blocks){
 
+      #if BETA_DEBUG_PRINTS
       printf("ERR %d >= %llu\n", smid, local_shared_block_storage->num_blocks);
+      #endif
+
+      #if BETA_TRAP_ON_ERR
+      asm("trap;");
+      #endif
+
       return;
 
     }
@@ -351,7 +366,15 @@ struct beta_allocator {
   	Block * new_block = request_new_block_from_tree(tree_id);
 
   	if (new_block == nullptr){
+
+      #if BETA_DEBUG_PRINTS
   		printf("Failed to initialize block %d from tree %u", smid, tree_id);
+      #endif
+
+      #if BETA_TRAP_ON_ERR
+      asm("trap;");
+      #endif
+
   		return;
   	}
 
@@ -370,13 +393,25 @@ struct beta_allocator {
         //this triggers, yeet
         printf("Boot Block %llu: segment %llu not init for malloc: %u != %u\n", block_id, alt_block_segment, tree_id, alt_tree_id);
 
+        #if BETA_TRAP_ON_ERR
+        asm("trap;");
+        #endif
+
       }
     #endif
 
 
 
     if(!local_shared_block_storage->swap_out_nullptr(smid, new_block)){
+
+      #if BETA_DEBUG_PRINTS
     	printf("Error: Block in position %d for tree %d already initialized\n", smid, tree_id);
+      #endif
+
+      #if BETA_TRAP_ON_ERR
+      asm("trap;");
+      #endif
+
     }
 
   }
@@ -392,14 +427,20 @@ struct beta_allocator {
   		Block * new_block = request_new_block_from_tree(tree_id);
 
   		if (new_block == nullptr){
+
+        #if BETA_DEBUG_PRINTS
         printf("Failed to acquire block\n");
-        Block * new_block = request_new_block_from_tree(tree_id);
+        #endif
 
   			return false;
   		}
 
   		if (!my_pinned_blocks->swap_out_nullptr(smid, new_block)){
+
+        #if BETA_DEBUG_PRINTS
   			printf("Incorrect behavior when swapping out block index %d for tree %d\n", smid, tree_id);
+        #endif
+
   			free_block(new_block);
   			return false;
   		}
@@ -434,7 +475,10 @@ struct beta_allocator {
 
       if (block_tree < 0) block_tree = 0;
 
+      #if BETA_DEBUG_PRINTS
       printf("Snapped tree id to size %d\n", block_tree);
+      #endif
+
       tree_id = (uint16_t) block_tree;
 
     }
@@ -481,7 +525,14 @@ struct beta_allocator {
 
         //test here verifies that segment is being reset...
         //It is not a misread of the segment≥
+        #if BETA_DEBUG_PRINTS
         printf("Mismatch for offset: %llu in tree ids for alloc of size %llu: %u != %u...Block %llu segment %llu offset %llu tree %u... prev is %u Next is %u. Malloc %d, free %d.\n", offset, size, tree_id, alt_tree_id, block_id, block_segment, relative_offset, block_tree, prev_segment_id, next_segment_id, malloc_status, free_status);
+        #endif
+
+        #if BETA_TRAP_ON_ERR
+        asm("trap;");
+        #endif
+
       }
 
     #endif
@@ -494,7 +545,13 @@ struct beta_allocator {
     uint64_t alloc_segment = table->get_segment_from_ptr(alloc);
 
     if (alloc_segment != segment){
+
       printf("Malloc: Offset %llu mismatch in segment: %llu != %llu, tree %u\n", offset, segment, alloc_segment, tree_id);
+
+      #if BETA_TRAP_ON_ERR
+      asm("trap;");
+      #endif
+
     }
 
     uint64_t alt_offset = allocation_to_offset(alloc, tree_id);
@@ -503,6 +560,11 @@ struct beta_allocator {
 
     if (alt_offset_segment != segment){
       printf("Malloc: mismatch in cast back: %llu != %llu\n", alt_offset_segment, segment);
+
+      #if BETA_TRAP_ON_ERR
+      asm("trap;");
+      #endif
+
     }
 
     #endif
@@ -526,6 +588,10 @@ struct beta_allocator {
     #if BETA_DEBUG_PRINTS
     if (tree_id > 10){
       printf("Segment %llu reports large tree %u\n", segment, tree_id);
+
+      #if BETA_TRAP_ON_ERR
+      asm("trap;");
+      #endif
     }
 
     #endif
@@ -570,7 +636,9 @@ struct beta_allocator {
 
         if (block_tree < 0) block_tree = 0;
 
+        #if BETA_DEBUG_PRINTS
         printf("Alloc of %llu bytes pulling from block in tree %d\n", bytes_needed, block_tree);
+        #endif
 
         Block * my_block = request_new_block_from_tree((uint16_t ) block_tree);
 
@@ -583,7 +651,15 @@ struct beta_allocator {
         uint old = my_block->malloc_fill_block();
 
         if (old != 0){
+
+          #if BETA_DEBUG_PRINTS
           printf("Block was already set %u\n", old);
+          #endif
+
+          #if BETA_TRAP_ON_ERR
+          asm("trap;");
+          #endif
+
         }
 
 
@@ -592,7 +668,10 @@ struct beta_allocator {
 
       } else {
 
+        #if BETA_DEBUG_PRINTS
         printf("Segment-size allocations not supported\n");
+        #endif
+
         return ~0ULL;
 
       }
@@ -600,7 +679,14 @@ struct beta_allocator {
 
       // get big allocation
       // this is currently unfinished, is a todo after ouroboros
+
+      #if BETA_DEBUG_PRINTS
       printf("This code should not trigger\n");
+      #endif
+
+      #if BETA_TRAP_ON_ERR
+      asm("trap;");
+      #endif
 
       return ~0ULL;
 
@@ -711,7 +797,14 @@ struct beta_allocator {
     	uint64_t allocation = my_block->extract_count(coalesced_team, merged_count);
 
       if (allocation >= 4096 && allocation != ~0ULL){
+
+        #if BETA_DEBUG_PRINTS
         printf("Allocation too big\n");
+        #endif
+
+        #if BETA_TRAP_ON_ERR
+        asm("trap;");
+        #endif
       } 
 
     	//bool should_replace = (allocation == 4095 || allocation == ~0ULL);
@@ -737,7 +830,11 @@ struct beta_allocator {
     	if (allocation != ~0ULL){
 
         if (!my_block->check_valid(merged_count, tree_id)){
+
+          #if BETA_DEBUG_PRINTS
           printf("Gave out wrong offset\n");
+          #endif
+
           free_offset(allocation+global_block_id*4096);
 
         } else {
@@ -927,7 +1024,10 @@ struct beta_allocator {
 
       #if DEBUG_NO_FREE
 
+      #if BETA_DEBUG_PRINTS
       printf("Segment %llu derregister. this is a bug\n", segment);
+      #endif
+
       return;
 
       #endif
@@ -938,18 +1038,15 @@ struct beta_allocator {
       // don't need to reset anything, just pull from table and threadfence
       uint16_t tree = table->read_tree_id(segment);
 
-      #if BETA_DEBUG_PRINTS
-
-      //printf("Segment %llu being freed from tree %u\n", segment, tree);
-
-      #endif
 
       // pull from tree
       // should be fine, no one can update till this point
       //this should have happened earlier
       if (sub_trees[tree]->remove(segment)){
 
+        #if BETA_DEBUG_PRINTS
         printf("Failed to properly release segment %llu from tree %u\n", segment, tree);
+        #endif
 
       }
 

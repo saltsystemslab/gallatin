@@ -192,6 +192,8 @@ struct alloc_table {
         host_version->malloc_counters, host_version->free_counters,
         host_version->blocks, num_segments, blocks_per_segment);
 
+    GPUErrorCheck(cudaDeviceSynchronize());
+
 
     // move to device and free host memory.
     my_type *dev_version;
@@ -235,7 +237,11 @@ struct alloc_table {
   // register a tree component
   __device__ void register_tree(uint64_t segment, uint16_t id) {
     if (segment >= num_segments) {
+
+      #if BETA_MEM_TABLE_DEBUG
       printf("Chunk issue: %llu > %llu\n", segment, num_segments);
+      #endif
+
     }
 
     chunk_ids[segment] = id;
@@ -244,7 +250,15 @@ struct alloc_table {
   // register a segment from the table.
   __device__ void register_size(uint64_t segment, uint16_t size) {
     if (segment >= num_segments) {
+
+      #if BETA_MEM_TABLE_DEBUG
       printf("Chunk issue\n");
+      #endif
+
+      #if BETA_TRAP_ON_ERR
+      asm("trap;");
+      #endif
+
     }
 
     size += 16;
@@ -274,6 +288,11 @@ struct alloc_table {
 
     if (!did_set){
       printf("Failed to set tree id for segment %llu\n", segment);
+
+      #if BETA_TRAP_ON_ERR
+      asm("trap;");
+      #endif
+
     }
 
     int old_free_count =
@@ -284,7 +303,14 @@ struct alloc_table {
           "Memory free counter for segment %llu not properly reset: value is "
           "%d\n",
           segment, old_free_count);
+
+      #if BETA_TRAP_ON_ERR
+      asm("trap;");
+      #endif
+
     }
+
+
 
 #endif
 
@@ -301,8 +327,15 @@ struct alloc_table {
 
     if (old_malloc >= 0){
       printf("Did not fully reset segment %llu: %d malloc %d free\n", segment, old_malloc, old_free);
+
     }
     #endif
+
+    if (old_malloc >= 0){
+      #if BETA_TRAP_ON_ERR
+        asm("trap;");
+      #endif
+    }
 
 
     // gate to init is init_new_universe
@@ -349,6 +382,11 @@ struct alloc_table {
 
     if (malloc_count >= free_count){
       printf("Mismatch: malloc %d >= freed %d", malloc_count, free_count);
+
+      #if BETA_TRAP_ON_ERR
+      asm("trap;");
+      #endif
+
     }
 
     return free_count;
@@ -407,6 +445,11 @@ struct alloc_table {
 
       if (alt_segment != segment_id){
         printf("Segment mismatch in get_block: %llu != %llu\n", segment_id, alt_segment);
+
+        #if BETA_TRAP_ON_ERR
+        asm("trap;");
+        #endif
+
       }
 
     #endif
@@ -525,6 +568,10 @@ struct alloc_table {
 
       if (segment_id != alt_segment){
         printf("Mismatch on segments in allocation to offset, %llu != %llu\n", segment_id, alt_segment)
+
+        #if BETA_TRAP_ON_ERR
+        asm("trap;");
+        #endif
       }
 
 
@@ -560,6 +607,10 @@ struct alloc_table {
 
       if (old_count < 0){
         printf("Too many frees in segment %llu\n", segment);
+
+        #if BETA_TRAP_ON_ERR
+        asm("trap;");
+        #endif
       }
 
     #endif
@@ -575,6 +626,10 @@ struct alloc_table {
 
       if (leftover != -1) {
         printf("Weird leftover: %d != -1\n", leftover);
+
+        #if BETA_TRAP_ON_ERR
+        asm("trap;");
+        #endif
       }
 
 #endif

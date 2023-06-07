@@ -50,7 +50,7 @@
 #include <cooperative_groups/scan.h>
 
 //doesn't hurt to have on  ¯\_(ツ)_/¯
-#define BETA_BLOCK_DEBUG 1
+#define BETA_BLOCK_DEBUG 0
 
 #define BETA_BLOCK_TREE_OFFSET 20
 
@@ -169,11 +169,14 @@ struct Block {
 
     uint old = atomicAdd((unsigned int *)&free_counter, 4096);
 
+    #if BETA_BLOCK_DEBUG
     if (old != 0){
 
       printf("Old in fill block is %u\n", old);
 
     }
+
+    #endif
 
     return atomicAdd((unsigned int *)&malloc_counter, 4096);
 
@@ -183,6 +186,14 @@ struct Block {
   __device__ bool check_valid(uint old_count, uint16_t tree_size){
 
     uint block_tree_size = (old_count >> BETA_BLOCK_TREE_OFFSET);
+
+    #if BETA_BLOCK_DEBUG
+
+    if (block_tree_size != tree_size){
+      printf("Block has different block tree size: %u != %u", block_tree_size, tree_size);
+    }
+
+    #endif
 
     return (block_tree_size == tree_size);
 

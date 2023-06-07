@@ -43,6 +43,13 @@ target_include_directories(poggers INTERFACE
 
 target_link_libraries(poggers INTERFACE ssl crypto)
 
+
+option(LINFO "Add lineInfo for NSight Compute profiling" OFF)
+
+if (LINFO)
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -lineinfo")
+endif(LINFO)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

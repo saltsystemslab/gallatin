@@ -1,0 +1,10 @@
+ncu commands
+
+
+ncu --import-source yes - o 
+
+ncu -o profile --target-processes all --import-source yes --kernel-name-base pointer_churn_kernel ./tests/counter_block_beta_tests 1000000 10
+
+
+#select only 1 kernel, repeat full profile to avoid driver issues - too much memory used? 
+ncu -o profile --target-processes all --import-source yes -k pointer_churn_kernel --set full --replay-mode application -f ./tests/counter_block_beta_tests 1000000 10
