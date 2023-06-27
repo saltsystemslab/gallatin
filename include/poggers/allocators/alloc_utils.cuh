@@ -282,6 +282,19 @@ __device__ void cooperative_copy(T *dst, T *src) {
 
 // }
 
+// template <int value>
+// struct return_value
+// {
+//     using size = value;
+// };
+
+// //given bytes used generate the main
+// template<typename Key, typename Val>
+// struct rounded_size : return_value<(((sizeof(Key)+sizeof(Val))-1)/16+1)*16> {};
+
+
+
+
 }  // namespace utils
 
 }  // namespace poggers

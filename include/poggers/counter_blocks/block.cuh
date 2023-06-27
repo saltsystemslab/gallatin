@@ -59,6 +59,7 @@ namespace beta {
 namespace allocators {
 
 struct Block {
+  
   uint malloc_counter;
   uint free_counter;
 
@@ -167,7 +168,7 @@ struct Block {
   //this guarantees that no other threads can allocate
   __device__ uint malloc_fill_block(){
 
-    uint old = atomicAdd((unsigned int *)&free_counter, 4096);
+    uint old = atomicAdd((unsigned int *)&free_counter, 4095);
 
     #if BETA_BLOCK_DEBUG
     if (old != 0){

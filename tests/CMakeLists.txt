@@ -100,3 +100,13 @@ ConfigureExecutable(counter_slab_one_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/coun
 ConfigureExecutable(shared_counter_slab_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/shared_counter_slab_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
 ConfigureExecutable(counter_block_beta_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/counter_block_beta_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
+
+
+ConfigureExecutable(queue_test "${CMAKE_CURRENT_SOURCE_DIR}/src/queue_test.cu" "${POGGERS_TESTS_BINARY_DIR}")
+
+ConfigureExecutable(string_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/string_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
+
+
+
+
+

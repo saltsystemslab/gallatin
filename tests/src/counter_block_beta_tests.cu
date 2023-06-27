@@ -47,6 +47,11 @@ using namespace beta::allocators;
 //    }
 
 
+#if BETA_DEBUG_PRINTS
+   #define TEST_BLOCK_SIZE 256
+#else
+   #define TEST_BLOCK_SIZE 512
+#endif
 
 
 template <uint64_t mem_segment_size, uint64_t smallest>
@@ -976,11 +981,11 @@ __host__ void beta_test_allocs_pointer(uint64_t num_bytes, int num_rounds, uint6
       printf("Starting Round %d/%d\n", i, num_rounds);
 
       beta::utils::timer kernel_timing;
-      alloc_one_size_pointer<betta_type><<<(num_allocs-1)/512+1,512>>>(allocator, .9*num_allocs, size, bits, misses);
+      alloc_one_size_pointer<betta_type><<<(num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(allocator, .9*num_allocs, size, bits, misses);
       kernel_timing.sync_end();
 
       beta::utils::timer free_timing;
-      free_one_size_pointer<betta_type><<<(num_allocs-1)/512+1,512>>>(allocator, .9*num_allocs, size, bits);
+      free_one_size_pointer<betta_type><<<(num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(allocator, .9*num_allocs, size, bits);
       free_timing.sync_end();
 
       kernel_timing.print_throughput("Malloced", .9*num_allocs);
@@ -1261,7 +1266,7 @@ __host__ void beta_pointer_churn(uint64_t num_bytes, uint64_t num_threads, int n
    std::cout << "Init in " << boot_timing.sync_end() << " seconds" << std::endl;
 
    beta::utils::timer kernel_timing;
-   pointer_churn_kernel<betta_type><<<(num_allocs-1)/256+1, 256>>>(allocator, num_threads, num_rounds, smallest, misses);
+   pointer_churn_kernel<betta_type><<<(num_allocs-1)/TEST_BLOCK_SIZE+1, TEST_BLOCK_SIZE>>>(allocator, num_threads, num_rounds, smallest, misses);
    kernel_timing.sync_end();
 
    kernel_timing.print_throughput("Malloc/freed", num_threads*num_rounds);
@@ -1433,12 +1438,12 @@ int main(int argc, char** argv) {
    //beta_test_allocs_correctness<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
 
 
-   //beta_test_allocs_pointer<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
+   beta_test_allocs_pointer<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
 
    //beta_full_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
 
 
-   beta_pointer_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
+   //beta_pointer_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
 
 
    //beta_churn_no_free<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments);

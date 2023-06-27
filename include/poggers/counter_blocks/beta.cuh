@@ -423,6 +423,7 @@ struct beta_allocator {
 
   	if (my_pinned_blocks->swap_out_block(smid, my_block)){
 
+      __threadfence();
 
   		Block * new_block = request_new_block_from_tree(tree_id);
 
