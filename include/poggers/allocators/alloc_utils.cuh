@@ -55,6 +55,12 @@ __device__ inline uint64_t ldca(const uint64_t *p) {
   // return atomicOr((unsigned long long int *)p, 0ULL);
 }
 
+__device__ inline uint16_t global_read_uint16_t(const uint16_t *p) {
+  uint16_t res;
+  asm volatile("ld.global.ca.u16 %0, [%1];" : "=h"(res) : "l"(p));
+  return res;
+}
+
 __device__ inline void *ldca(void *const *p) {
   void *res;
   asm volatile("ld.global.ca.u64 %0, [%1];" : "=l"(res) : "l"(p));

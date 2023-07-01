@@ -155,6 +155,21 @@ __global__ void boot_shared_block_container_one_thread(allocator * alloc, uint16
 
 }
 
+template <typename allocator>
+__global__ void print_overhead_kernel(allocator * alloc){
+
+  uint64_t tid = poggers::utils::get_tid();
+
+  if (tid != 0) return;
+
+  uint64_t overhead = alloc->calculate_overhead();
+
+  printf("Allocator is using %llu bytes of overhead\n", overhead);
+
+  return;
+
+}
+
 
 // main allocator structure
 // template arguments are
@@ -599,9 +614,11 @@ struct beta_allocator {
 
     uint64_t offset = allocation_to_offset(allocation, tree_id);
 
-    uint64_t raw_bytes = (char *) allocation - table->memory;
+   
 
     #if BETA_DEBUG_PRINTS
+
+      uint64_t raw_bytes = (char *) allocation - table->memory;
     
       uint64_t offset_segment = table->get_segment_from_offset(offset);
 
@@ -806,6 +823,11 @@ struct beta_allocator {
         #if BETA_TRAP_ON_ERR
         asm("trap;");
         #endif
+
+        //invalid alloc, move on.
+        //should never occur but continue just in case.
+        continue;
+
       } 
 
     	//bool should_replace = (allocation == 4095 || allocation == ~0ULL);
@@ -1019,9 +1041,11 @@ struct beta_allocator {
     bool need_to_deregister =
         table->free_block(block_to_free);
 
-    uint64_t segment = table->get_segment_from_block_ptr(block_to_free);
+    
 
     if (need_to_deregister) {
+
+      uint64_t segment = table->get_segment_from_block_ptr(block_to_free);
 
       #if DEBUG_NO_FREE
 
@@ -1166,6 +1190,51 @@ struct beta_allocator {
     return alloc_table<bytes_per_segment, smallest>::get_max_allocations_per_segment();
 
   }
+
+  //launch a thread to calculate overhead
+  __device__ uint64_t calculate_overhead(){
+
+    uint64_t overhead = 0;
+
+    overhead += sizeof(my_type);
+
+    
+
+    //segment tree
+    overhead += segment_tree->calculate_overhead();
+
+    //sub trees
+
+    for (int i =0; i < num_trees; i++){
+      overhead += sub_trees[i]->calculate_overhead();
+    }
+
+    //local blocks
+
+    for (int i = 0; i < num_trees; i++){
+
+      overhead += local_blocks->get_tree_local_blocks(i)->calculate_overhead();
+
+    }
+
+    //mem table
+
+    overhead += table->calculate_overhead();
+
+
+  }
+
+  __host__ void print_overhead(){
+
+
+    print_overhead_kernel<my_type><<<1,1>>>(this);
+
+    cudaDeviceSynchronize();
+
+
+
+  }
+
 
 };
 

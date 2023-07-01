@@ -51,6 +51,8 @@
 
 #define BETA_MEM_TABLE_DEBUG 0
 
+#define BETA_TABLE_GLOBAL_READ 1
+
 namespace beta {
 
 namespace allocators {
@@ -132,7 +134,6 @@ struct alloc_table {
   // pair of counters for each segment to track use.
   int *malloc_counters;
   int *free_counters;
-  int *segment_free_counters;
 
   // all memory live in the system.
   char *memory;
@@ -354,8 +355,18 @@ struct alloc_table {
   // atomically read tree id.
   // this may be faster with global load lcda instruction
   __device__ uint16_t read_tree_id(uint64_t segment) {
-    return atomicCAS((unsigned short int *)&chunk_ids[segment],
-                     (unsigned short int)~0U, (unsigned short int)~0U);
+
+    #if BETA_TABLE_GLOBAL_READ
+
+      return poggers::utils::global_read_uint16_t(&chunk_ids[segment]);
+
+    #else
+
+      return atomicCAS((unsigned short int *)&chunk_ids[segment],
+                (unsigned short int)~0U, (unsigned short int)~0U);
+
+    #endif
+
   }
 
   // return tree id to ~0
@@ -722,6 +733,13 @@ struct alloc_table {
     cudaFree(counter);
 
     return return_val;
+
+  }
+
+
+  __device__ uint64_t calculate_overhead(){
+
+    return sizeof(my_type) + num_segments*(8 + blocks_per_segment*sizeof(Block));
 
   }
 

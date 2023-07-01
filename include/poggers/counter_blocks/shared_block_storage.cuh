@@ -164,6 +164,13 @@ struct per_size_pinned_blocks {
     // true if old bit was 1
     return (old_bits & mask);
   }
+
+  __device__ uint64_t calculate_overhead(){
+
+    return num_blocks/8+num_blocks*sizeof(Block *);
+
+  }
+
 };
 
 // container has one of these per size.

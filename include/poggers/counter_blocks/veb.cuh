@@ -270,6 +270,7 @@ struct veb_tree {
   int original_num_layers;
   layer **layers;
 
+
   // don't think this calculation is correct
   __host__ static veb_tree *generate_on_device(uint64_t universe,
                                                uint64_t ext_seed) {
@@ -717,6 +718,21 @@ struct veb_tree {
   __host__ uint64_t report_max() {
     // return 1;
     return host_get_universe();
+  }
+
+
+  __device__ uint64_t calculate_overhead(){
+
+    uint64_t overhead = sizeof(veb_tree);
+
+    for (int i =0; i < num_layers; i++){
+
+      overhead += sizeof(layer) + layers[i]->num_blocks*8;
+
+    }
+
+    return overhead;
+
   }
 
   // //teams work togther to find new allocations
