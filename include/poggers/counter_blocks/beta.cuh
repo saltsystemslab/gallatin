@@ -45,7 +45,7 @@
 #include <poggers/hash_schemes/murmurhash.cuh>
 
 #ifndef BETA_DEBUG_PRINTS
-#define BETA_DEBUG_PRINTS 0
+#define BETA_DEBUG_PRINTS 1
 #endif
 
 namespace beta {
@@ -487,13 +487,13 @@ struct beta_allocator {
 
       int smallest_tree_bits = get_first_bit_bigger(smallest*4096);
 
-      int block_tree = ((int) tree_id) - smallest_tree_bits;
+      int block_tree = (int) get_first_bit_bigger(size) - smallest_tree_bits;
 
       if (block_tree < 0) block_tree = 0;
 
-      #if BETA_DEBUG_PRINTS
-      printf("Snapped tree id to size %d\n", block_tree);
-      #endif
+      // #if BETA_DEBUG_PRINTS
+      // printf("Snapped tree id to size %d\n", block_tree);
+      // #endif
 
       tree_id = (uint16_t) block_tree;
 
@@ -648,15 +648,15 @@ struct beta_allocator {
       //first, determine if the allocation can be satisfied by a full block
       int smallest_tree_bits = get_first_bit_bigger(smallest*4096);
 
-      int block_tree = ((int) tree_id) - smallest_tree_bits;
+      int block_tree = get_first_bit_bigger(bytes_needed) - smallest_tree_bits;
 
       if (block_tree < num_trees){
 
         if (block_tree < 0) block_tree = 0;
 
-        #if BETA_DEBUG_PRINTS
-        printf("Alloc of %llu bytes pulling from block in tree %d\n", bytes_needed, block_tree);
-        #endif
+        // #if BETA_DEBUG_PRINTS
+        // printf("Alloc of %llu bytes pulling from block in tree %d\n", bytes_needed, block_tree);
+        // #endif
 
         Block * my_block = request_new_block_from_tree((uint16_t ) block_tree);
 
@@ -666,7 +666,7 @@ struct beta_allocator {
 
         uint64_t global_block_id = table->get_global_block_offset(my_block);
 
-        uint old = my_block->malloc_fill_block();
+        uint old = my_block->malloc_fill_block(block_tree);
 
         if (old != 0){
 
@@ -674,9 +674,10 @@ struct beta_allocator {
           printf("Block was already set %u\n", old);
           #endif
 
-          #if BETA_TRAP_ON_ERR
-          asm("trap;");
-          #endif
+
+          free_offset(global_block_id*4096);
+
+          return ~0ULL;
 
         }
 

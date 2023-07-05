@@ -166,20 +166,52 @@ struct Block {
 
   //set the malloc bits in the block to 4096
   //this guarantees that no other threads can allocate
-  __device__ uint malloc_fill_block(){
+  //does a sanity check that the block is not already in use, which may occur.
+  //block comes initialized, so we just need to set malloc counter. 
+  //if it fails throw a fit - this shouldn't occur but ya never know.
+  __device__ uint malloc_fill_block(uint16_t tree_size){
 
-    uint old = atomicAdd((unsigned int *)&free_counter, 4095);
+    // uint old = atomicAdd((unsigned int *)&free_counter, 4095);
 
-    #if BETA_BLOCK_DEBUG
-    if (old != 0){
+    // #if BETA_BLOCK_DEBUG
+    // if (old != 0){
 
-      printf("Old in fill block is %u\n", old);
+    //   printf("Old in fill block is %u\n", old);
+
+    // }
+
+    // #endif
+
+    uint old_merged = atomicAdd((unsigned int *)&malloc_counter, 4096);
+
+    uint old_count = clip_count(old_merged);
+
+    if (!check_valid(old_merged, tree_size)){
+
+
+      #if BETA_BLOCK_DEBUG
+      printf("Catrastrophic failure! Block for contiguous section is in use\n");
+      #endif
+
+      asm("trap;");
 
     }
 
-    #endif
+    if (old_count != 0){
 
-    return atomicAdd((unsigned int *)&malloc_counter, 4096);
+      //we fucked up, but it's ok! just need to add to the free counter so the block cycles
+
+      #if BETA_BLOCK_DEBUG
+
+      printf("Block for full segment already malloced. Not an error but concerning.\n")
+
+      #endif
+
+      atomicAdd(&free_counter, (4095-old_count));
+
+    }
+
+    return old_count;
 
   }
 
