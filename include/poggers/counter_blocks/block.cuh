@@ -139,7 +139,7 @@ struct Block {
   __device__ void init_malloc(uint16_t tree_size){
 
 
-    uint big_tree_size = tree_size;
+    //uint big_tree_size = tree_size;
 
     uint shifted_tree_size = tree_size << BETA_BLOCK_TREE_OFFSET;
 
