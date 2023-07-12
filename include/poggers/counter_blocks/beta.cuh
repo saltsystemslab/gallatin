@@ -45,7 +45,7 @@
 #include <poggers/hash_schemes/murmurhash.cuh>
 
 #ifndef BETA_DEBUG_PRINTS
-#define BETA_DEBUG_PRINTS 1
+#define BETA_DEBUG_PRINTS 0
 #endif
 
 namespace beta {
@@ -1178,6 +1178,9 @@ struct beta_allocator {
     cudaFreeHost(host_trees);
 
     cudaFreeHost(host_version);
+
+    this->print_overhead();
+
   }
 
   static __host__ __device__ uint64_t get_blocks_per_segment(uint16_t tree) {
@@ -1221,6 +1224,8 @@ struct beta_allocator {
     //mem table
 
     overhead += table->calculate_overhead();
+
+    return overhead;
 
 
   }
