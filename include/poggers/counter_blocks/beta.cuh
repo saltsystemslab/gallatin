@@ -45,8 +45,11 @@
 #include <poggers/hash_schemes/murmurhash.cuh>
 
 #ifndef BETA_DEBUG_PRINTS
-#define BETA_DEBUG_PRINTS 0
+#define BETA_DEBUG_PRINTS 1
 #endif
+
+
+
 
 namespace beta {
 
@@ -57,8 +60,13 @@ namespace allocators {
 #define BETA_MAX_ATTEMPTS 150
 #define BETA_MALLOC_LOOP_ATTEMPTS 5
 
-
+//minimum number of pinned blocks per tree
 #define MIN_PINNED_CUTOFF 4
+
+
+//maximum number of segments allowed per tree.
+//this is to prevent exponential blowup.
+#define BETA_TREE_SEGMENT_CAP 10
 
 // alloc table associates chunks of memory with trees
 
@@ -170,6 +178,18 @@ __global__ void print_overhead_kernel(allocator * alloc){
 
 }
 
+template <typename allocator>
+__global__ void print_guided_fill_kernel(allocator * table, uint16_t id){
+
+  uint64_t tid = poggers::utils::get_tid();
+
+  if (tid != 0) return;
+
+  table->print_guided_fill(id);
+
+}
+
+
 
 // main allocator structure
 // template arguments are
@@ -195,7 +215,7 @@ struct beta_allocator {
 
   int smallest_bits;
 
-  uint locks;
+  uint * locks;
 
   // generate the allocator on device.
   // this takes in the number of bytes owned by the allocator (does not include
@@ -264,7 +284,14 @@ struct beta_allocator {
 
     #endif
 
-    host_version->locks = 0;
+
+    uint * host_locks = poggers::utils::get_host_version<uint>(num_trees);
+
+    for (int i =0; i < num_trees; i++){
+      host_locks[i] = 0;
+    }
+
+    host_version->locks = poggers::utils::move_to_device<uint>(host_locks, num_trees);
 
     host_version
         ->table = alloc_table<bytes_per_segment, smallest>::generate_on_device(
@@ -314,6 +341,8 @@ struct beta_allocator {
     alloc_table<bytes_per_segment, smallest>::free_on_device(
         host_version->table);
 
+
+    cudaFree(host_version->locks);
 
     veb_tree::free_on_device(host_version->segment_tree);
 
@@ -899,6 +928,12 @@ struct beta_allocator {
       printf("Failed to acquire updatable segment\n");
       #endif
 
+      #if BETA_TRAP_ON_ERR
+
+      asm("trap;");
+
+      #endif
+
       //segment_tree->insert_force_update(new_segment_id);
       // abort, but not because no segments are available.
       // this is fine.
@@ -925,11 +960,26 @@ struct beta_allocator {
 
   // lock given tree to prevent oversubscription
   __device__ bool acquire_tree_lock(uint16_t tree) {
-    return ((atomicOr(&locks, SET_BIT_MASK(tree)) & SET_BIT_MASK(tree)) == 0);
+
+    uint count = atomicAdd((unsigned int *)&locks[tree], 1U);
+
+    if (count >= BETA_TREE_SEGMENT_CAP){
+
+      atomicSub((unsigned int *)&locks[tree], 1U);
+
+      return false;
+
+    }
+
+    return true;
+
   }
 
+  //return space in tree.
   __device__ bool release_tree_lock(uint16_t tree) {
-    atomicAnd(&locks, ~SET_BIT_MASK(tree));
+      
+    atomicSub((unsigned int *)&locks[tree], 1U);
+
   }
 
 
@@ -946,10 +996,11 @@ struct beta_allocator {
       uint64_t segment = sub_trees[tree]->find_first_valid_index();
 
       if (segment == veb_tree::fail()) {
+
         if (acquire_tree_lock(tree)) {
           bool success = gather_new_segment(tree);
 
-          release_tree_lock(tree);
+          
 
           __threadfence();
 
@@ -958,6 +1009,8 @@ struct beta_allocator {
             // timeouts should be rare...
             // if this failed its more probable that someone else added a
             // segment!
+
+            release_tree_lock(tree);
             __threadfence();
             attempts++;
           }
@@ -1004,6 +1057,8 @@ struct beta_allocator {
 
         bool removed = sub_trees[tree]->remove(segment);
 
+        release_tree_lock(tree);
+
         #if BETA_DEBUG_PRINTS
 
         //only worth bringing up if it failed.
@@ -1013,10 +1068,10 @@ struct beta_allocator {
 
         #endif
 
-        if (acquire_tree_lock(tree)) {
-          gather_new_segment(tree);
-          release_tree_lock(tree);
-        }
+        // if (acquire_tree_lock(tree)) {
+        //   gather_new_segment(tree);
+        //   //release_tree_lock(tree);
+        // }
 
         __threadfence();
       }
@@ -1069,6 +1124,8 @@ struct beta_allocator {
       // should be fine, no one can update till this point
       //this should have happened earlier
       if (sub_trees[tree]->remove(segment)){
+
+        release_tree_lock(tree);
 
         #if BETA_DEBUG_PRINTS
         printf("Failed to properly release segment %llu from tree %u\n", segment, tree);
@@ -1181,6 +1238,9 @@ struct beta_allocator {
 
     this->print_overhead();
 
+
+    this->print_usage();
+
   }
 
   static __host__ __device__ uint64_t get_blocks_per_segment(uint16_t tree) {
@@ -1238,6 +1298,61 @@ struct beta_allocator {
     cudaDeviceSynchronize();
 
 
+
+  }
+
+
+  __host__ void print_usage(){
+
+    my_type *host_version = copy_to_host<my_type>(this);
+
+
+    for (uint16_t i = 0; i < host_version->num_trees; i++){
+
+      print_guided_fill_host(i);
+
+    }
+
+
+    cudaFreeHost(host_version);
+
+
+  }
+
+  //generate average fill using the info from the segment tree
+  __device__ void print_guided_fill(uint16_t id){
+
+
+    uint64_t count = 0;
+
+    int malloc_count = 0;
+    int free_count = 0;
+
+    uint64_t nblocks = table->get_blocks_per_segment(id);
+
+    for (uint64_t i = 0; i < table->num_segments; i++){
+    
+      if (sub_trees[id]->query(i)){
+
+        count += 1;
+        malloc_count += table->malloc_counters[i];
+        free_count += table->free_counters[i];
+
+      }
+
+
+  }
+
+
+  printf("Tree %u: %lu live blocks | avg malloc %f / %llu | avg free %f / %llu\n", id, count, 1.0*malloc_count/count, nblocks, 1.0*free_count/count, nblocks);
+
+
+  }
+
+
+  __host__ void print_guided_fill_host(uint16_t id){
+
+    print_guided_fill_kernel<my_type><<<1,1>>>(this, id);
 
   }
 

@@ -412,7 +412,10 @@ struct betta_allocator {
     // otherwise, both initialized
     // register segment
     if (!table->setup_segment(id, tree)) {
+
+      #if BETA_DEBUG_PRINTS
       printf("Failed to acquire updatable segment\n");
+      #endif
 
       segment_tree->insert_force_update(id);
       // abort, but not because no segments are available.

@@ -119,6 +119,26 @@ __global__ void betta_init_counters_kernel(int *malloc_counters,
   __threadfence();
 }
 
+
+template <typename memtable_type>
+__global__ void print_average_fill_kernel(memtable_type * table, uint16_t id){
+
+  uint64_t tid = poggers::utils::get_tid();
+
+  if (tid != 0) return;
+
+  int avg_malloc;
+  int avg_free;
+  uint64_t count;
+
+  table->calc_average_segment_fill(id, avg_malloc, avg_free, count);
+
+  uint64_t nblocks = table->get_blocks_per_segment(id);
+
+  printf("Tree %u: %lu live blocks | avg malloc %f / %llu | avg free %f / %llu\n", id, count, 1.0*avg_malloc/count, nblocks, 1.0*avg_free/count, nblocks);
+
+}
+
 // The alloc table owns all blocks live in the system
 // and information for each segment
 template <uint64_t bytes_per_segment, uint64_t min_size>
@@ -740,6 +760,38 @@ struct alloc_table {
   __device__ uint64_t calculate_overhead(){
 
     return sizeof(my_type) + num_segments*(8 + blocks_per_segment*sizeof(Block));
+
+  }
+
+
+  __device__ void calc_average_segment_fill(uint16_t id, int & avg_malloc, int & avg_free, uint64_t & count){
+
+    avg_malloc = 0;
+    avg_free = 0;
+    count = 0;
+
+    for (uint64_t i = 0; i < num_segments; i++){
+
+      if (chunk_ids[i] == id){
+
+
+        count += 1;
+
+        avg_malloc += malloc_counters[i];
+        avg_free += free_counters[i];
+
+      }
+
+    }
+
+    return;
+
+  }
+
+
+  __host__ void print_average_fill(uint16_t id){
+
+    print_average_fill_kernel<my_type><<<1,1>>>(this, id);
 
   }
 
