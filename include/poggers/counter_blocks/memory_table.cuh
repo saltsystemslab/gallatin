@@ -99,6 +99,8 @@ __global__ void count_block_live_kernel(table * alloc_table, uint64_t num_blocks
 
 __global__ void betta_init_counters_kernel(int *malloc_counters,
                                            int *free_counters,
+                                           int * active_counts,
+                                           uint * queue_counters, uint * queue_free_counters,
                                            Block *blocks, uint64_t num_segments,
                                            uint64_t blocks_per_segment) {
   uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -107,6 +109,11 @@ __global__ void betta_init_counters_kernel(int *malloc_counters,
 
   malloc_counters[tid] = -1;
   free_counters[tid] = -1;
+
+  active_counts[tid] = -1;
+
+  queue_counters[tid] = 0;
+  queue_free_counters[tid] = 0;
 
   uint64_t base_offset = blocks_per_segment * tid;
 
@@ -130,6 +137,19 @@ struct alloc_table {
 
   // list of all blocks live in the system.
   Block *blocks;
+
+  //queues hold freed blocks for fast turnaround
+  Block ** queues;
+
+  //queue counters record position in queue
+  uint * queue_counters;
+
+  //free counters holds which index newly freed blocks are emplaced.
+  uint * queue_free_counters;
+
+  //active counts make sure that the # of blocks in movement are acceptable.
+  int * active_counts;
+
 
   // pair of counters for each segment to track use.
   int *malloc_counters;
@@ -179,21 +199,42 @@ struct alloc_table {
 
     host_version->blocks_per_segment = blocks_per_segment;
 
+
+    Block ** ext_queues;
+    cudaMalloc((void **)&ext_queues, sizeof(Block *)*blocks_per_segment*num_segments);
+
+    host_version->queues = ext_queues;
+
     host_version->memory = poggers::utils::get_device_version<char>(
         bytes_per_segment * num_segments);
 
     cudaMemset(host_version->memory, 0, bytes_per_segment*num_segments);
 
     // generate counters and set them to 0.
+    host_version->active_counts = poggers::utils::get_device_version<int>(num_segments);
+
+    host_version->queue_counters = poggers::utils::get_device_version<uint>(num_segments);
+    host_version->queue_free_counters = poggers::utils::get_device_version<uint>(num_segments);
+
+
+
     host_version->malloc_counters =
         poggers::utils::get_device_version<int>(num_segments);
     host_version->free_counters =
         poggers::utils::get_device_version<int>(num_segments);
     betta_init_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
         host_version->malloc_counters, host_version->free_counters,
-        host_version->blocks, num_segments, blocks_per_segment);
+        host_version->active_counts, 
+        host_version->queue_counters, host_version->queue_free_counters,
+        host_version->blocks, num_segments,
+        blocks_per_segment);
 
     GPUErrorCheck(cudaDeviceSynchronize());
+
+
+   
+
+
 
 
     // move to device and free host memory.
@@ -241,6 +282,10 @@ struct alloc_table {
 
       #if BETA_MEM_TABLE_DEBUG
       printf("Chunk issue: %llu > %llu\n", segment, num_segments);
+      #endif
+
+      #if BETA_TRAP_ON_ERR
+      asm("trap;");
       #endif
 
     }
@@ -321,22 +366,38 @@ struct alloc_table {
     // and B) still give out exact addresses when requesting (still 1 atomic.)
     //the trigger for a failed block alloc is going negative
 
-    int old_free = atomicExch(&free_counters[segment], num_blocks-1);
-    int old_malloc = atomicExch(&malloc_counters[segment], num_blocks-1);
+    //int old_free = atomicExch(&free_counters[segment], num_blocks-1);
+    //int old_malloc = atomicExch(&malloc_counters[segment], num_blocks-1);
+
+    //modification, boot queue elements
+    //as items can always interact with this, we simply reset.
+    //init with blocks per segment so that mallocs always understand a true count
+    int old_active_count = atomicExch(&active_counts[segment], num_blocks-1);
+
+    //init queue counters.
+    atomicExch(&queue_counters[segment], 0);
+    atomicExch(&queue_free_counters[segment], 0);
+
+
 
     #if BETA_MEM_TABLE_DEBUG
 
-    if (old_malloc >= 0){
-      printf("Did not fully reset segment %llu: %d malloc %d free\n", segment, old_malloc, old_free);
-
+    if (old_active_count != -1){
+      printf("Old active count has live threads: %d\n", old_active_count);
     }
+
+
+    // if (old_malloc < 0){
+    //   printf("Did not fully reset segment %llu: %d malloc %d free\n", segment, old_malloc, old_free);
+
+    // }
     #endif
 
-    if (old_malloc >= 0){
-      #if BETA_TRAP_ON_ERR
-        asm("trap;");
-      #endif
-    }
+    // if (old_malloc >= 0){
+    //   #if BETA_TRAP_ON_ERR
+    //     asm("trap;");
+    //   #endif
+    // }
 
 
     // gate to init is init_new_universe
@@ -409,24 +470,77 @@ struct alloc_table {
     #endif
   }
 
+
+
+  /******
+  Set of helper functions to control queue entry and exit
+  
+  These allow threads to request slots from the queue and check if the queue is entirely full
+
+  or entirely empty. 
+
+  ******/
+
+  //pull a slot from the segment
+  //this acts as a gate over the malloc counters.
+  __device__ int get_slot_in_segment(uint64_t segment){
+    return atomicSub(&active_counts[segment], 1);
+  }
+
+  __device__ int return_slot_to_segment(uint64_t segment){
+    return atomicAdd(&active_counts[segment], 1);
+  }
+
+  //helper to check if block is entirely free.
+  //requires you to have a valid tree_id
+  __device__ bool all_blocks_free(int active_count, uint64_t blocks_per_segment){
+
+    return (active_count == blocks_per_segment-2);
+
+  }
+
+  //check if the count for a thread is valid
+  //current condition is that negative numbers represent invalid requests.
+  __device__ bool active_count_valid(int active_count){
+
+    return (active_count >= 0);
+
+  }
+
+
+  __device__ uint increment_queue_position(uint64_t segment){
+
+    return atomicAdd(&queue_counters[segment], 1);
+
+  }
+
+  __device__ uint increment_free_queue_position(uint64_t segment){
+
+    return atomicAdd(&queue_free_counters[segment], 1);
+
+  }
+
   // request a segment from a block
   // this verifies that the segment is initialized correctly
   // and returns nullptr on failure.
   __device__ Block *get_block(uint64_t segment_id, uint16_t tree_id,
-                              bool &empty, bool &valid) {
-    int my_count = get_block_from_segment(segment_id);
+                              bool &empty) {
 
-    uint16_t global_tree_id = read_tree_id(segment_id);
 
-    //uint64_t num_blocks = get_blocks_per_segment(global_tree_id);
+    empty = false;
 
-    if (my_count < 0) {
+    int active_count = get_slot_in_segment(segment_id);
+
+    if (!active_count_valid(active_count)){
+
+      return_slot_to_segment(segment_id);
+
       return nullptr;
+
     }
 
-    //to start, we set valid true
-    //if it turns out we have read from the wrong size we set it false.
-    valid = true;
+    //if global tree id's don't match, discard.
+    uint16_t global_tree_id = read_tree_id(segment_id);
 
     // tree changed in interim - this can happen in correct behavior.
     // we correct by releasing back to the system, potentially rolling the segment back.
@@ -438,32 +552,43 @@ struct alloc_table {
 
       #endif
 
-      valid = false;
+      //slot can go back to a worthy thread
+      //this saves the reset having to be pushed to the main manager.
+      return_slot_to_segment(segment_id);
+
+      __threadfence();
+
+      return nullptr;
     }
 
-    if (my_count == 0) {
-      empty = true;
+
+    uint64_t blocks_in_segment = get_blocks_per_segment(tree_id);
+
+    //if we have a valid spot, a queue position must exist
+    int queue_pos = increment_queue_position(segment_id);
+
+    Block * my_block;
+
+    if (queue_pos < blocks_in_segment){
+
+      my_block = get_block_from_global_block_id(segment_id*blocks_per_segment+queue_pos);
+
+    } else {
+
+
+      int queue_pos_wrapped = queue_pos % blocks_in_segment;
+
+      //swap out the queue element for nullptr.
+      my_block = (Block *) atomicExch((unsigned long long int *)&queues[segment_id*blocks_per_segment+queue_pos_wrapped], 0ULL);
+
     }
 
-    Block * my_block = get_block_from_global_block_id(segment_id*blocks_per_segment+my_count);
 
     my_block->init_malloc(tree_id);
 
-    #if BETA_MEM_TABLE_DEBUG
-
-      uint64_t alt_segment = get_segment_from_block_ptr(my_block);
-
-
-      if (alt_segment != segment_id){
-        printf("Segment mismatch in get_block: %llu != %llu\n", segment_id, alt_segment);
-
-        #if BETA_TRAP_ON_ERR
-        asm("trap;");
-        #endif
-
-      }
-
-    #endif
+    if (active_count == 0) {
+      empty = true;
+    }
 
     return my_block;
     
@@ -606,55 +731,38 @@ struct alloc_table {
   // free block, returns true if this block was the last section needed.
   __device__ bool free_block(Block *block_ptr) {
 
-    uint64_t segment = get_segment_from_block_ptr(block_ptr);
 
-    int old_count = return_block_to_segment(segment);
+    uint64_t segment = get_segment_from_block_ptr(block_ptr);
 
     uint16_t global_tree_id = read_tree_id(segment);
 
     uint64_t num_blocks = get_blocks_per_segment(global_tree_id);
 
-    #if BETA_MEM_TABLE_DEBUG
 
-      if (old_count < 0){
-        printf("Too many frees in segment %llu\n", segment);
+    //get enqueue position.
+    uint enqueue_position = increment_free_queue_position(segment) % num_blocks;
 
-        #if BETA_TRAP_ON_ERR
-        asm("trap;");
-        #endif
+    //swap into queue
+    atomicExch((unsigned long long int *)&queues[segment*blocks_per_segment+enqueue_position], (unsigned long long int) block_ptr);
+
+
+    __threadfence();
+
+    //determines how many other blocks are live, and signals to the system that re-use is possible
+    int return_id = return_slot_to_segment(segment);
+
+    if (all_blocks_free(return_id, num_blocks)){
+
+      if (atomicCAS(&active_counts[segment], num_blocks-1, -1) == num_blocks-1){
+
+        //exclusive owner
+        return true;
       }
-
-    #endif
-
-    if (old_count == 0) {
-      // can maybe free section.
-      // attempt CAS
-      // on success, you are the exclusive owner of the segment.
-
-      int leftover = atomicExch(&free_counters[segment], -1);
-
-#if BETA_MEM_TABLE_DEBUG
-
-      if (leftover != -1) {
-        printf("Weird leftover: %d != -1\n", leftover);
-
-        #if BETA_TRAP_ON_ERR
-        asm("trap;");
-        #endif
-      }
-
-#endif
-
-      #if !DEBUG_NO_FREE
-
-      return true;
-
-      #endif
-
     }
 
     return false;
-  }
+
+}
 
 
 
