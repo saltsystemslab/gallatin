@@ -281,6 +281,24 @@ __device__ void cooperative_copy(T *dst, T *src) {
   return cooperative_copy((char *)dst, (char *)src, sizeof(T));
 }
 
+
+//count first contiguous - ll variant
+//return # of contiguous 1s present in lower order bits
+__device__ int __cfcll(uint64_t bits){
+
+
+  int popc = __popcll(bits);
+
+  bool popc_valid = popc == 0 || popc == 64;
+
+  //branchless if-else cause we like pain
+  //if popc 0, whole vector zero, #contiguous is 0
+  //
+
+  return (popc)*(popc_valid) + (__ffsll(~bits)-1)*(!popc_valid);
+
+}
+
 // __device__ uint64_t reduce_less(cg::coalesced_threads active_threads,
 // uint64_t val){
 

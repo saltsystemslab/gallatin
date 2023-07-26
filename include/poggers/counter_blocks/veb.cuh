@@ -260,6 +260,229 @@ struct layer {
 
     return;
   }
+
+  //if a failure occurs, rollback previously acquired segments!
+  __device__ void rollback(uint64_t start_block, uint64_t bits_to_set){
+
+    while (bits_to_set > 64){
+
+      atomicOr((unsigned long long int *)&bits[start_block], BITMASK(64));
+
+      bits_to_set-=64;
+
+      start_block++;
+
+    }
+
+    atomicOr((unsigned long long int *)&bits[start_block], BITMASK(bits_to_set));
+
+    return;
+
+  }
+
+  __device__ uint64_t gather_multiple(uint64_t num_contiguous){
+
+    uint64_t start_block = num_blocks-1;
+
+    //find a valid start
+
+    uint64_t num_needed = num_contiguous;
+
+    while (start_block != 0){
+
+      //reset counter as we may have failed a previous iteration.
+      num_contiguous = num_needed;
+
+      //ldca loads bits, ~ inverts, so __ffsll(~block) is first index that is 0 - first contiguous section to the right.
+      //since this is length need to subtract from 64
+      int contig_start = poggers::utils::__cfcll(poggers::utils::ldca(&bits[start_block]));
+
+      if (contig_start == 0){
+        start_block -=1;
+        continue;
+      }
+
+      if (contig_start >= num_contiguous){
+
+        //special case - attempt to solve
+        auto acq_bitmask = BITMASK(num_contiguous) << (contig_start-num_contiguous);
+
+        auto acquired_bits = atomicAnd((unsigned long long int *)&bits[start_block], ~acq_bitmask);
+
+        //if acquired bits match exactly.
+        if (__popcll(acquired_bits & acq_bitmask) == num_contiguous){
+
+          //return set bits.
+          return start_block*64+(contig_start-num_contiguous);
+
+        } else {
+
+          //rollback - only rollback bits that were set.
+          atomicOr((unsigned long long int *)&bits[start_block], (acq_bitmask & acquired_bits));
+
+          //try again - since things changed, maybe valid this time - if not, will automatically progress
+          continue;
+
+        }
+
+      }
+
+      //phases - determine how many blocks available at the start - if more than we need, just attempt?
+
+      auto acquired_bits = atomicAnd((unsigned long long int *)&bits[start_block], ~BITMASK(contig_start));
+
+      bool succeeded = true;
+
+      if (__popcll(acquired_bits & BITMASK(contig_start)) == contig_start){
+
+        //valid to start traversal
+
+        num_contiguous -= contig_start;
+
+        while (num_contiguous > 64){
+
+          start_block--;
+
+          acquired_bits = atomicAnd((unsigned long long int *)&bits[start_block], 0ULL);
+
+          if (__popcll(acquired_bits) != 64){
+
+            //undo and rollback
+            atomicOr((unsigned long long int *)&bits[start_block], (unsigned long long int) acquired_bits);
+
+            rollback(start_block+1, (num_needed - num_contiguous));
+
+
+            succeeded = false;
+
+            //continue search from new start: up to this point nothing large enough is valid.
+            break;
+
+          }
+
+          num_contiguous -=64;
+
+        }
+
+        //on failure retry
+        if (!succeeded) continue;
+
+        start_block--;
+
+        
+        //otherwise we need to acquire the last segment.
+        //generate last mask and shift up
+        auto final_bitmask = BITMASK(num_contiguous) << (64-num_contiguous);
+
+        auto final_bits = atomicAnd((unsigned long long int *)&bits[start_block], ~final_bitmask);
+
+        if (__popcll(final_bits & final_bitmask) == num_contiguous){
+          return start_block*64+64-num_contiguous;
+        } else {
+
+          //full reset
+          atomicOr((unsigned long long int *)&bits[start_block], final_bitmask & final_bits);
+
+          rollback(start_block+1, (num_needed-num_contiguous));
+
+          continue;
+
+        }
+
+
+      } else {
+
+        //undo and retry
+        //same as before, updated info allows for fast retry.
+        atomicOr((unsigned long long int *)&bits[start_block], acquired_bits & BITMASK(contig_start));
+
+        continue;
+
+
+      }
+
+
+    }
+
+    rollback(0, (num_needed-num_contiguous));
+
+    return ~0ULL;
+
+
+  }
+
+
+  //forcefully clean up indices
+  //only occurs when lower layers fully allocated with gather_multiple.
+  __device__ void remove_contiguous(uint64_t start_index, uint64_t num_indices){
+
+
+    uint64_t block_index = start_index/64;
+
+    int block_start = start_index % 64;
+
+
+    while (num_indices + block_start > 64){
+
+
+      int num_removed = 64 - block_start;
+
+
+      auto bitmask = BITMASK(num_removed) << block_start;
+
+      atomicAnd((unsigned long long int *)&bits[block_index], ~bitmask);
+
+      block_start = 0;
+
+      block_index += 1; 
+
+      num_indices -= num_removed;
+
+    }
+
+    //finally, unset scragglers.
+    auto bitmask = BITMASK(num_indices) << block_start;
+
+    atomicAnd((unsigned long long int *)&bits[block_index], ~bitmask);
+
+    return;
+
+
+  }
+
+  //add back multiple bits in a contiguous band
+  //accounts for starting and ending in the middle of a segment!
+  __device__ void return_multiple(uint64_t start_index, uint64_t num_indices){
+
+
+    uint64_t block_index = start_index/64;
+
+    int block_start = start_index % 64;
+
+    while (num_indices + block_start > 64){
+
+      int num_added = 64 - block_start;
+
+      auto bitmask = BITMASK(num_added) << block_start;
+
+      atomicOr((unsigned long long int *)&bits[block_index], bitmask);
+
+      block_start = 0;
+
+      block_index +=1;
+
+      num_indices -= num_added;
+
+    }
+
+    auto bitmask = BITMASK(num_indices) << block_start;
+
+    atomicOr((unsigned long long int *)&bits[block_index], bitmask);
+
+
+  }
+
+
 };
 
 struct veb_tree {
@@ -732,6 +955,127 @@ struct veb_tree {
     }
 
     return overhead;
+
+  }
+
+
+  __device__ uint64_t maybe_remove_layer_bits(int layer, uint64_t start_bit, uint64_t bits_to_check){
+
+
+    uint64_t working_bit = start_bit;
+
+    while (working_bit < start_bit+bits_to_check){
+
+
+
+
+      uint64_t bits = poggers::utils::ldca(&layers[layer+1]->bits[working_bit]);
+
+      if (bits == 0){
+
+        uint64_t high = working_bit / 64;
+
+        int low = working_bit % 64;
+
+        layers[layer]->remove(high, low);
+
+      }
+
+      working_bit++;
+
+    }
+
+  }
+
+  __device__ uint64_t maybe_return_layer_bits(int layer, uint64_t start_bit, uint64_t bits_to_check){
+
+
+    uint64_t working_bit = start_bit;
+
+    while (working_bit < start_bit+bits_to_check){
+
+
+
+
+      uint64_t bits = poggers::utils::ldca(&layers[layer+1]->bits[working_bit]);
+
+      if (__popcll(bits) == 64){
+
+        uint64_t high = working_bit / 64;
+
+        int low = working_bit % 64;
+
+        layers[layer]->insert(high, low);
+
+      }
+
+      working_bit++;
+
+    }
+
+  }
+
+  //grab multiple segments, starting from the back
+  //this algorithm works by generating masks and attempting to apply them
+  //for each segment - determine if there is a valid section at the start using ffs
+  //then work backwords!
+  __device__ uint64_t gather_multiple(uint64_t num_contiguous){
+
+
+    //starting from the back, find a section containing
+
+    uint64_t found = layers[num_layers-1]->gather_multiple(num_contiguous);
+
+    uint64_t original_found = found;
+
+    if (found != fail()){
+
+      //working from the bottom up
+      for (int i = num_layers-2; i >=0; i--){
+
+        //should round up - need to check all.
+        auto tread_high = (found + num_contiguous -1)/64 + 1;
+
+        auto tread_low = found/64;
+
+        found = tread_low;
+
+        num_contiguous = tread_high-tread_low;
+
+        maybe_remove_layer_bits(i, found, num_contiguous);
+
+      }
+
+      return original_found;
+
+
+    }
+
+
+    //if we make it to the end, fail out - no contiguous alloc available.
+    return fail();
+
+  }
+
+  __device__ void return_multiple(uint64_t start_bit, uint64_t num_contiguous){
+
+    layers[num_layers-1]->return_multiple(start_bit, num_contiguous);
+
+
+    for (int i = num_layers-2; i>=0; i--){
+
+        //should round up - need to check all.
+        auto tread_high = (start_bit + num_contiguous -1)/64 + 1;
+
+        auto tread_low = start_bit/64;
+
+        start_bit = tread_low;
+
+        num_contiguous = tread_high-tread_low;
+
+        maybe_return_layer_bits(i, start_bit, num_contiguous);
+
+    }
 
   }
 

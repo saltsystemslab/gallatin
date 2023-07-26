@@ -497,6 +497,7 @@ struct beta_allocator {
 
       tree_id = (uint16_t) block_tree;
 
+
     }
 
     uint64_t attempt_counter = 0;
@@ -601,16 +602,42 @@ struct beta_allocator {
     uint16_t tree_id = table->read_tree_id(segment);
 
 
-    #if BETA_DEBUG_PRINTS
-    if (tree_id > 10){
-      printf("Segment %llu reports large tree %u\n", segment, tree_id);
+    //if this is true, removing valid large allocation of unknown size.  
+    if (tree_id > num_trees && (~tree_id != 0)){
+
+
+
+      uint16_t size = tree_id - num_trees - 1;
+      //freeing large block.
+      
+      segment_tree->return_multiple(segment, size);
+
+      __threadfence();
+
+      table->reset_tree_id(segment, tree_id);
+
+      return;
+    }
+
+
+    if (tree_id > num_trees){
+
+      #if BETA_DEBUG_PRINTS
+
+      printf("Tree freeing into uninitialized segment\n");
+
+      #endif
+
 
       #if BETA_TRAP_ON_ERR
       asm("trap;");
       #endif
+
+      return;
+
+
     }
 
-    #endif
 
     uint64_t offset = allocation_to_offset(allocation, tree_id);
 
@@ -687,17 +714,38 @@ struct beta_allocator {
 
       } else {
 
-        #if BETA_DEBUG_PRINTS
-        printf("Segment-size allocations not supported\n");
-        #endif
 
-        return ~0ULL;
+        //calculate # of segments needed
+
+        uint64_t num_segments_required = (bytes_needed - 1)/ bytes_per_segment + 1;
+
+        uint64_t alloc_index = segment_tree->gather_multiple(num_segments_required);
+
+        if (alloc_index != veb_tree::fail()){
+
+          if (!table->set_tree_id(alloc_index, num_trees + 1+ num_segments_required)){
+
+            #if BETA_DEBUG_PRINTS
+            printf("Failed to set tree id for segment %llu with %llu segments trailing\n", alloc_index, num_segments_required);
+            #endif
+
+            //catastropic - how could we fail to set tree id on bit grabbed from segment tree?
+            #if BETA_TRAP_ON_ERR
+            asm("trap;");
+            #endif
+
+          }
+
+        }
+
+        return alloc_index*table->blocks_per_segment*4096;
 
       }
 
 
-      // get big allocation
+      // This should be a dead end, as all current routes return.
       // this is currently unfinished, is a todo after ouroboros
+      //END DAY HERE: Why is this duplicated?
 
       #if BETA_DEBUG_PRINTS
       printf("This code should not trigger\n");
