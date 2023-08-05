@@ -39,6 +39,7 @@
 
 
 #include <cooperative_groups.h>
+#include <cooperative_groups/scan.h>
 
 #include <vector>
 
@@ -102,6 +103,70 @@ struct Block {
     }
 
     return ~0ULL;
+  }
+
+  //allow threads to procure multiple allocations simultaneously
+  __device__ uint64_t block_malloc_multi_size(cg::coalesced_group &active_threads, uint copies_needed){
+
+    //calculate exclusive sum - if value is less than that, valid
+
+    uint my_group_sum = cg::inclusive_scan(active_threads, copies_needed, cg::plus<uint>());
+
+    //last thread in group has total size and controls atomic
+
+    uint old_count;
+
+    if (active_threads.thread_rank() == active_threads.size()-1){
+
+      old_count = atomicAdd((unsigned int *)&malloc_counter, my_group_sum+copies_needed);
+
+    }
+
+    old_count = active_threads.shfl(old_count, 0);
+
+    uint my_value = old_count + my_group_sum;
+
+    if (my_value + copies_needed <= 4096){
+
+      //example here
+      //one thread - malloc set to 4095
+      //group sum = 0
+      //sum_copies = 1
+      //old count = 4095
+      //value + copies needed = 4096 - valid!
+
+      //two threads - 2 and 1
+      // malloc set to 4094
+      // group sum = 2
+      // sum + copies = 3
+      //thread 1 - 4094 + 2 = 4096
+
+      //thread 3 - 4094+2+1 = 4097 - fail.
+
+      //recoalesce
+
+      cg::coalesced_group successful_threads = cg::coalesced_threads();
+
+      uint excess_allocs = cg::reduce(successful_threads, copies_needed-1, cg::plus<uint>());
+
+      //only reduce excess if necessary
+      if (excess_allocs > 0 && successful_threads.thread_rank() == 0){
+
+        //don't need to check free logic, as at least one allocation must be active!
+        atomicAdd((unsigned int *)&free_counter, excess_allocs);
+
+      }
+
+      return my_value;
+
+
+
+    }
+
+
+    return ~0ULL
+
+
   }
 
   __device__ void reset_block() {

@@ -110,6 +110,7 @@ ConfigureExecutable(veb_large_allocs "${CMAKE_CURRENT_SOURCE_DIR}/src/veb_large_
 
 ConfigureExecutable(beta_large_allocs "${CMAKE_CURRENT_SOURCE_DIR}/src/beta_large_allocs.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
+ConfigureExecutable(vector_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/vector_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
 
 
