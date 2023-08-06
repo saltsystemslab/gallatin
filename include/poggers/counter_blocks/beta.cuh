@@ -859,29 +859,24 @@ struct beta_allocator {
 
     	//TODO: add check here that global block id does not exceed bounds
 
-      uint merged_count = my_block->block_malloc_tree(coalesced_team);
+      uint alloc_count = 1;
+
+      uint group_sum = cg::exclusive_scan(coalesced_team, alloc_count, cg::plus<uint>());
+
+
+      uint merged_count = my_block->block_malloc_tree_multi_size(coalesced_team, group_sum+alloc_count);
 
     	uint64_t allocation = my_block->extract_count(coalesced_team, merged_count);
 
-      if (allocation >= 4096 && allocation != ~0ULL){
+      
+  
+      my_block->block_correct_frees(coalesced_team, (alloc_count-1)*(allocation!=0ULL));
 
-        #if BETA_DEBUG_PRINTS
-        printf("Allocation too big\n");
-        #endif
 
-        #if BETA_TRAP_ON_ERR
-        asm("trap;");
-        #endif
-
-        //invalid alloc, move on.
-        //should never occur but continue just in case.
-        continue;
-
-      } 
 
     	//bool should_replace = (allocation == 4095 || allocation == ~0ULL);
 
-      bool should_replace = (allocation == 4095);
+      bool should_replace = (allocation <= 4095 && (allocation + alloc_count) > 4095);
 
 
       should_replace = coalesced_team.ballot(should_replace);

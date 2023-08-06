@@ -110,7 +110,7 @@ struct Block {
 
     //calculate exclusive sum - if value is less than that, valid
 
-    uint my_group_sum = cg::inclusive_scan(active_threads, copies_needed, cg::plus<uint>());
+    uint my_group_sum = cg::exclusive_scan(active_threads, copies_needed, cg::plus<uint>());
 
     //last thread in group has total size and controls atomic
 
@@ -164,7 +164,7 @@ struct Block {
     }
 
 
-    return ~0ULL
+    return ~0ULL;
 
 
   }
@@ -214,6 +214,7 @@ struct Block {
 
 
   //atomically increment the counter and add the old value
+  //this version accounts for the tree size.
   __device__ uint block_malloc_tree(cg::coalesced_group &active_threads){
 
     uint old_count;
@@ -226,6 +227,45 @@ struct Block {
     old_count = active_threads.shfl(old_count, 0);
 
     return old_count;
+
+  }
+
+   //allow threads to procure multiple allocations simultaneously
+  __device__ uint64_t block_malloc_tree_multi_size(cg::coalesced_group &active_threads, uint group_sum){
+
+    //calculate exclusive sum - if value is less than that, valid
+
+    //last thread in group has total size and controls atomic
+
+    uint old_count;
+
+    if (active_threads.thread_rank() == active_threads.size()-1){
+
+      old_count = atomicAdd((unsigned int *)&malloc_counter, group_sum);
+
+    }
+
+    old_count = active_threads.shfl(old_count, active_threads.size()-1);
+
+
+    return old_count;
+
+  }
+
+  //secondary correction
+  __device__ void block_correct_frees(cg::coalesced_group &active_threads, uint copies_needed){
+
+
+    uint excess_allocs = cg::reduce(active_threads, copies_needed, cg::plus<uint>());
+
+    //only reduce excess if necessary
+    if (excess_allocs > 0 && active_threads.thread_rank() == 0){
+
+      //don't need to check free logic, as at least one allocation must be active!
+      atomicAdd((unsigned int *)&free_counter, excess_allocs);
+
+    }
+
 
   }
 
@@ -304,6 +344,20 @@ struct Block {
     uint my_value = true_count + active_threads.thread_rank();
 
     if (my_value < 4096) {
+      return my_value;
+    }
+
+    return ~0ULL;
+
+  }
+
+  __device__ uint64_t extract_count_multi_size(cg::coalesced_group &active_threads, uint old_count, uint group_sum, uint my_size){
+
+    uint true_count = (old_count & BITMASK(BETA_BLOCK_TREE_OFFSET));
+
+    uint my_value = true_count + group_sum;
+
+    if (my_value + my_size <= 4096) {
       return my_value;
     }
 
