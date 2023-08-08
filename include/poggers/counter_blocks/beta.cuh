@@ -894,29 +894,10 @@ struct beta_allocator {
 
     uint leftover = (start_valid && end_valid)*(alloc_count-1)+(start_valid && (!end_valid))*(4096-allocation);
 
-    // if (start_valid && end_valid){
-
-    //   leftover = alloc_count-1;
-
-    // } else if (start_valid && (!end_valid)){
-
-    //   leftover = 4096-allocation;
-
-    // } else {
-    //   //both invalid
-    //   leftover = 0;
-
-    // }
-
-
     my_block->block_correct_frees(coalesced_team, leftover);
 
 
-
-  	//bool should_replace = (allocation == 4095 || allocation == ~0ULL);
-
     if (allocation + alloc_count > 4096) allocation = ~0ULL;
-
 
     should_replace = coalesced_team.ballot(should_replace);
 
