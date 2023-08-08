@@ -112,6 +112,8 @@ ConfigureExecutable(beta_large_allocs "${CMAKE_CURRENT_SOURCE_DIR}/src/beta_larg
 
 ConfigureExecutable(vector_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/vector_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
+ConfigureExecutable(gallatin_single_thread "${CMAKE_CURRENT_SOURCE_DIR}/src/gallatin_single_thread.cu" "${POGGERS_TESTS_BINARY_DIR}")
+
 
 
 

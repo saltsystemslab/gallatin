@@ -46,7 +46,7 @@
 
 //This locks the ability of blocks to be returned to the system.
 //so blocks accumulate as normal, but segments are not recycled.
-//used to test consistency of 
+//used to test consistency
 #define DEBUG_NO_FREE 0
 
 #define BETA_MEM_TABLE_DEBUG 0
@@ -392,7 +392,7 @@ struct alloc_table {
     int malloc_count = atomicCAS(&malloc_counters[segment], 0, 0);
 
     if (malloc_count >= free_count){
-      printf("Mismatch: malloc %d >= freed %d", malloc_count, free_count);
+      printf("Mismatch: malloc %d >= freed %d\n", malloc_count, free_count);
 
       #if BETA_TRAP_ON_ERR
       asm("trap;");

@@ -357,11 +357,14 @@ struct Block {
 
     uint my_value = true_count + group_sum;
 
-    if (my_value + my_size <= 4096) {
-      return my_value;
-    }
+    return my_value;
 
-    return ~0ULL;
+    //push check condition outside.
+    // if (my_value + my_size <= 4096) {
+    //   return my_value;
+    // }
+
+    // return ~0ULL;
 
   }
 
