@@ -881,7 +881,6 @@ struct beta_allocator {
     //leftover is any fragment > 1 that is inside the array region.
 
     //think this does it?
-    uint leftover;
 
     // = (allocation+alloc_count > 4095)*(allocation+alloc_count-4096);
 
@@ -893,19 +892,21 @@ struct beta_allocator {
     bool start_valid = (allocation <= 4095);
     bool end_valid = (allocation+alloc_count <= 4096);
 
-    if (start_valid && end_valid){
+    uint leftover = (start_valid && end_valid)*(alloc_count-1)+(start_valid && (!end_valid))*(4096-allocation);
 
-      leftover = alloc_count-1;
+    // if (start_valid && end_valid){
 
-    } else if (start_valid && (!end_valid)){
+    //   leftover = alloc_count-1;
 
-      leftover = 4096-allocation;
+    // } else if (start_valid && (!end_valid)){
 
-    } else {
-      //both invalid
-      leftover = 0;
+    //   leftover = 4096-allocation;
 
-    }
+    // } else {
+    //   //both invalid
+    //   leftover = 0;
+
+    // }
 
 
     my_block->block_correct_frees(coalesced_team, leftover);
