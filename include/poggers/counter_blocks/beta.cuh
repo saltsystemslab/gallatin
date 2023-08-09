@@ -57,6 +57,8 @@ namespace allocators {
 #define BETA_MAX_ATTEMPTS 150
 #define BETA_MALLOC_LOOP_ATTEMPTS 5
 
+#define REREGISTER_CUTOFF .1
+
 
 #define MIN_PINNED_CUTOFF 4
 
@@ -169,6 +171,18 @@ __global__ void print_overhead_kernel(allocator * alloc){
   return;
 
 }
+
+template <typename allocator>
+__global__ void print_guided_fill_kernel(allocator * table, uint16_t id){
+
+  uint64_t tid = poggers::utils::get_tid();
+
+  if (tid != 0) return;
+
+  table->print_guided_fill(id);
+
+}
+
 
 
 // main allocator structure
@@ -511,8 +525,18 @@ struct beta_allocator {
         
     }
 
-    if (offset == ~0ULL) return nullptr;
+    if (offset == ~0ULL){
 
+      #if BETA_DEBUG_PRINTS
+
+      printf("Failed to allocate size %llu\n", size);
+
+      #endif
+
+
+      return nullptr;
+
+    }
 
     #if BETA_DEBUG_PRINTS
 
@@ -945,14 +969,14 @@ struct beta_allocator {
 }
 
   // get a new segment for a given tree!
-  __device__ bool gather_new_segment(uint16_t tree) {
+  __device__ int gather_new_segment(uint16_t tree) {
 
     // request new segment
     uint64_t new_segment_id = segment_tree->malloc_first();
 
     if (new_segment_id == veb_tree::fail()) {
       // no segment available - this signals allocator full, return nullptr.
-      return false;
+      return -1;
     }
 
     // otherwise, both initialized
@@ -966,7 +990,12 @@ struct beta_allocator {
       //segment_tree->insert_force_update(new_segment_id);
       // abort, but not because no segments are available.
       // this is fine.
-      return true;
+
+      #if BETA_TRAP_ON_ERR
+      asm("trap;");
+      #endif
+
+      return new_segment_id;
     }
 
     __threadfence();
@@ -980,11 +1009,11 @@ struct beta_allocator {
 
     bool found = sub_trees[tree]->query(new_segment_id);
 
-    //printf("Sub tree %u owns segment %llu: inserted %d queried %d\n", tree, new_segment_id, inserted, found);
+    printf("Sub tree %u owns segment %llu: inserted %d queried %d\n", tree, new_segment_id, inserted, found);
 
     #endif
 
-    return true;
+    return new_segment_id;
   }
 
   // lock given tree to prevent oversubscription
@@ -1007,39 +1036,48 @@ struct beta_allocator {
       __threadfence();
 
       // find first segment available in my sub tree
-      uint64_t segment = sub_trees[tree]->find_first_valid_index();
+      //uint64_t segment = sub_trees[tree]->find_first_valid_index();
+
+      uint64_t segment = sub_trees[tree]->find_random_valid_index();
 
       if (segment == veb_tree::fail()) {
+
         if (acquire_tree_lock(tree)) {
-          bool success = gather_new_segment(tree);
+          int success = gather_new_segment(tree);
 
           release_tree_lock(tree);
 
           __threadfence();
 
           // failure to acquire a tree segment means we are full.
-          if (!success) {
+          if (success == -1) {
             // timeouts should be rare...
             // if this failed its more probable that someone else added a
             // segment!
             __threadfence();
             attempts++;
+
+            continue;
+          } else {
+
+            //set segment and continue!
+            segment = success;
           }
+        } else {
+
+          __threadfence();
+          //attempts++;
+
+          continue;
         }
-
-        __threadfence();
-
-        // for the moment, failures due to not being full enough aren't
-        // penalized.
-        continue;
       }
+
+
 
       bool last_block = false;
 
-      bool valid = true;
-
       // valid segment, get new block.
-      Block * new_block = table->get_block(segment, tree, last_block, valid);
+      Block * new_block = table->get_block(segment, tree, last_block);
 
 
       #if BETA_DEBUG_PRINTS
@@ -1050,7 +1088,7 @@ struct beta_allocator {
 
         uint64_t block_segment = table->get_segment_from_block_ptr(new_block);
 
-        if (valid && block_segment != segment){
+        if (block_segment != segment){
 
            printf("Segment misaligned when requesting block: %llu != %llu\n", block_segment, segment);
         }
@@ -1073,6 +1111,8 @@ struct beta_allocator {
         //only worth bringing up if it failed.
         if (!removed){
           printf("Removed segment %llu from tree %u: %d success?\n", segment, tree, removed);
+        } else {
+          printf("Removed segment %llu from tree %u\n", segment, tree);
         }
 
         #endif
@@ -1085,10 +1125,10 @@ struct beta_allocator {
         __threadfence();
       }
 
-      if (!valid){
-        free_block(new_block);
-        new_block = nullptr;
-      }
+      // if (!valid){
+      //   free_block(new_block);
+      //   new_block = nullptr;
+      // }
 
       if (new_block != nullptr) {
         return new_block;
@@ -1102,15 +1142,36 @@ struct beta_allocator {
   // return a block to the system
   // this is called by a block once all allocations have been returned.
   __device__ void free_block(Block *block_to_free) {
-    
-    bool need_to_deregister =
-        table->free_block(block_to_free);
+
+    uint64_t segment = table->get_segment_from_block_ptr(block_to_free);
+
+    uint16_t tree = table->read_tree_id(segment);
+
+    uint64_t num_blocks = table->get_blocks_per_segment(tree);
+
+
+    int reserved_slot = table->reserve_segment_slot(block_to_free, segment, tree, num_blocks);
+
+
+    if (1.0*reserved_slot/num_blocks >= REREGISTER_CUTOFF && ((1.0*(reserved_slot-1)/num_blocks) < REREGISTER_CUTOFF)){
+
+      //need to reregister
+      sub_trees[tree]->insert_force_update(segment);
+
+      __threadfence();
+
+    }
+
+    bool need_to_deregister = table->finish_freeing_block(segment, num_blocks);
+
+    //bool need_to_deregister =
+        //table->free_block(block_to_free);
 
     
 
     if (need_to_deregister) {
 
-      uint64_t segment = table->get_segment_from_block_ptr(block_to_free);
+      //uint64_t segment = table->get_segment_from_block_ptr(block_to_free);
 
       #if DEBUG_NO_FREE
 
@@ -1126,7 +1187,7 @@ struct beta_allocator {
 
       // returning segment
       // don't need to reset anything, just pull from table and threadfence
-      uint16_t tree = table->read_tree_id(segment);
+      //uint16_t tree = table->read_tree_id(segment);
 
 
       // pull from tree
@@ -1134,9 +1195,11 @@ struct beta_allocator {
       //this should have happened earlier
       if (sub_trees[tree]->remove(segment)){
 
-        #if BETA_DEBUG_PRINTS
-        printf("Failed to properly release segment %llu from tree %u\n", segment, tree);
-        #endif
+
+        //in new version, this is fine... - blocks can live in the tree until full reset.
+        // #if BETA_DEBUG_PRINTS
+        // printf("Failed to properly release segment %llu from tree %u\n", segment, tree);
+        // #endif
 
       }
 
@@ -1243,7 +1306,11 @@ struct beta_allocator {
 
     cudaFreeHost(host_version);
 
+
+    this->print_usage();
+
     this->print_overhead();
+
 
   }
 
@@ -1302,6 +1369,61 @@ struct beta_allocator {
     cudaDeviceSynchronize();
 
 
+
+  }
+
+
+  __host__ void print_usage(){
+
+    my_type *host_version = copy_to_host<my_type>(this);
+
+
+    for (uint16_t i = 0; i < host_version->num_trees; i++){
+
+      print_guided_fill_host(i);
+
+    }
+
+
+    cudaFreeHost(host_version);
+
+
+  }
+
+  //generate average fill using the info from the segment tree
+  __device__ void print_guided_fill(uint16_t id){
+
+
+    uint64_t count = 0;
+
+    int malloc_count = 0;
+    int free_count = 0;
+
+    uint64_t nblocks = table->get_blocks_per_segment(id);
+
+    for (uint64_t i = 0; i < table->num_segments; i++){
+    
+      if (sub_trees[id]->query(i)){
+
+        count += 1;
+        malloc_count += nblocks - table->active_counts[i];
+        free_count += table->free_counters[i];
+
+      }
+
+
+  }
+
+
+  printf("Tree %u: %lu live blocks | avg malloc %f / %llu | avg free %f / %llu\n", id, count, 1.0*malloc_count/count, nblocks, 1.0*free_count/count, nblocks);
+
+
+  }
+
+
+  __host__ void print_guided_fill_host(uint16_t id){
+
+    print_guided_fill_kernel<my_type><<<1,1>>>(this, id);
 
   }
 
