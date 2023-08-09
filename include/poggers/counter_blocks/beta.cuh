@@ -503,13 +503,14 @@ struct beta_allocator {
 
       int block_tree = (int) get_first_bit_bigger(size) - smallest_tree_bits;
 
-      if (block_tree < 0) block_tree = 0;
+      if (block_tree < 0){ block_tree = num_trees-1; }
 
       // #if BETA_DEBUG_PRINTS
       // printf("Snapped tree id to size %d\n", block_tree);
       // #endif
 
       tree_id = (uint16_t) block_tree;
+
 
     }
 
@@ -625,16 +626,42 @@ struct beta_allocator {
     uint16_t tree_id = table->read_tree_id(segment);
 
 
-    #if BETA_DEBUG_PRINTS
-    if (tree_id > 10){
-      printf("Segment %llu reports large tree %u\n", segment, tree_id);
+    //if this is true, removing valid large allocation of unknown size.  
+    if (tree_id > num_trees && (~tree_id != 0)){
+
+
+
+      uint16_t size = tree_id - num_trees - 1;
+      //freeing large block.
+      
+      segment_tree->return_multiple(segment, size);
+
+      __threadfence();
+
+      table->reset_tree_id(segment, tree_id);
+
+      return;
+    }
+
+
+    if (tree_id > num_trees){
+
+      #if BETA_DEBUG_PRINTS
+
+      printf("Tree freeing into uninitialized segment\n");
+
+      #endif
+
 
       #if BETA_TRAP_ON_ERR
       asm("trap;");
       #endif
+
+      return;
+
+
     }
 
-    #endif
 
     uint64_t offset = allocation_to_offset(allocation, tree_id);
 
@@ -663,6 +690,8 @@ struct beta_allocator {
   // returns an offset that can be cast into the associated void *
   __device__ uint64_t malloc_offset(uint64_t bytes_needed) {
 
+    uint alloc_count = 1;
+
     if (bytes_needed < smallest) bytes_needed = smallest;
 
     uint16_t tree_id = get_first_bit_bigger(bytes_needed) - smallest_bits;
@@ -676,231 +705,266 @@ struct beta_allocator {
 
       if (block_tree < num_trees){
 
-        if (block_tree < 0) block_tree = 0;
+        if (block_tree < 0){
 
-        #if BETA_DEBUG_PRINTS
-        printf("Alloc of %llu bytes pulling from block in tree %d\n", bytes_needed, block_tree);
-        #endif
+          alloc_count = (1ULL << (tree_id - (num_trees-1)));
 
-        Block * my_block = request_new_block_from_tree((uint16_t ) block_tree);
+          tree_id = num_trees-1;
 
-        if (my_block == nullptr){
-          return ~0ULL;
+        } else {
+
+          // #if BETA_DEBUG_PRINTS
+          // printf("Alloc of %llu bytes pulling from block in tree %d\n", bytes_needed, block_tree);
+          // #endif
+
+          Block * my_block = request_new_block_from_tree((uint16_t ) block_tree);
+
+          if (my_block == nullptr){
+            return ~0ULL;
+          }
+
+          uint64_t global_block_id = table->get_global_block_offset(my_block);
+
+          uint old = my_block->malloc_fill_block(block_tree);
+
+          if (old != 0){
+
+            #if BETA_DEBUG_PRINTS
+            printf("Block was already set %u\n", old);
+            #endif
+
+
+            free_offset(global_block_id*4096);
+
+            return ~0ULL;
+
+          }
+
+
+          return global_block_id*4096;
+
         }
-
-        uint64_t global_block_id = table->get_global_block_offset(my_block);
-
-        uint old = my_block->malloc_fill_block(block_tree);
-
-        if (old != 0){
-
-          #if BETA_DEBUG_PRINTS
-          printf("Block was already set %u\n", old);
-          #endif
-
-
-          free_offset(global_block_id*4096);
-
-          return ~0ULL;
-
-        }
-
-
-        return global_block_id*4096;
 
 
       } else {
 
-        #if BETA_DEBUG_PRINTS
-        printf("Segment-size allocations not supported\n");
-        #endif
 
+        //calculate # of segments needed
+
+        uint64_t num_segments_required = (bytes_needed - 1)/ bytes_per_segment + 1;
+
+        uint64_t alloc_index = segment_tree->gather_multiple(num_segments_required);
+
+        if (alloc_index != veb_tree::fail()){
+
+          if (!table->set_tree_id(alloc_index, num_trees + 1+ num_segments_required)){
+
+            #if BETA_DEBUG_PRINTS
+            printf("Failed to set tree id for segment %llu with %llu segments trailing\n", alloc_index, num_segments_required);
+            #endif
+
+            //catastropic - how could we fail to set tree id on bit grabbed from segment tree?
+            #if BETA_TRAP_ON_ERR
+            asm("trap;");
+            #endif
+
+          }
+
+        }
+
+        return alloc_index*table->blocks_per_segment*4096;
+
+      }
+
+
+      // This should be a dead end, as all current routes return.
+      // this is currently unfinished, is a todo after ouroboros
+      //END DAY HERE: Why is this duplicated?
+
+      // printf("Attempting mid-size multi malloc on tree %u, %u simultaneous\n", tree_id, alloc_count);
+
+      // return ~0ULL;
+
+    }
+
+
+    // get local block storage and thread storage
+    per_size_pinned_blocks * local_shared_block_storage =
+        local_blocks->get_tree_local_blocks(tree_id);
+
+    int shared_block_storage_index;
+    Block * my_block;
+
+    int num_attempts = 0;
+
+    // this cycles until we either receive an allocation or fail to request a
+    // new block
+    while (num_attempts < BETA_MAX_ATTEMPTS) {
+
+    //reload memory at start of each loop
+    __threadfence();
+
+  	cg::coalesced_group full_warp_team = cg::coalesced_threads();
+
+    cg::coalesced_group coalesced_team = labeled_partition(full_warp_team, tree_id);
+
+  	if (coalesced_team.thread_rank() == 0){
+  		shared_block_storage_index = local_shared_block_storage->get_valid_block_index();
+  		my_block = local_shared_block_storage->get_my_block(shared_block_storage_index);
+  	}
+
+  	//recoalesce and share block.
+  	shared_block_storage_index = coalesced_team.shfl(shared_block_storage_index, 0);
+  	my_block = coalesced_team.shfl(my_block, 0);
+
+    //cycle if we read an old block
+  	if (my_block == nullptr){
+  		num_attempts+=1;
+  		continue;
+  	}
+
+    #if BETA_DEBUG_PRINTS
+
+
+    uint64_t alt_block_segment = table->get_segment_from_block_ptr(my_block);
+
+    uint16_t alt_tree_id = table->read_tree_id(alt_block_segment);
+
+    uint64_t block_id = table->get_global_block_offset(my_block);
+
+    uint64_t relative_block_id = table->get_relative_block_offset(my_block);
+
+    if (tree_id != alt_tree_id){
+
+      if (alt_tree_id > num_trees){
+
+        //this error occurs when the tree id stored differs - this is an indicator of stale pointers
+
+        //stale pointers are now detected and pruned
+        printf("Reading from broken segment %llu, alt value %u != %u\n", alt_block_segment, alt_tree_id, tree_id);
         return ~0ULL;
 
       }
 
 
-      // get big allocation
-      // this is currently unfinished, is a todo after ouroboros
 
-      #if BETA_DEBUG_PRINTS
-      printf("This code should not trigger\n");
-      #endif
+      bool main_tree_owns = sub_trees[tree_id]->query(alt_block_segment);
 
-      #if BETA_TRAP_ON_ERR
-      asm("trap;");
-      #endif
+      bool alt_tree_owns = sub_trees[alt_tree_id]->query(alt_block_segment);
 
-      return ~0ULL;
+      if (!main_tree_owns){
 
-    } else {
-      // get local block storage and thread storage
-      per_size_pinned_blocks * local_shared_block_storage =
-          local_blocks->get_tree_local_blocks(tree_id);
-
-      int shared_block_storage_index;
-      Block * my_block;
-
-      int num_attempts = 0;
-
-      // this cycles until we either receive an allocation or fail to request a
-      // new block
-      while (num_attempts < BETA_MAX_ATTEMPTS) {
-
-      //reload memory at start of each loop
-      __threadfence();
-
-    	cg::coalesced_group full_warp_team = cg::coalesced_threads();
-
-      cg::coalesced_group coalesced_team = labeled_partition(full_warp_team, tree_id);
-
-    	if (coalesced_team.thread_rank() == 0){
-    		shared_block_storage_index = local_shared_block_storage->get_valid_block_index();
-    		my_block = local_shared_block_storage->get_my_block(shared_block_storage_index);
-    	}
-
-    	//recoalesce and share block.
-    	shared_block_storage_index = coalesced_team.shfl(shared_block_storage_index, 0);
-    	my_block = coalesced_team.shfl(my_block, 0);
-
-      //cycle if we read an old block
-    	if (my_block == nullptr){
-    		num_attempts+=1;
-    		continue;
-    	}
-
-      #if BETA_DEBUG_PRINTS
-
-
-      uint64_t alt_block_segment = table->get_segment_from_block_ptr(my_block);
-
-      uint16_t alt_tree_id = table->read_tree_id(alt_block_segment);
-
-      uint64_t block_id = table->get_global_block_offset(my_block);
-
-      uint64_t relative_block_id = table->get_relative_block_offset(my_block);
-
-      if (tree_id != alt_tree_id){
-
-        if (alt_tree_id > num_trees){
-
-          //this error occurs when the tree id stored differs - this is an indicator of stale pointers
-
-          //stale pointers are now detected and pruned
-          printf("Reading from broken segment %llu, alt value %u != %u\n", alt_block_segment, alt_tree_id, tree_id);
-          return ~0ULL;
-
-        }
-
-
-
-        bool main_tree_owns = sub_trees[tree_id]->query(alt_block_segment);
-
-        bool alt_tree_owns = sub_trees[alt_tree_id]->query(alt_block_segment);
-
-        if (!main_tree_owns){
-
-          if (alt_tree_owns){
-            printf("ERROR: Tree %u reading from segment %llu owned by %u\n", tree_id, alt_block_segment, alt_tree_id);
-          } else {
-            printf("ERROR: Neither %u or %u own segment %llu\n", tree_id, alt_tree_id, alt_block_segment);
-          }
-
+        if (alt_tree_owns){
+          printf("ERROR: Tree %u reading from segment %llu owned by %u\n", tree_id, alt_block_segment, alt_tree_id);
         } else {
-
-          if (alt_tree_owns){
-            printf("ERR: Trees %u and %u both own segment %llu\n", tree_id, alt_tree_id, alt_block_segment);
-          }
-
+          printf("ERROR: Neither %u or %u own segment %llu\n", tree_id, alt_tree_id, alt_block_segment);
         }
 
-        if (!sub_trees[tree_id]->query(alt_block_segment)){
-          printf("Sub tree %u does not own segment %llu\n", tree_id, alt_block_segment);
+      } else {
+
+        if (alt_tree_owns){
+          printf("ERR: Trees %u and %u both own segment %llu\n", tree_id, alt_tree_id, alt_block_segment);
         }
-        //this triggers, yeet
-        printf("Block %llu: segment %llu relative %llu not init for malloc: %u != %u\n", block_id, alt_block_segment, relative_block_id, tree_id, alt_tree_id);
 
-        __threadfence();
-
-        continue;
       }
 
-      #endif
+      if (!sub_trees[tree_id]->query(alt_block_segment)){
+        printf("Sub tree %u does not own segment %llu\n", tree_id, alt_block_segment);
+      }
+      //this triggers, yeet
+      printf("Block %llu: segment %llu relative %llu not init for malloc: %u != %u\n", block_id, alt_block_segment, relative_block_id, tree_id, alt_tree_id);
 
-
-
-
-        // select block to pull from and get global stats
-      uint64_t global_block_id = table->get_global_block_offset(my_block);
-
-    	//TODO: add check here that global block id does not exceed bounds
-
-      uint merged_count = my_block->block_malloc_tree(coalesced_team);
-
-    	uint64_t allocation = my_block->extract_count(coalesced_team, merged_count);
-
-      if (allocation >= 4096 && allocation != ~0ULL){
-
-        #if BETA_DEBUG_PRINTS
-        printf("Allocation too big\n");
-        #endif
-
-        #if BETA_TRAP_ON_ERR
-        asm("trap;");
-        #endif
-
-        //invalid alloc, move on.
-        //should never occur but continue just in case.
-        continue;
-
-      } 
-
-    	//bool should_replace = (allocation == 4095 || allocation == ~0ULL);
-
-      bool should_replace = (allocation == 4095);
-
-
-      should_replace = coalesced_team.ballot(should_replace);
-
-
-    	if (should_replace){
-
-    		if (coalesced_team.thread_rank() == 0){
-    			replace_block(tree_id, shared_block_storage_index, my_block, local_shared_block_storage);
-    		}
-
-    	}
-
-      //sync is necessary for block transistion - illegal to free block until detached.
       __threadfence();
-      coalesced_team.sync();
 
-    	if (allocation != ~0ULL){
-
-        if (!my_block->check_valid(merged_count, tree_id)){
-
-          #if BETA_DEBUG_PRINTS
-          printf("Gave out wrong offset\n");
-          #endif
-
-          free_offset(allocation+global_block_id*4096);
-
-        } else {
-          return allocation + global_block_id*4096;
-        }
-
-    		
-
-    	}
-
-
-    	num_attempts+=1;
-
+      continue;
     }
 
-    return ~0ULL;
+    #endif
+
+
+
+
+      // select block to pull from and get global stats
+    uint64_t global_block_id = table->get_global_block_offset(my_block);
+
+  	//TODO: add check here that global block id does not exceed bounds
+
+
+    uint group_sum = cg::exclusive_scan(coalesced_team, alloc_count, cg::plus<uint>());
+
+
+    uint merged_count = my_block->block_malloc_tree_multi_size(coalesced_team, group_sum+alloc_count);
+
+  	uint64_t allocation = my_block->extract_count_multi_size(coalesced_team, merged_count, group_sum, alloc_count);
+
+    
+
+    //this is now correct - final allocation may be incorrect, but we need it.
+    bool should_replace = (allocation <= 4095 && (allocation + alloc_count) > 4095);
+
+    //leftover is any fragment > 1 that is inside the array region.
+
+    //think this does it?
+
+    // = (allocation+alloc_count > 4095)*(allocation+alloc_count-4096);
+
+    //three cases
+    //1 ) entirely valid - alloc_count -1
+    //2 ) valid start and invalid_end (4096-allocation)
+    //3 ) entirely invalid. - 0.
+
+    bool start_valid = (allocation <= 4095);
+    bool end_valid = (allocation+alloc_count <= 4096);
+
+    uint leftover = (start_valid && end_valid)*(alloc_count-1)+(start_valid && (!end_valid))*(4096-allocation);
+
+    my_block->block_correct_frees(coalesced_team, leftover);
+
+
+    if (allocation + alloc_count > 4096) allocation = ~0ULL;
+
+    should_replace = coalesced_team.ballot(should_replace);
+
+
+  	if (should_replace){
+
+  		if (coalesced_team.thread_rank() == 0){
+  			replace_block(tree_id, shared_block_storage_index, my_block, local_shared_block_storage);
+  		}
+
+  	}
+
+    //sync is necessary for block transistion - illegal to free block until detached.
+    __threadfence();
+    coalesced_team.sync();
+
+  	if (allocation != ~0ULL){
+
+      if (!my_block->check_valid(merged_count, tree_id)){
+
+        #if BETA_DEBUG_PRINTS
+        printf("Gave out wrong offset\n");
+
+        my_block->check_valid(merged_count, tree_id);
+        #endif
+
+        free_offset(allocation+global_block_id*4096);
+
+      } else {
+        return allocation + global_block_id*4096;
+      }
+
+  		
+
+  	}
+
+
+  	num_attempts+=1;
 
   }
+
+  return ~0ULL;
+
 
 }
 
