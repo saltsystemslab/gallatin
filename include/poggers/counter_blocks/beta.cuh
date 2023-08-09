@@ -57,6 +57,8 @@ namespace allocators {
 #define BETA_MAX_ATTEMPTS 150
 #define BETA_MALLOC_LOOP_ATTEMPTS 5
 
+#define REREGISTER_CUTOFF .1
+
 
 #define MIN_PINNED_CUTOFF 4
 
@@ -970,7 +972,9 @@ struct beta_allocator {
       __threadfence();
 
       // find first segment available in my sub tree
-      uint64_t segment = sub_trees[tree]->find_first_valid_index();
+      //uint64_t segment = sub_trees[tree]->find_first_valid_index();
+
+      uint64_t segment = sub_trees[tree]->find_random_valid_index();
 
       if (segment == veb_tree::fail()) {
 
@@ -1074,15 +1078,36 @@ struct beta_allocator {
   // return a block to the system
   // this is called by a block once all allocations have been returned.
   __device__ void free_block(Block *block_to_free) {
-    
-    bool need_to_deregister =
-        table->free_block(block_to_free);
+
+    uint64_t segment = table->get_segment_from_block_ptr(block_to_free);
+
+    uint16_t tree = table->read_tree_id(segment);
+
+    uint64_t num_blocks = table->get_blocks_per_segment(tree);
+
+
+    int reserved_slot = table->reserve_segment_slot(block_to_free, segment, tree, num_blocks);
+
+
+    if (1.0*reserved_slot/num_blocks >= REREGISTER_CUTOFF && ((1.0*(reserved_slot-1)/num_blocks) < REREGISTER_CUTOFF)){
+
+      //need to reregister
+      sub_trees[tree]->insert_force_update(segment);
+
+      __threadfence();
+
+    }
+
+    bool need_to_deregister = table->finish_freeing_block(segment, num_blocks);
+
+    //bool need_to_deregister =
+        //table->free_block(block_to_free);
 
     
 
     if (need_to_deregister) {
 
-      uint64_t segment = table->get_segment_from_block_ptr(block_to_free);
+      //uint64_t segment = table->get_segment_from_block_ptr(block_to_free);
 
       #if DEBUG_NO_FREE
 
@@ -1098,7 +1123,7 @@ struct beta_allocator {
 
       // returning segment
       // don't need to reset anything, just pull from table and threadfence
-      uint16_t tree = table->read_tree_id(segment);
+      //uint16_t tree = table->read_tree_id(segment);
 
 
       // pull from tree

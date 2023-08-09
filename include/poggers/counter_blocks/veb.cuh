@@ -620,6 +620,39 @@ struct veb_tree {
     return successor_thorough(0);
   }
 
+  __device__ uint64_t find_random_valid_index(){
+
+    uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+
+    uint64_t hash1 =
+        poggers::hashers::MurmurHash64A(&tid, sizeof(uint64_t), seed);
+
+    tid = threadIdx.x + blockIdx.x * blockDim.x;
+
+    uint64_t hash2 =
+        poggers::hashers::MurmurHash64A(&tid, sizeof(uint64_t), hash1);
+
+    int attempts = 0;
+
+    while (attempts < VEB_MAX_ATTEMPTS) {
+      // uint64_t index_to_start = (hash1+attempts*hash2) % (total_universe-64);
+      uint64_t index_to_start = (hash1 + attempts * hash2) % (total_universe);
+
+      if (query(index_to_start)) return index_to_start;
+
+      uint64_t index = successor_thorough(index_to_start);
+
+      if (index != ~0ULL) return index;
+
+
+      attempts+=1;
+
+    }
+
+    return successor_thorough(0);
+
+  }
+
   __device__ uint64_t malloc_first() {
     int attempts = 0;
 

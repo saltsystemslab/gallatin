@@ -728,7 +728,51 @@ struct alloc_table {
 
   }
 
+
+  //return which index in the queue structure is valid
+  //and start swap
+  //this does not increment find index yet.
+  __device__ uint reserve_segment_slot(Block * block_ptr, uint64_t & segment, uint16_t & global_tree_id, uint64_t & num_blocks){
+
+
+    //get enqueue position.
+    uint enqueue_position = increment_free_queue_position(segment) % num_blocks;
+
+    //swap into queue
+    atomicExch((unsigned long long int *)&queues[segment*blocks_per_segment+enqueue_position], (unsigned long long int) block_ptr);
+
+
+    __threadfence();
+
+    return enqueue_position;
+
+  }
+
+
+  //once the messy logic of the tree reset is done, clean up
+  __device__ bool finish_freeing_block(uint64_t segment, uint64_t num_blocks){
+
+    int return_id = return_slot_to_segment(segment);
+
+    if (all_blocks_free(return_id, num_blocks)){
+
+      if (atomicCAS(&active_counts[segment], num_blocks-1, -1) == num_blocks-1){
+
+        //exclusive owner
+        return true;
+      }
+    }
+
+    return false;
+
+  }
+
   // free block, returns true if this block was the last section needed.
+  //split this into two sections
+  //section one reserves free index
+  //  returns index and flag if segment should be reinserted
+  //Section two adds the item back.
+  //this guarantees that the system is visible *before* being returned.
   __device__ bool free_block(Block *block_ptr) {
 
 

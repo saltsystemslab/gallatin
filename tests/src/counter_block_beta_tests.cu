@@ -881,6 +881,8 @@ __global__ void alloc_one_size_pointer(allocator_type * allocator, uint64_t num_
 
    if (malloc == nullptr){
       atomicAdd((unsigned long long int *)misses, 1ULL);
+
+      bitarray[tid] = malloc;
       return;
    }
 
