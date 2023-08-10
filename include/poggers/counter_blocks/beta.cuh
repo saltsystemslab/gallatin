@@ -285,7 +285,7 @@ struct beta_allocator {
         max_bytes);  // host_version->segment_tree->get_allocator_memory_start());
 
     if (print_info){
-      printf("Booted BETA with %llu trees in range %llu-%llu and %f GB of memory %llu segments\n", num_trees, smallest, biggest, 1.0*total_mem/1024/1024/1024, max_chunks);
+      printf("Booted Gallatin with %llu trees in range %llu-%llu and %f GB of memory %llu segments\n", num_trees, smallest, biggest, 1.0*total_mem/1024/1024/1024, max_chunks);
     }
     
 

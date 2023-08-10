@@ -49,8 +49,8 @@ void check(T err, const char *const func, const char *const file,
   }
 }
 
-#ifndef DEBUG_PRINTS
-#define DEBUG_PRINTS 0
+#ifndef VEB_DEBUG_PRINTS
+#define VEB_DEBUG_PRINTS 0
 #endif
 
 #define VEB_RESTART_CUTOFF 30
@@ -686,7 +686,10 @@ struct veb_tree {
 
     if ((old & SET_BIT_MASK(low))){
 
+      #if VEB_DEBUG_PRINTS
       printf("Bit %d already set...\n", low);
+      #endif
+
       return false;
     } 
 
