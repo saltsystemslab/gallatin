@@ -116,6 +116,8 @@ ConfigureExecutable(vector_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/vector_tests.c
 
 ConfigureExecutable(gallatin_single_thread "${CMAKE_CURRENT_SOURCE_DIR}/src/gallatin_single_thread.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
+ConfigureExecutable(mixed_counter_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/mixed_counter_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
+
 
 
 
