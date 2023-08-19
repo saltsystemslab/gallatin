@@ -72,12 +72,20 @@ struct mixed_counter {
 
   };
 
-  __host__ __device__ void init(){
+  __host__ __device__ void init(uint live_cap){
 
-    full_counter = 0;
+    individual_counters[0] = 0;
+    individual_counters[1] = live_cap;
 
   }
 
+  __device__ void atomicInit(uint live_cap){
+
+    mixed_counter copy_counter(0, live_cap);
+
+    atomicExch((unsigned long long int *)&this->full_counter, copy_counter.full_counter);
+
+  }
 
   __host__ __device__ explicit mixed_counter(uint64_t x) {
 
@@ -112,7 +120,7 @@ struct mixed_counter {
 
   //return an index for this thread or ~0ULL if not available.
   // live cap is the current cap of the system, defined based on tree size in Gallatin.
-  __device__ uint64_t count_and_increment(uint live_cap){
+  __device__ uint64_t count_and_increment(){
 
 
     //global read the current value and determine if the current system can suppor
@@ -124,14 +132,14 @@ struct mixed_counter {
     uint current_live_count = read_value.get_live_count();
 
 
-    if (current_live_count >= live_cap){
+    if (current_live_count == 0){
 
       return ~0ULL;
 
     }
 
 
-    mixed_counter replace_count(current_live_count+1, current_index+1);
+    mixed_counter replace_count(current_live_count-1, current_index+1);
   
 
     mixed_counter old_status(atomicCAS((unsigned long long int *)this, read_value.full_counter, replace_count.full_counter));
@@ -149,10 +157,53 @@ struct mixed_counter {
 
   }
 
+  //return an index for this thread or ~0ULL if not available.
+  // live cap is the current cap of the system, defined based on tree size in Gallatin.
+  __device__ uint64_t count_and_increment_check_last(bool & last){
 
-  __device__ void release(){
+    last = false;
 
-    atomicSub((unsigned int *)&individual_counters[1], 1U);
+    //global read the current value and determine if the current system can suppor
+    // a pull
+    mixed_counter read_value = mixed_counter(poggers::utils::ldca((uint64_t * ) this));
+
+
+    uint current_index = read_value.get_counter();
+    uint current_live_count = read_value.get_live_count();
+
+
+    if (current_live_count == 0){
+
+      return ~0ULL;
+
+    }
+
+
+    mixed_counter replace_count(current_live_count-1, current_index+1);
+  
+
+    mixed_counter old_status(atomicCAS((unsigned long long int *)this, read_value.full_counter, replace_count.full_counter));
+
+
+    if (old_status.full_counter == read_value.full_counter){
+
+      last = (current_live_count == 1);
+
+      //success!
+      return current_index;
+
+    }
+
+
+    return ~0ULL;
+
+  }
+
+
+  __device__ uint64_t release(){
+
+    //range from 0-num_blocks-1
+    return atomicAdd((unsigned int *)&individual_counters[1], 1U);
 
   }
 

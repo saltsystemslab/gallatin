@@ -36,7 +36,7 @@ __global__ void mixed_counter_tests(mixed_counter * shared_counter, uint64_t num
    
    while (true){
 
-      uint64_t index = shared_counter->count_and_increment(live_cap);
+      uint64_t index = shared_counter->count_and_increment();
 
       //valid
       if (index != ~0ULL){
@@ -91,7 +91,7 @@ int main(int argc, char** argv) {
 
    cudaMallocManaged((void **)&counter, sizeof(counter));
 
-   counter->init();
+   counter->init(live_cap);
 
    uint64_t num_bytes_bitarray = sizeof(uint64_t) * ((num_threads -1)/64+1);
 

@@ -38,6 +38,7 @@
 #include <poggers/counter_blocks/block.cuh>
 #include <poggers/counter_blocks/veb.cuh>
 #include <poggers/hash_schemes/murmurhash.cuh>
+#include <poggers/counter_blocks/mixed_counter.cuh>
 
 #ifndef DEBUG_PRINTS
 #define DEBUG_PRINTS 0
@@ -57,6 +58,8 @@ namespace beta {
 
 namespace allocators {
 
+
+using mixed_counter = gallatin::utils::mixed_counter;
 
 //get the total # of allocs freed in the system.
 //max # blocks - this says something about the current state
@@ -100,6 +103,7 @@ __global__ void count_block_live_kernel(table * alloc_table, uint64_t num_blocks
 __global__ void betta_init_counters_kernel(int *malloc_counters,
                                            int *free_counters,
                                            int * active_counts,
+                                           mixed_counter * mixed_queue_counters,
                                            uint * queue_counters, uint * queue_free_counters,
                                            Block *blocks, uint64_t num_segments,
                                            uint64_t blocks_per_segment) {
@@ -112,6 +116,8 @@ __global__ void betta_init_counters_kernel(int *malloc_counters,
 
   active_counts[tid] = -1;
 
+
+  mixed_queue_counters[tid].init(0);
   queue_counters[tid] = 0;
   queue_free_counters[tid] = 0;
 
@@ -140,6 +146,9 @@ struct alloc_table {
 
   //queues hold freed blocks for fast turnaround
   Block ** queues;
+
+
+  mixed_counter * mixed_queue_counters;
 
   //queue counters record position in queue
   uint * queue_counters;
@@ -213,6 +222,8 @@ struct alloc_table {
     // generate counters and set them to 0.
     host_version->active_counts = poggers::utils::get_device_version<int>(num_segments);
 
+
+    host_version->mixed_queue_counters = poggers::utils::get_device_version<mixed_counter>(num_segments);
     host_version->queue_counters = poggers::utils::get_device_version<uint>(num_segments);
     host_version->queue_free_counters = poggers::utils::get_device_version<uint>(num_segments);
 
@@ -224,7 +235,7 @@ struct alloc_table {
         poggers::utils::get_device_version<int>(num_segments);
     betta_init_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
         host_version->malloc_counters, host_version->free_counters,
-        host_version->active_counts, 
+        host_version->active_counts, host_version->mixed_queue_counters,
         host_version->queue_counters, host_version->queue_free_counters,
         host_version->blocks, num_segments,
         blocks_per_segment);
@@ -375,6 +386,11 @@ struct alloc_table {
     int old_active_count = atomicExch(&active_counts[segment], num_blocks-1);
 
     //init queue counters.
+    mixed_queue_counters[segment].init(num_blocks);
+
+    //mixed_queue_counters[segment].atomicInit(num_blocks);
+    __threadfence();
+
     atomicExch(&queue_counters[segment], 0);
     atomicExch(&queue_free_counters[segment], 0);
 
@@ -482,20 +498,18 @@ struct alloc_table {
   ******/
 
   //pull a slot from the segment
-  //this acts as a gate over the malloc counters.
-  __device__ int get_slot_in_segment(uint64_t segment){
-    return atomicSub(&active_counts[segment], 1);
-  }
+  //this acts as a gate over the malloc counters
 
   __device__ int return_slot_to_segment(uint64_t segment){
-    return atomicAdd(&active_counts[segment], 1);
+    //return atomicAdd(&active_counts[segment], 1);
+    return (int) mixed_queue_counters[segment].release();
   }
 
   //helper to check if block is entirely free.
   //requires you to have a valid tree_id
   __device__ bool all_blocks_free(int active_count, uint64_t blocks_per_segment){
 
-    return (active_count == blocks_per_segment-2);
+    return (active_count == blocks_per_segment-1);
 
   }
 
@@ -507,6 +521,11 @@ struct alloc_table {
 
   }
 
+  __device__ uint64_t get_mixed_queue_position(uint64_t segment, bool & last){
+
+    return mixed_queue_counters[segment].count_and_increment_check_last(last);
+
+  }
 
   __device__ uint increment_queue_position(uint64_t segment){
 
@@ -524,71 +543,49 @@ struct alloc_table {
   // this verifies that the segment is initialized correctly
   // and returns nullptr on failure.
   __device__ Block *get_block(uint64_t segment_id, uint16_t tree_id,
-                              bool &empty) {
+                              bool &empty, bool &valid) {
 
 
-    empty = false;
+    //empty = false;
 
-    int active_count = get_slot_in_segment(segment_id);
+    uint64_t active_count = get_mixed_queue_position(segment_id, empty);
 
-    if (!active_count_valid(active_count)){
-
-      return_slot_to_segment(segment_id);
-
+    if (active_count == ~0ULL){
       return nullptr;
-
     }
 
     //if global tree id's don't match, discard.
     uint16_t global_tree_id = read_tree_id(segment_id);
 
-    // tree changed in interim - this can happen in correct behavior.
-    // we correct by releasing back to the system, potentially rolling the segment back.
-    if (global_tree_id != tree_id) {
+    //Discard needs to acquire and then release segment
+    //can combine max_count and current_tree_ID into one value.
+    //that is a job for a different day
 
-      #if BETA_MEM_TABLE_DEBUG
+    uint64_t blocks_in_segment = get_blocks_per_segment(global_tree_id);
 
-      printf("Segment %llu: Read old tree value: %u != %u\n", segment_id, tree_id, global_tree_id);
-
-      #endif
-
-      //slot can go back to a worthy thread
-      //this saves the reset having to be pushed to the main manager.
-      return_slot_to_segment(segment_id);
-
-      __threadfence();
-
-      return nullptr;
-    }
-
-
-    uint64_t blocks_in_segment = get_blocks_per_segment(tree_id);
-
-    //if we have a valid spot, a queue position must exist
-    int queue_pos = increment_queue_position(segment_id);
+    //first, pull block.
 
     Block * my_block;
 
-    if (queue_pos < blocks_in_segment){
+    if (active_count < blocks_in_segment){
 
-      my_block = get_block_from_global_block_id(segment_id*blocks_per_segment+queue_pos);
+      my_block = get_block_from_global_block_id(segment_id*blocks_per_segment+active_count);
 
     } else {
 
 
-      int queue_pos_wrapped = queue_pos % blocks_in_segment;
+      int queue_pos_wrapped = active_count % blocks_in_segment;
 
       //swap out the queue element for nullptr.
       my_block = (Block *) atomicExch((unsigned long long int *)&queues[segment_id*blocks_per_segment+queue_pos_wrapped], 0ULL);
 
     }
 
+    //only valid if they match.
+    valid = (global_tree_id == tree_id);
+
 
     my_block->init_malloc(tree_id);
-
-    if (active_count == 0) {
-      empty = true;
-    }
 
     return my_block;
     

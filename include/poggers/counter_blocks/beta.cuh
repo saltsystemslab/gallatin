@@ -1075,10 +1075,11 @@ struct beta_allocator {
 
 
       bool last_block = false;
+      bool valid = true;
 
       // valid segment, get new block.
-      Block * new_block = table->get_block(segment, tree, last_block);
-
+      Block * new_block = table->get_block(segment, tree, last_block, valid);
+      
 
       #if BETA_DEBUG_PRINTS
 
@@ -1125,10 +1126,11 @@ struct beta_allocator {
         __threadfence();
       }
 
-      // if (!valid){
-      //   free_block(new_block);
-      //   new_block = nullptr;
-      // }
+
+      if (!valid){
+        free_block(new_block);
+        new_block = nullptr;
+      }
 
       if (new_block != nullptr) {
         return new_block;
