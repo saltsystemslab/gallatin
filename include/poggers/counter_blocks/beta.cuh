@@ -44,8 +44,8 @@
 #include <poggers/counter_blocks/shared_block_storage.cuh>
 #include <poggers/hash_schemes/murmurhash.cuh>
 
-#ifndef BETA_DEBUG_PRINTS
-#define BETA_DEBUG_PRINTS 0
+#ifndef GALLATIN_DEBUG_PRINTS
+#define GALLATIN_DEBUG_PRINTS 0
 #endif
 
 namespace beta {
@@ -267,7 +267,7 @@ struct beta_allocator {
 
    
 
-    #if BETA_DEBUG_PRINTS
+    #if GALLATIN_DEBUG_PRINTS
 
     cudaDeviceSynchronize();
 
@@ -380,7 +380,7 @@ struct beta_allocator {
 
     if (smid >= local_shared_block_storage->num_blocks){
 
-      #if BETA_DEBUG_PRINTS
+      #if GALLATIN_DEBUG_PRINTS
       printf("ERR %d >= %llu\n", smid, local_shared_block_storage->num_blocks);
       #endif
 
@@ -396,7 +396,7 @@ struct beta_allocator {
 
   	if (new_block == nullptr){
 
-      #if BETA_DEBUG_PRINTS
+      #if GALLATIN_DEBUG_PRINTS
   		printf("Failed to initialize block %d from tree %u", smid, tree_id);
       #endif
 
@@ -408,7 +408,7 @@ struct beta_allocator {
   	}
 
 
-    #if BETA_DEBUG_PRINTS
+    #if GALLATIN_DEBUG_PRINTS
 
 
     uint64_t alt_block_segment = table->get_segment_from_block_ptr(new_block);
@@ -433,7 +433,7 @@ struct beta_allocator {
 
     if(!local_shared_block_storage->swap_out_nullptr(smid, new_block)){
 
-      #if BETA_DEBUG_PRINTS
+      #if GALLATIN_DEBUG_PRINTS
     	printf("Error: Block in position %d for tree %d already initialized\n", smid, tree_id);
       #endif
 
@@ -458,7 +458,7 @@ struct beta_allocator {
 
   		if (new_block == nullptr){
 
-        #if BETA_DEBUG_PRINTS
+        #if GALLATIN_DEBUG_PRINTS
         printf("Failed to acquire block\n");
         #endif
 
@@ -467,7 +467,7 @@ struct beta_allocator {
 
   		if (!my_pinned_blocks->swap_out_nullptr(smid, new_block)){
 
-        #if BETA_DEBUG_PRINTS
+        #if GALLATIN_DEBUG_PRINTS
   			printf("Incorrect behavior when swapping out block index %d for tree %d\n", smid, tree_id);
         #endif
 
@@ -505,7 +505,7 @@ struct beta_allocator {
 
       if (block_tree < 0){ block_tree = num_trees-1; }
 
-      // #if BETA_DEBUG_PRINTS
+      // #if GALLATIN_DEBUG_PRINTS
       // printf("Snapped tree id to size %d\n", block_tree);
       // #endif
 
@@ -527,7 +527,7 @@ struct beta_allocator {
 
     if (offset == ~0ULL){
 
-      #if BETA_DEBUG_PRINTS
+      #if GALLATIN_DEBUG_PRINTS
 
       printf("Failed to allocate size %llu\n", size);
 
@@ -538,7 +538,7 @@ struct beta_allocator {
 
     }
 
-    #if BETA_DEBUG_PRINTS
+    #if GALLATIN_DEBUG_PRINTS
 
       uint64_t segment = table->get_segment_from_offset(offset);
 
@@ -566,7 +566,7 @@ struct beta_allocator {
 
         //test here verifies that segment is being reset...
         //It is not a misread of the segment≥
-        #if BETA_DEBUG_PRINTS
+        #if GALLATIN_DEBUG_PRINTS
         printf("Mismatch for offset: %llu in tree ids for alloc of size %llu: %u != %u...Block %llu segment %llu offset %llu tree %u... prev is %u Next is %u. Malloc %d, free %d.\n", offset, size, tree_id, alt_tree_id, block_id, block_segment, relative_offset, block_tree, prev_segment_id, next_segment_id, malloc_status, free_status);
         #endif
 
@@ -581,7 +581,7 @@ struct beta_allocator {
 
     void * alloc = offset_to_allocation(offset, tree_id);
 
-    #if BETA_DEBUG_PRINTS
+    #if GALLATIN_DEBUG_PRINTS
 
     uint64_t alloc_segment = table->get_segment_from_ptr(alloc);
 
@@ -646,7 +646,7 @@ struct beta_allocator {
 
     if (tree_id > num_trees){
 
-      #if BETA_DEBUG_PRINTS
+      #if GALLATIN_DEBUG_PRINTS
 
       printf("Tree freeing into uninitialized segment\n");
 
@@ -667,7 +667,7 @@ struct beta_allocator {
 
    
 
-    #if BETA_DEBUG_PRINTS
+    #if GALLATIN_DEBUG_PRINTS
 
       uint64_t raw_bytes = (char *) allocation - table->memory;
     
@@ -713,7 +713,7 @@ struct beta_allocator {
 
         } else {
 
-          // #if BETA_DEBUG_PRINTS
+          // #if GALLATIN_DEBUG_PRINTS
           // printf("Alloc of %llu bytes pulling from block in tree %d\n", bytes_needed, block_tree);
           // #endif
 
@@ -729,7 +729,7 @@ struct beta_allocator {
 
           if (old != 0){
 
-            #if BETA_DEBUG_PRINTS
+            #if GALLATIN_DEBUG_PRINTS
             printf("Block was already set %u\n", old);
             #endif
 
@@ -759,7 +759,7 @@ struct beta_allocator {
 
           if (!table->set_tree_id(alloc_index, num_trees + 1+ num_segments_required)){
 
-            #if BETA_DEBUG_PRINTS
+            #if GALLATIN_DEBUG_PRINTS
             printf("Failed to set tree id for segment %llu with %llu segments trailing\n", alloc_index, num_segments_required);
             #endif
 
@@ -823,7 +823,7 @@ struct beta_allocator {
   		continue;
   	}
 
-    #if BETA_DEBUG_PRINTS
+    #if GALLATIN_DEBUG_PRINTS
 
 
     uint64_t alt_block_segment = table->get_segment_from_block_ptr(my_block);
@@ -942,7 +942,7 @@ struct beta_allocator {
 
       if (!my_block->check_valid(merged_count, tree_id)){
 
-        #if BETA_DEBUG_PRINTS
+        #if GALLATIN_DEBUG_PRINTS
         printf("Gave out wrong offset\n");
 
         my_block->check_valid(merged_count, tree_id);
@@ -983,7 +983,7 @@ struct beta_allocator {
     // register segment
     if (!table->setup_segment(new_segment_id, tree)) {
       
-      #if BETA_DEBUG_PRINTS
+      #if GALLATIN_DEBUG_PRINTS
       printf("Failed to acquire updatable segment\n");
       #endif
 
@@ -1005,7 +1005,7 @@ struct beta_allocator {
 
     __threadfence();
 
-    #if BETA_DEBUG_PRINTS
+    #if GALLATIN_DEBUG_PRINTS
 
     bool found = sub_trees[tree]->query(new_segment_id);
 
@@ -1080,7 +1080,7 @@ struct beta_allocator {
       Block * new_block = table->get_block(segment, tree, last_block);
 
 
-      #if BETA_DEBUG_PRINTS
+      #if GALLATIN_DEBUG_PRINTS
 
       //verify segments match
 
@@ -1106,7 +1106,7 @@ struct beta_allocator {
 
         bool removed = sub_trees[tree]->remove(segment);
 
-        #if BETA_DEBUG_PRINTS
+        #if GALLATIN_DEBUG_PRINTS
 
         //only worth bringing up if it failed.
         if (!removed){
@@ -1175,7 +1175,7 @@ struct beta_allocator {
 
       #if DEBUG_NO_FREE
 
-      #if BETA_DEBUG_PRINTS
+      #if GALLATIN_DEBUG_PRINTS
       printf("Segment %llu derregister. this is a bug\n", segment);
       #endif
 
@@ -1197,7 +1197,7 @@ struct beta_allocator {
 
 
         //in new version, this is fine... - blocks can live in the tree until full reset.
-        // #if BETA_DEBUG_PRINTS
+        // #if GALLATIN_DEBUG_PRINTS
         // printf("Failed to properly release segment %llu from tree %u\n", segment, tree);
         // #endif
 
@@ -1205,7 +1205,7 @@ struct beta_allocator {
 
       if (!table->reset_tree_id(segment, tree)){
 
-        #if BETA_DEBUG_PRINTS
+        #if GALLATIN_DEBUG_PRINTS
         printf("Failed to reset tree id for segment %llu, old ID %u\n", segment, tree);
 
         #endif
@@ -1215,7 +1215,7 @@ struct beta_allocator {
       // insert with threadfence
       if (!segment_tree->insert_force_update(segment)){
 
-        #if BETA_DEBUG_PRINTS
+        #if GALLATIN_DEBUG_PRINTS
 
         printf("Failed to reinsert segment %llu into segment tree\n", segment);
         #endif
