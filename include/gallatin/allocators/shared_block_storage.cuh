@@ -75,6 +75,32 @@ struct per_size_pinned_blocks {
     return gallatin::utils::move_to_device<per_size_pinned_blocks>(host_version);
   }
 
+
+  static __host__ per_size_pinned_blocks * generate_on_device_nowait(
+      uint64_t num_blocks) {
+    if (num_blocks == 0) num_blocks = 1;
+
+    per_size_pinned_blocks *host_version =
+        gallatin::utils::get_host_version<per_size_pinned_blocks>();
+
+    uint64_t num_uints = (num_blocks - 1) / 64 + 1;
+
+    host_version->block_bitmap =
+        gallatin::utils::get_device_version<uint64_t>(num_uints);
+
+    cudaMemset(host_version->block_bitmap, 0ULL, num_uints * sizeof(uint64_t));
+
+    host_version->blocks =
+        gallatin::utils::get_device_version<Block *>(num_blocks);
+
+    host_version->num_blocks = num_blocks;
+
+    gallatin_set_block_bitarrs<<<(num_blocks - 1) / 512 + 1, 512>>>(
+        host_version->blocks, num_blocks);
+
+    return gallatin::utils::move_to_device_nowait<per_size_pinned_blocks>(host_version);
+  }
+
   static __host__ void free_on_device(per_size_pinned_blocks *dev_version) {
     per_size_pinned_blocks *host_version =
         gallatin::utils::move_to_host<per_size_pinned_blocks>(dev_version);
@@ -209,6 +235,38 @@ struct pinned_shared_blocks {
   static __host__ my_type *generate_on_device(uint64_t blocks_per_segment){
   	return generate_on_device(blocks_per_segment, 1);
   }
+
+
+  static __host__ my_type *generate_on_device_nowait(uint64_t blocks_per_segment, uint16_t min) {
+    my_type *host_version = gallatin::utils::get_host_version<my_type>();
+
+    uint64_t num_trees = gallatin::utils::get_first_bit_bigger(biggest) -
+                         gallatin::utils::get_first_bit_bigger(smallest) + 1;
+
+    per_size_pinned_blocks **host_block_containers =
+        gallatin::utils::get_host_version<per_size_pinned_blocks *>(num_trees);
+
+    for (uint64_t i = 0; i < num_trees; i++) {
+      host_block_containers[i] =
+          per_size_pinned_blocks::generate_on_device_nowait(blocks_per_segment);
+
+      blocks_per_segment = blocks_per_segment / 2;
+
+      if (blocks_per_segment < min) blocks_per_segment = min;
+    }
+
+    host_version->block_containers =
+        gallatin::utils::move_to_device<per_size_pinned_blocks *>(
+            host_block_containers, num_trees);
+
+    return gallatin::utils::move_to_device_nowait<my_type>(host_version);
+  }
+
+
+  static __host__ my_type *generate_on_device_nowait(uint64_t blocks_per_segment){
+    return generate_on_device_nowait(blocks_per_segment, 1);
+  }
+
 
   static __host__ void free_on_device(my_type *dev_version) {
     my_type *host_version = gallatin::utils::move_to_host<my_type>(dev_version);

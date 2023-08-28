@@ -278,14 +278,14 @@ struct Gallatin {
 
     uint64_t total_mem = max_bytes;
 
-    host_version->segment_tree = veb_tree::generate_on_device(max_chunks, seed);
+    host_version->segment_tree = veb_tree::generate_on_device_nowait(max_chunks, seed);
 
     // estimate the max_bits
     uint64_t blocks_per_pinned_block = 128;
     uint64_t num_bits = bytes_per_segment / (4096 * smallest);
 
     host_version->local_blocks =
-        pinned_block_type::generate_on_device(blocks_per_pinned_block, MIN_PINNED_CUTOFF);
+        pinned_block_type::generate_on_device_nowait(blocks_per_pinned_block, MIN_PINNED_CUTOFF);
 
     uint64_t num_bytes = 0;
 
@@ -310,7 +310,7 @@ struct Gallatin {
 
     for (int i = 0; i < num_trees; i++) {
       sub_tree_type *temp_tree =
-          sub_tree_type::generate_on_device(max_chunks, i + seed);
+          sub_tree_type::generate_on_device_nowait(max_chunks, i + seed);
       ext_sub_trees[i] = temp_tree;
     }
 
@@ -336,7 +336,7 @@ struct Gallatin {
     host_version->locks = 0;
 
     host_version
-        ->table = alloc_table<bytes_per_segment, smallest>::generate_on_device(
+        ->table = alloc_table<bytes_per_segment, smallest>::generate_on_device_nowait(
         max_bytes);  // host_version->segment_tree->get_allocator_memory_start());
 
     if (print_info){
@@ -345,7 +345,7 @@ struct Gallatin {
     
 
 
-    auto device_version = move_to_device(host_version);
+    auto device_version = move_to_device_nowait(host_version);
 
     boot_shared_block_container<my_type><<<(blocks_per_pinned_block-1)/128+1, 128>>>(device_version,num_trees, blocks_per_pinned_block, MIN_PINNED_CUTOFF);
 

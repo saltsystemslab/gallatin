@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 
-project(poggers VERSION 0.1.0 LANGUAGES CXX CUDA)
+project(gallatin VERSION 1.0 LANGUAGES CXX CUDA)
 
 
 
@@ -24,7 +24,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/EvalGpuArchs.cmake)
 
 #set(CUDA_TOOLKIT_ROOT_DIR /usr/local/cuda-12.1)
 
-find_package(CUDAToolkit 11.0 REQUIRED)
+find_package(CUDAToolkit 11.8 REQUIRED)
 set(CMAKE_CUDA_RUNTIME_LIBRARY SHARED)
 
 #package manager
@@ -35,13 +35,13 @@ include(cmake/ConfigureExecutable.cmake)
 
 ## Package Target
 
-add_library(poggers INTERFACE)
+add_library(gallatin INTERFACE)
 
-target_include_directories(poggers INTERFACE
+target_include_directories(gallatin INTERFACE
                            "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
                            $<INSTALL_INTERFACE:include>)
 
-target_link_libraries(poggers INTERFACE ssl crypto)
+target_link_libraries(gallatin INTERFACE ssl crypto)
 
 
 option(LINFO "Add lineInfo for NSight Compute profiling" OFF)
@@ -59,14 +59,14 @@ set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}") 
 
 
-set_target_properties(poggers PROPERTIES CMAKE_CUDA_RUNTIME_LIBRARY Static)
-set_target_properties(poggers PROPERTIES CUDA_SEPARABLE_COMPILATION ON )
+set_target_properties(gallatin PROPERTIES CMAKE_CUDA_RUNTIME_LIBRARY Static)
+set_target_properties(gallatin PROPERTIES CUDA_SEPARABLE_COMPILATION ON )
 
 set(POGGERS_TESTS_BINARY_DIR "${CMAKE_BINARY_DIR}/tests")
 
-option(BETA_TESTS "Configure CMake to build tests for the allocator" OFF)
+option(GAL_TESTS "Configure CMake to build tests for the allocator" OFF)
 
-if(BETA_TESTS)
+if(GAL_TESTS)
     add_subdirectory(tests)
-endif(BETA_TESTS)
+endif(GAL_TESTS)
 

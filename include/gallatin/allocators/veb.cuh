@@ -156,6 +156,52 @@ struct layer {
     return dev_layer;
   }
 
+  //special init function for Gallatin
+  //tree is not guaranteed to be initialized until a synchronize is called
+  //This function allows for multiple layers to be initialized simultaneously.
+  __host__ static layer *generate_on_device_nowait(uint64_t items_in_universe) {
+    uint64_t ext_num_blocks = (items_in_universe - 1) / 64 + 1;
+
+    // printf("Universe of %lu items in %lu bytes\n", items_in_universe,
+    // ext_num_blocks);
+
+    layer *host_layer;
+
+    cudaMallocHost((void **)&host_layer, sizeof(layer));
+
+    uint64_t *dev_bits;
+
+    cudaMalloc((void **)&dev_bits, sizeof(uint64_t) * ext_num_blocks);
+
+    cudaMemset(dev_bits, 0, sizeof(uint64_t) * ext_num_blocks);
+
+    init_bits<<<(items_in_universe - 1) / 256 + 1, 256>>>(dev_bits,
+                                                          items_in_universe);
+
+    //cudaDeviceSynchronize();
+
+    host_layer->universe_size = items_in_universe;
+
+    host_layer->num_blocks = ext_num_blocks;
+
+    host_layer->bits = dev_bits;
+
+    layer *dev_layer;
+
+    cudaMalloc((void **)&dev_layer, sizeof(layer));
+
+    cudaMemcpy(dev_layer, host_layer, sizeof(layer), cudaMemcpyHostToDevice);
+
+    //cudaDeviceSynchronize();
+
+    cudaFreeHost(host_layer);
+
+    //cudaDeviceSynchronize();
+
+    return dev_layer;
+  }
+
+
   __device__ static uint64_t get_num_blocks(uint64_t items_in_universe) {
     return (items_in_universe - 1) / 64 + 1;
   }
@@ -517,6 +563,63 @@ struct veb_tree {
                cudaMemcpyHostToDevice);
 
     cudaDeviceSynchronize();
+
+    cudaFreeHost(host_layers);
+
+    // setup host structure
+    host_tree->num_layers = ext_num_layers;
+    host_tree->original_num_layers = ext_num_layers;
+
+    host_tree->layers = dev_layers;
+
+    host_tree->seed = ext_seed;
+
+    host_tree->total_universe = universe;
+
+    veb_tree *dev_tree;
+    cudaMalloc((void **)&dev_tree, sizeof(veb_tree));
+
+    cudaMemcpy(dev_tree, host_tree, sizeof(veb_tree), cudaMemcpyHostToDevice);
+
+    cudaFreeHost(host_tree);
+
+    return dev_tree;
+  }
+
+
+  __host__ static veb_tree *generate_on_device_nowait(uint64_t universe,
+                                               uint64_t ext_seed) {
+    veb_tree *host_tree;
+
+    cudaMallocHost((void **)&host_tree, sizeof(veb_tree));
+
+    int max_height = 64 - __builtin_clzll(universe);
+
+    assert(max_height >= 1);
+    // round up but always assume
+    int ext_num_layers = (max_height - 1) / 6 + 1;
+
+    layer **host_layers;
+
+    cudaMallocHost((void **)&host_layers, ext_num_layers * sizeof(layer *));
+
+    uint64_t ext_universe_size = universe;
+
+    for (int i = 0; i < ext_num_layers; i++) {
+      host_layers[ext_num_layers - 1 - i] =
+          layer::generate_on_device_nowait(ext_universe_size);
+
+      ext_universe_size = (ext_universe_size - 1) / 64 + 1;
+    }
+
+    layer **dev_layers;
+
+    cudaMalloc((void **)&dev_layers, ext_num_layers * sizeof(layer *));
+
+    cudaMemcpy(dev_layers, host_layers, ext_num_layers * sizeof(layer *),
+               cudaMemcpyHostToDevice);
+
+    //cudaDeviceSynchronize();
 
     cudaFreeHost(host_layers);
 

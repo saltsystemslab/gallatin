@@ -219,6 +219,37 @@ __host__ Struct_Type *move_to_host(Struct_Type *dev_version,
 }
 
 template <typename Struct_Type>
+__host__ Struct_Type *move_to_device_nowait(Struct_Type *host_version) {
+  Struct_Type *dev_version = get_device_version<Struct_Type>();
+
+  cudaMemcpy(dev_version, host_version, sizeof(Struct_Type),
+             cudaMemcpyHostToDevice);
+
+
+  cudaFreeHost(host_version);
+
+  return dev_version;
+}
+
+template <typename Struct_Type>
+__host__ Struct_Type *move_to_device_nowait(Struct_Type *host_version,
+                                     uint64_t num_copies) {
+  // printf("Starting copy\n");
+
+  Struct_Type *dev_version = get_device_version<Struct_Type>(num_copies);
+
+  // printf("Dev ptr %lx\n", (uint64_t) dev_version);
+
+  cudaMemcpy(dev_version, host_version, num_copies * sizeof(Struct_Type),
+             cudaMemcpyHostToDevice);
+
+  cudaFreeHost(host_version);
+
+  return dev_version;
+}
+
+
+template <typename Struct_Type>
 __host__ Struct_Type *copy_to_host(Struct_Type *dev_version,
                                    uint64_t num_copies) {
   Struct_Type *host_version = get_host_version<Struct_Type>(num_copies);

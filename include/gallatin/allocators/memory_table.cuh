@@ -248,6 +248,97 @@ struct alloc_table {
     return dev_version;
   }
 
+
+    // generate structure on device and return pointer.
+  static __host__ my_type *generate_on_device_nowait(uint64_t max_bytes) {
+    my_type *host_version;
+
+    cudaMallocHost((void **)&host_version, sizeof(my_type));
+
+    uint64_t num_segments =
+        gallatin::utils::get_max_chunks<bytes_per_segment>(max_bytes);
+
+    //printf("Booting memory table with %llu chunks\n", num_segments);
+
+    uint16_t *ext_chunks;
+
+    cudaMalloc((void **)&ext_chunks, sizeof(uint16_t) * num_segments);
+
+    cudaMemset(ext_chunks, ~0U, sizeof(uint16_t) * num_segments);
+
+    host_version->chunk_ids = ext_chunks;
+
+    host_version->num_segments = num_segments;
+
+    // init blocks
+
+    uint64_t blocks_per_segment = bytes_per_segment / (min_size * 4096);
+
+    Block *ext_blocks;
+
+    cudaMalloc((void **)&ext_blocks,
+               sizeof(Block) * blocks_per_segment * num_segments);
+
+    cudaMemset(ext_blocks, 0U,
+               sizeof(Block) * (num_segments * blocks_per_segment));
+
+    host_version->blocks = ext_blocks;
+
+    host_version->blocks_per_segment = blocks_per_segment;
+
+
+    Block ** ext_queues;
+    cudaMalloc((void **)&ext_queues, sizeof(Block *)*blocks_per_segment*num_segments);
+
+    host_version->queues = ext_queues;
+
+    host_version->memory = gallatin::utils::get_device_version<char>(
+        bytes_per_segment * num_segments);
+
+    cudaMemset(host_version->memory, 0, bytes_per_segment*num_segments);
+
+    // generate counters and set them to 0.
+    host_version->active_counts = gallatin::utils::get_device_version<int>(num_segments);
+
+    host_version->queue_counters = gallatin::utils::get_device_version<uint>(num_segments);
+    host_version->queue_free_counters = gallatin::utils::get_device_version<uint>(num_segments);
+
+
+
+    host_version->malloc_counters =
+        gallatin::utils::get_device_version<int>(num_segments);
+    host_version->free_counters =
+        gallatin::utils::get_device_version<int>(num_segments);
+    betta_init_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
+        host_version->malloc_counters, host_version->free_counters,
+        host_version->active_counts, 
+        host_version->queue_counters, host_version->queue_free_counters,
+        host_version->blocks, num_segments,
+        blocks_per_segment);
+
+    //GPUErrorCheck(cudaDeviceSynchronize());
+
+
+   
+
+
+
+
+    // move to device and free host memory.
+    my_type *dev_version;
+
+    cudaMalloc((void **)&dev_version, sizeof(my_type));
+
+    cudaMemcpy(dev_version, host_version, sizeof(my_type),
+               cudaMemcpyHostToDevice);
+
+    //cudaDeviceSynchronize();
+
+    cudaFreeHost(host_version);
+
+    return dev_version;
+  }
+
   // return memory to GPU
   static __host__ void free_on_device(my_type *dev_version) {
     my_type *host_version;
