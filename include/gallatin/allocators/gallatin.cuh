@@ -112,10 +112,12 @@ namespace allocators {
 #define GALLATIN_MAX_ATTEMPTS 300
 #define GALLATIN_MALLOC_LOOP_ATTEMPTS 5
 
+
+
+
 #define REREGISTER_CUTOFF .1
-
-
 #define MIN_PINNED_CUTOFF 4
+#define GALLATIN_TEAM_FREE 1
 
 // alloc table associates chunks of memory with trees
 
@@ -337,7 +339,7 @@ struct Gallatin {
 
     host_version
         ->table = alloc_table<bytes_per_segment, smallest>::generate_on_device_nowait(
-        max_bytes);  // host_version->segment_tree->get_allocator_memory_start());
+        max_bytes);
 
     if (print_info){
       printf("Booted Gallatin with %llu trees in range %llu-%llu and %f GB of memory %llu segments\n", num_trees, smallest, biggest, 1.0*total_mem/1024/1024/1024, max_chunks);
@@ -1284,20 +1286,48 @@ struct Gallatin {
 
     // get block
 
+
     uint64_t block_id = malloc/4096;
 
-    Block * my_block = table->get_block_from_global_block_id(block_id);
 
-    if (my_block->block_free()){
+    #if GALLATIN_TEAM_FREE
+
+      cg::coalesced_group full_warp_team = cg::coalesced_threads();
+
+      cg::coalesced_group coalesced_team = labeled_partition(full_warp_team, block_id);
+
+      Block * my_block = table->get_block_from_global_block_id(block_id);
+
+      if (coalesced_team.thread_rank() == 0){
+
+        if (my_block->block_free_multiple(coalesced_team.size())){
+
+            #if !DEBUG_NO_FREE
+            my_block->reset_free();
+            #endif
+
+            free_block(my_block);
+
+        }
+
+      }
+
+    #else
+
+      Block * my_block = table->get_block_from_global_block_id(block_id);
+
+      if (my_block->block_free()){
 
 
-      #if !DEBUG_NO_FREE
-      my_block->reset_free();
-      #endif
+        #if !DEBUG_NO_FREE
+        my_block->reset_free();
+        #endif
 
-      free_block(my_block);
+        free_block(my_block);
 
-    }
+      }
+
+    #endif
 
     return;
   }

@@ -83,6 +83,19 @@ struct Block {
     return (old == 4095);
   }
 
+  __device__ bool block_free_multiple(uint num_frees) {
+    uint old = atomicAdd((unsigned int *)&free_counter, num_frees);
+
+
+    #if GALLATIN_BLOCK_DEBUG
+
+    if (old > 4096-num_frees) printf("Double free to block: %u frees\n", old+num_frees);
+
+    #endif
+
+    return (old+num_frees == 4096);
+  }
+
   __device__ uint64_t block_malloc(cg::coalesced_group &active_threads) {
     uint old_count;
 
