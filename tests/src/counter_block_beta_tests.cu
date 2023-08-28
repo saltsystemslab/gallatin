@@ -11,9 +11,9 @@
 
 
 
-#include <poggers/counter_blocks/beta.cuh>
+#include <gallatin/allocators/gallatin.cuh>
 
-#include <poggers/beta/timer.cuh>
+#include <gallatin/allocators/timer.cuh>
 
 
 #include <stdio.h>
@@ -21,7 +21,7 @@
 #include <assert.h>
 #include <chrono>
 
-using namespace beta::allocators;
+using namespace gallatin::allocators;
 
 
 // __global__ void test_kernel(veb_tree * tree, uint64_t num_removes, int num_iterations){
@@ -79,8 +79,8 @@ __host__ void boot_alloc_table(){
 
 // }
 
-template <typename betta_type>
-__global__ void register_all_segments(betta_type * betta, uint64_t num_segments){
+template <typename gallatin_type>
+__global__ void register_all_segments(gallatin_type * betta, uint64_t num_segments){
 
    uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -91,8 +91,8 @@ __global__ void register_all_segments(betta_type * betta, uint64_t num_segments)
 }
 
 
-template <typename betta_type>
-__global__ void malloc_all_blocks_single_thread(betta_type * betta, uint64_t num_segments, uint64_t blocks_per_segment){
+template <typename gallatin_type>
+__global__ void malloc_all_blocks_single_thread(gallatin_type * betta, uint64_t num_segments, uint64_t blocks_per_segment){
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
@@ -123,8 +123,8 @@ __global__ void malloc_all_blocks_single_thread(betta_type * betta, uint64_t num
 
 }
 
-template <typename betta_type>
-__global__ void malloc_all_blocks(betta_type * betta, uint64_t num_segments, uint64_t blocks_per_segment){
+template <typename gallatin_type>
+__global__ void malloc_all_blocks(gallatin_type * betta, uint64_t num_segments, uint64_t blocks_per_segment){
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
@@ -148,8 +148,8 @@ __global__ void malloc_all_blocks(betta_type * betta, uint64_t num_segments, uin
 }
 
 //pull all blocks using betta
-template <typename betta_type>
-__global__ void malloc_all_blocks_betta(betta_type * betta, uint64_t num_segments, uint64_t blocks_per_segment){
+template <typename gallatin_type>
+__global__ void malloc_all_blocks_betta(gallatin_type * betta, uint64_t num_segments, uint64_t blocks_per_segment){
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
@@ -164,8 +164,8 @@ __global__ void malloc_all_blocks_betta(betta_type * betta, uint64_t num_segment
 }
 
 
-template <typename betta_type>
-__global__ void malloc_and_save_blocks(betta_type * betta, Block ** blocks, uint64_t num_segments, uint64_t blocks_per_segment){
+template <typename gallatin_type>
+__global__ void malloc_and_save_blocks(gallatin_type * betta, Block ** blocks, uint64_t num_segments, uint64_t blocks_per_segment){
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
@@ -184,8 +184,8 @@ __global__ void malloc_and_save_blocks(betta_type * betta, Block ** blocks, uint
 }
 
 
-template <typename betta_type>
-__global__ void malloc_and_save_blocks_tree(betta_type * betta, Block ** blocks, uint64_t num_segments, uint64_t blocks_per_segment, int tree_id){
+template <typename gallatin_type>
+__global__ void malloc_and_save_blocks_tree(gallatin_type * betta, Block ** blocks, uint64_t num_segments, uint64_t blocks_per_segment, int tree_id){
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
@@ -204,8 +204,8 @@ __global__ void malloc_and_save_blocks_tree(betta_type * betta, Block ** blocks,
 }
 
 
-template <typename betta_type>
-__global__ void betta_free_all_blocks(betta_type * betta, Block ** blocks, uint64_t num_segments, uint64_t blocks_per_segment){
+template <typename gallatin_type>
+__global__ void betta_free_all_blocks(gallatin_type * betta, Block ** blocks, uint64_t num_segments, uint64_t blocks_per_segment){
 
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
@@ -222,8 +222,8 @@ __global__ void betta_free_all_blocks(betta_type * betta, Block ** blocks, uint6
 
 
 
-template <typename betta_type>
-__global__ void malloc_all_blocks_betta_single_thread(betta_type * betta, uint64_t num_segments, uint64_t blocks_per_segment){
+template <typename gallatin_type>
+__global__ void malloc_all_blocks_betta_single_thread(gallatin_type * betta, uint64_t num_segments, uint64_t blocks_per_segment){
 
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
@@ -249,8 +249,8 @@ __global__ void malloc_all_blocks_betta_single_thread(betta_type * betta, uint64
 }
 
 
-template <typename betta_type>
-__global__ void peek(betta_type * betta){
+template <typename gallatin_type>
+__global__ void peek(gallatin_type * betta){
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
@@ -258,8 +258,8 @@ __global__ void peek(betta_type * betta){
 }
 
 
-template <typename betta_type>
-__global__ void peek_blocks(betta_type * betta, Block ** blocks){
+template <typename gallatin_type>
+__global__ void peek_blocks(gallatin_type * betta, Block ** blocks){
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
@@ -292,19 +292,19 @@ __global__ void assert_unique_blocks(Block ** blocks, uint64_t num_segments, uin
 }
 
 
-template <typename betta_type>
-__global__ void alloc_random_blocks(betta_type * betta){
+template <typename gallatin_type>
+__global__ void alloc_random_blocks(gallatin_type * betta){
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
    Block * my_blocks[10];
 
-   uint64_t num_trees = betta_type::get_num_trees();
+   uint64_t num_trees = gallatin_type::get_num_trees();
 
 
    for (int i = 0; i < 1; i++){
 
-      int tree = poggers::hashers::MurmurHash64A (&tid, sizeof(uint64_t), i) % num_trees;
+      int tree = gallatin::hashers::MurmurHash64A (&tid, sizeof(uint64_t), i) % num_trees;
 
       my_blocks[i] = betta->request_new_block_from_tree(tree);
 
@@ -330,11 +330,11 @@ __global__ void alloc_random_blocks(betta_type * betta){
 }
 
 
-// template <typename betta_type>
+// template <typename gallatin_type>
 // __global__ void malloc_all_bits( )
 
-// template <typename betta_type>
-// __global__ void malloc_all_segments(betta_type * betta, uint64_t num_segments){
+// template <typename gallatin_type>
+// __global__ void malloc_all_segments(gallatin_type * betta, uint64_t num_segments){
 
 //    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
@@ -348,36 +348,36 @@ __global__ void alloc_random_blocks(betta_type * betta){
 template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
 __host__ void boot_betta(uint64_t num_bytes){
 
-   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+   using gallatin_type = gallatin::allocators::Gallatin<mem_segment_size, smallest, largest>;
 
-   betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+   gallatin_type * allocator = gallatin_type::generate_on_device(num_bytes, 42);
 
    cudaDeviceSynchronize();
 
-   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+   uint64_t num_segments = gallatin::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
-   register_all_segments<betta_type><<<(num_segments-1)/512+1,512>>>(allocator, num_segments);
+   register_all_segments<gallatin_type><<<(num_segments-1)/512+1,512>>>(allocator, num_segments);
 
    printf("Ext sees %llu segments\n", num_segments);
    cudaDeviceSynchronize();
 
-   poggers::utils::print_mem_in_use();
+   gallatin::utils::print_mem_in_use();
 
 
    cudaDeviceSynchronize();
 
-   //malloc_all_blocks_single_thread<betta_type><<<1,1>>>(allocator, num_segments, 256);
-   //malloc_all_blocks<betta_type><<<(num_segments*128-1)/512+1,512>>>(allocator, num_segments*128);
+   //malloc_all_blocks_single_thread<gallatin_type><<<1,1>>>(allocator, num_segments, 256);
+   //malloc_all_blocks<gallatin_type><<<(num_segments*128-1)/512+1,512>>>(allocator, num_segments*128);
 
-   malloc_all_blocks_betta<betta_type><<<(num_segments*256-1)/512+1,512>>>(allocator, num_segments, 256);
-
-   cudaDeviceSynchronize();
-
-   peek<betta_type><<<1,1>>>(allocator);
+   malloc_all_blocks_betta<gallatin_type><<<(num_segments*256-1)/512+1,512>>>(allocator, num_segments, 256);
 
    cudaDeviceSynchronize();
 
-   betta_type::free_on_device(allocator);
+   peek<gallatin_type><<<1,1>>>(allocator);
+
+   cudaDeviceSynchronize();
+
+   gallatin_type::free_on_device(allocator);
 
 }
 
@@ -386,15 +386,15 @@ __host__ void boot_betta(uint64_t num_bytes){
 template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
 __host__ void boot_betta_malloc_free(uint64_t num_bytes){
 
-   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+   using gallatin_type = gallatin::allocators::Gallatin<mem_segment_size, smallest, largest>;
 
-   betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+   gallatin_type * allocator = gallatin_type::generate_on_device(num_bytes, 42);
 
    cudaDeviceSynchronize();
 
-   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+   uint64_t num_segments = gallatin::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
-   register_all_segments<betta_type><<<(num_segments-1)/512+1,512>>>(allocator, num_segments);
+   register_all_segments<gallatin_type><<<(num_segments-1)/512+1,512>>>(allocator, num_segments);
 
    Block ** blocks;
 
@@ -403,15 +403,15 @@ __host__ void boot_betta_malloc_free(uint64_t num_bytes){
    printf("Ext sees %llu segments\n", num_segments);
    cudaDeviceSynchronize();
 
-   poggers::utils::print_mem_in_use();
+   gallatin::utils::print_mem_in_use();
 
 
    cudaDeviceSynchronize();
 
-   //malloc_all_blocks_single_thread<betta_type><<<1,1>>>(allocator, num_segments, 256);
-   //malloc_all_blocks<betta_type><<<(num_segments*128-1)/512+1,512>>>(allocator, num_segments*128);
+   //malloc_all_blocks_single_thread<gallatin_type><<<1,1>>>(allocator, num_segments, 256);
+   //malloc_all_blocks<gallatin_type><<<(num_segments*128-1)/512+1,512>>>(allocator, num_segments*128);
 
-   malloc_and_save_blocks<betta_type><<<(num_segments*256-1)/512+1,512>>>(allocator, blocks, num_segments, 256);
+   malloc_and_save_blocks<gallatin_type><<<(num_segments*256-1)/512+1,512>>>(allocator, blocks, num_segments, 256);
 
    cudaDeviceSynchronize();
 
@@ -422,11 +422,11 @@ __host__ void boot_betta_malloc_free(uint64_t num_bytes){
 
    assert_unique_blocks<<<(num_segments*256 -1)/512+1, 512>>>(blocks, num_segments, 256);
 
-   peek_blocks<betta_type><<<1,1>>>(allocator, blocks);
+   peek_blocks<gallatin_type><<<1,1>>>(allocator, blocks);
 
    cudaDeviceSynchronize();
 
-   betta_free_all_blocks<betta_type><<<(num_segments*256-1)/512+1,512>>>(allocator, blocks, num_segments, 256);
+   betta_free_all_blocks<gallatin_type><<<(num_segments*256-1)/512+1,512>>>(allocator, blocks, num_segments, 256);
    cudaDeviceSynchronize();
 
 
@@ -436,7 +436,7 @@ __host__ void boot_betta_malloc_free(uint64_t num_bytes){
 
    cudaFree(blocks);
 
-   betta_type::free_on_device(allocator);
+   gallatin_type::free_on_device(allocator);
 
 }
 
@@ -444,20 +444,20 @@ __host__ void boot_betta_malloc_free(uint64_t num_bytes){
 template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
 __host__ void boot_betta_test_all_sizes(uint64_t num_bytes){
 
-   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+   using gallatin_type = gallatin::allocators::Gallatin<mem_segment_size, smallest, largest>;
 
-   uint64_t num_trees = betta_type::get_num_trees();
+   uint64_t num_trees = gallatin_type::get_num_trees();
 
-   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+   uint64_t num_segments = gallatin::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
 
    for (int i = 0; i< num_trees; i++){
 
       printf("Testing tree %d/%llu\n", i, num_trees);
 
-      uint64_t blocks_per_segment = betta_type::get_blocks_per_segment(i);
+      uint64_t blocks_per_segment = gallatin_type::get_blocks_per_segment(i);
 
-      betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+      gallatin_type * allocator = gallatin_type::generate_on_device(num_bytes, 42);
 
       Block ** blocks;
 
@@ -471,7 +471,7 @@ __host__ void boot_betta_test_all_sizes(uint64_t num_bytes){
 
       cudaDeviceSynchronize();
 
-      malloc_and_save_blocks_tree<betta_type><<<(num_segments*blocks_per_segment-1)/512+1,512>>>(allocator, blocks, num_segments, blocks_per_segment, i);
+      malloc_and_save_blocks_tree<gallatin_type><<<(num_segments*blocks_per_segment-1)/512+1,512>>>(allocator, blocks, num_segments, blocks_per_segment, i);
 
 
       cudaDeviceSynchronize();
@@ -485,7 +485,7 @@ __host__ void boot_betta_test_all_sizes(uint64_t num_bytes){
 
       cudaDeviceSynchronize();
 
-      betta_free_all_blocks<betta_type><<<(num_segments*blocks_per_segment-1)/512+1,512>>>(allocator, blocks, num_segments, blocks_per_segment);
+      betta_free_all_blocks<gallatin_type><<<(num_segments*blocks_per_segment-1)/512+1,512>>>(allocator, blocks, num_segments, blocks_per_segment);
    
       cudaDeviceSynchronize();
 
@@ -497,7 +497,7 @@ __host__ void boot_betta_test_all_sizes(uint64_t num_bytes){
 
       cudaFree(blocks);
 
-      betta_type::free_on_device(allocator);
+      gallatin_type::free_on_device(allocator);
 
    }
 
@@ -509,20 +509,20 @@ __host__ void boot_betta_test_all_sizes(uint64_t num_bytes){
 template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
 __host__ void one_boot_betta_test_all_sizes(uint64_t num_bytes){
 
-   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+   using gallatin_type = gallatin::allocators::Gallatin<mem_segment_size, smallest, largest>;
 
-   uint64_t num_trees = betta_type::get_num_trees();
+   uint64_t num_trees = gallatin_type::get_num_trees();
 
-   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+   uint64_t num_segments = gallatin::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
-   betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+   gallatin_type * allocator = gallatin_type::generate_on_device(num_bytes, 42);
 
 
    for (int i = 0; i< num_trees; i++){
 
       printf("Testing tree %d/%llu\n", i, num_trees);
 
-      uint64_t blocks_per_segment = betta_type::get_blocks_per_segment(i);
+      uint64_t blocks_per_segment = gallatin_type::get_blocks_per_segment(i);
 
       Block ** blocks;
 
@@ -536,8 +536,8 @@ __host__ void one_boot_betta_test_all_sizes(uint64_t num_bytes){
 
       cudaDeviceSynchronize();
 
-      beta::utils::timer malloc_timing;
-      malloc_and_save_blocks_tree<betta_type><<<(num_segments*blocks_per_segment-1)/512+1,512>>>(allocator, blocks, num_segments, blocks_per_segment, i);
+      gallatin::utils::timer malloc_timing;
+      malloc_and_save_blocks_tree<gallatin_type><<<(num_segments*blocks_per_segment-1)/512+1,512>>>(allocator, blocks, num_segments, blocks_per_segment, i);
       auto malloc_duration = malloc_timing.sync_end();
 
       cudaDeviceSynchronize();
@@ -552,8 +552,8 @@ __host__ void one_boot_betta_test_all_sizes(uint64_t num_bytes){
       cudaDeviceSynchronize();
 
 
-      beta::utils::timer free_timing;
-      betta_free_all_blocks<betta_type><<<(num_segments*blocks_per_segment-1)/512+1,512>>>(allocator, blocks, num_segments, blocks_per_segment);
+      gallatin::utils::timer free_timing;
+      betta_free_all_blocks<gallatin_type><<<(num_segments*blocks_per_segment-1)/512+1,512>>>(allocator, blocks, num_segments, blocks_per_segment);
       auto free_duration = free_timing.sync_end();  
 
       cudaDeviceSynchronize();
@@ -578,22 +578,22 @@ __host__ void one_boot_betta_test_all_sizes(uint64_t num_bytes){
 
    cudaDeviceSynchronize();
 
-   betta_type::free_on_device(allocator);
+   gallatin_type::free_on_device(allocator);
 
 }
 
 template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
 __host__ void betta_alloc_random(uint64_t num_bytes, uint64_t num_allocs){
 
-   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+   using gallatin_type = gallatin::allocators::Gallatin<mem_segment_size, smallest, largest>;
 
-   uint64_t num_trees = betta_type::get_num_trees();
+   uint64_t num_trees = gallatin_type::get_num_trees();
 
-   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+   uint64_t num_segments = gallatin::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
-   betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+   gallatin_type * allocator = gallatin_type::generate_on_device(num_bytes, 42);
 
-   alloc_random_blocks<betta_type><<<(num_allocs-1)/512+1, 512>>>(allocator);
+   alloc_random_blocks<gallatin_type><<<(num_allocs-1)/512+1, 512>>>(allocator);
 
 
    cudaDeviceSynchronize();
@@ -602,7 +602,7 @@ __host__ void betta_alloc_random(uint64_t num_bytes, uint64_t num_allocs){
 
    cudaDeviceSynchronize();
 
-   betta_type::free_on_device(allocator);
+   gallatin_type::free_on_device(allocator);
 
 }
 
@@ -628,14 +628,14 @@ __global__ void alloc_one_size(allocator_type * allocator, uint64_t num_allocs, 
 
 //allocate from blocks, and print failures.
 template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
-__host__ void beta_test_allocs(uint64_t num_bytes){
+__host__ void gallatin_test_allocs(uint64_t num_bytes){
 
 
-   beta::utils::timer boot_timing;
+   gallatin::utils::timer boot_timing;
 
-   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+   using gallatin_type = gallatin::allocators::Gallatin<mem_segment_size, smallest, largest>;
 
-   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+   uint64_t num_segments = gallatin::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
    uint64_t max_allocs_per_segment = mem_segment_size/largest;
 
@@ -643,7 +643,7 @@ __host__ void beta_test_allocs(uint64_t num_bytes){
 
    printf("Starting test with %lu segments, %lu allocs per segment\n", num_segments, max_allocs_per_segment);
 
-   betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+   gallatin_type * allocator = gallatin_type::generate_on_device(num_bytes, 42);
 
    //generate bitarry
 
@@ -661,8 +661,8 @@ __host__ void beta_test_allocs(uint64_t num_bytes){
    std::cout << "Init in " << boot_timing.sync_end() << " seconds" << std::endl;
 
 
-   beta::utils::timer kernel_timing;
-   alloc_one_size<betta_type><<<(num_allocs-1)/512+1,512>>>(allocator, .5*num_allocs, largest);
+   gallatin::utils::timer kernel_timing;
+   alloc_one_size<gallatin_type><<<(num_allocs-1)/512+1,512>>>(allocator, .5*num_allocs, largest);
    kernel_timing.sync_end();
 
 
@@ -672,7 +672,7 @@ __host__ void beta_test_allocs(uint64_t num_bytes){
 
 
 
-   betta_type::free_on_device(allocator);
+   gallatin_type::free_on_device(allocator);
 
 
 }
@@ -779,14 +779,14 @@ __global__ void free_one_size_correctness(allocator_type * allocator, uint64_t n
 //pull from blocks
 //this kernel tests correctness, and outputs misses in a counter.
 template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
-__host__ void beta_test_allocs_correctness(uint64_t num_bytes, int num_rounds, uint64_t size){
+__host__ void gallatin_test_allocs_correctness(uint64_t num_bytes, int num_rounds, uint64_t size){
 
 
-   beta::utils::timer boot_timing;
+   gallatin::utils::timer boot_timing;
 
-   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+   using gallatin_type = gallatin::allocators::Gallatin<mem_segment_size, smallest, largest>;
 
-   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+   uint64_t num_segments = gallatin::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
    uint64_t max_allocs_per_segment = mem_segment_size/smallest;
 
@@ -803,7 +803,7 @@ __host__ void beta_test_allocs_correctness(uint64_t num_bytes, int num_rounds, u
    printf("Actual allocs per segment %llu total allocs %llu\n", allocs_per_segment_size, num_allocs);
 
 
-   betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+   gallatin_type * allocator = gallatin_type::generate_on_device(num_bytes, 42);
 
 
 
@@ -833,12 +833,12 @@ __host__ void beta_test_allocs_correctness(uint64_t num_bytes, int num_rounds, u
 
       printf("Starting Round %d/%d\n", i, num_rounds);
 
-      beta::utils::timer kernel_timing;
-      alloc_one_size_correctness<betta_type><<<(num_allocs-1)/512+1,512>>>(allocator, .9*num_allocs, size, bits, misses);
+      gallatin::utils::timer kernel_timing;
+      alloc_one_size_correctness<gallatin_type><<<(num_allocs-1)/512+1,512>>>(allocator, .9*num_allocs, size, bits, misses);
       kernel_timing.sync_end();
 
-      beta::utils::timer free_timing;
-      free_one_size_correctness<betta_type><<<(num_allocs-1)/512+1,512>>>(allocator, num_allocs, size, bits);
+      gallatin::utils::timer free_timing;
+      free_one_size_correctness<gallatin_type><<<(num_allocs-1)/512+1,512>>>(allocator, num_allocs, size, bits);
       free_timing.sync_end();
 
       kernel_timing.print_throughput("Malloced", .9*num_allocs);
@@ -859,7 +859,7 @@ __host__ void beta_test_allocs_correctness(uint64_t num_bytes, int num_rounds, u
 
    cudaFree(bits);
 
-   betta_type::free_on_device(allocator);
+   gallatin_type::free_on_device(allocator);
 
 
 }
@@ -930,14 +930,14 @@ __global__ void free_one_size_pointer(allocator_type * allocator, uint64_t num_a
 //The correctness check is done by treating each allocation as a uint64_t and writing the tid
 // if TID is not what is expected, we know that a double malloc has occurred.
 template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
-__host__ void beta_test_allocs_pointer(uint64_t num_bytes, int num_rounds, uint64_t size){
+__host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, uint64_t size){
 
 
-   beta::utils::timer boot_timing;
+   gallatin::utils::timer boot_timing;
 
-   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+   using gallatin_type = gallatin::allocators::Gallatin<mem_segment_size, smallest, largest>;
 
-   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+   uint64_t num_segments = gallatin::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
    uint64_t max_allocs_per_segment = mem_segment_size/smallest;
 
@@ -954,7 +954,7 @@ __host__ void beta_test_allocs_pointer(uint64_t num_bytes, int num_rounds, uint6
    printf("Actual allocs per segment %llu total allocs %llu\n", allocs_per_segment_size, num_allocs);
 
 
-   betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+   gallatin_type * allocator = gallatin_type::generate_on_device(num_bytes, 42);
 
 
 
@@ -982,12 +982,12 @@ __host__ void beta_test_allocs_pointer(uint64_t num_bytes, int num_rounds, uint6
 
       printf("Starting Round %d/%d\n", i, num_rounds);
 
-      beta::utils::timer kernel_timing;
-      alloc_one_size_pointer<betta_type><<<(num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(allocator, .9*num_allocs, size, bits, misses);
+      gallatin::utils::timer kernel_timing;
+      alloc_one_size_pointer<gallatin_type><<<(num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(allocator, .9*num_allocs, size, bits, misses);
       kernel_timing.sync_end();
 
-      beta::utils::timer free_timing;
-      free_one_size_pointer<betta_type><<<(num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(allocator, .9*num_allocs, size, bits);
+      gallatin::utils::timer free_timing;
+      free_one_size_pointer<gallatin_type><<<(num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(allocator, .9*num_allocs, size, bits);
       free_timing.sync_end();
 
       kernel_timing.print_throughput("Malloced", .9*num_allocs);
@@ -1008,7 +1008,7 @@ __host__ void beta_test_allocs_pointer(uint64_t num_bytes, int num_rounds, uint6
 
    cudaFree(bits);
 
-   betta_type::free_on_device(allocator);
+   gallatin_type::free_on_device(allocator);
 
 
 }
@@ -1028,13 +1028,13 @@ __global__ void alloc_churn_kernel(allocator_type * allocator, uint64_t num_allo
 
    uint64_t hash = tid;
 
-   poggers::hashers::murmurHasher;
+   gallatin::hashers::murmurHasher;
 
 
    //each loop, pick a random size and allocate from it.
    for (int i = 0; i < num_rounds; i++){
 
-      hash = poggers::hashers::MurmurHash64A(&hash, sizeof(uint64_t), i);
+      hash = gallatin::hashers::MurmurHash64A(&hash, sizeof(uint64_t), i);
 
       int my_tree_id = hash % num_trees;
 
@@ -1091,14 +1091,14 @@ __global__ void alloc_churn_kernel(allocator_type * allocator, uint64_t num_allo
 //pull from blocks
 //this kernel tests correctness, and outputs misses in a counter.
 template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
-__host__ void beta_full_churn(uint64_t num_bytes, uint64_t num_threads, int num_rounds){
+__host__ void gallatin_full_churn(uint64_t num_bytes, uint64_t num_threads, int num_rounds){
 
 
-   beta::utils::timer boot_timing;
+   gallatin::utils::timer boot_timing;
 
-   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+   using gallatin_type = gallatin::allocators::Gallatin<mem_segment_size, smallest, largest>;
 
-   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+   uint64_t num_segments = gallatin::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
    uint64_t max_allocs_per_segment = mem_segment_size/smallest;
 
@@ -1107,7 +1107,7 @@ __host__ void beta_full_churn(uint64_t num_bytes, uint64_t num_threads, int num_
    printf("Starting test with %lu segments, %lu allocs per segment, %lu threads for %d rounds in kernel\n", num_segments, max_allocs_per_segment, num_threads, num_rounds);
 
 
-   betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+   gallatin_type * allocator = gallatin_type::generate_on_device(num_bytes, 42);
 
 
 
@@ -1133,8 +1133,8 @@ __host__ void beta_full_churn(uint64_t num_bytes, uint64_t num_threads, int num_
 
    std::cout << "Init in " << boot_timing.sync_end() << " seconds" << std::endl;
 
-   beta::utils::timer kernel_timing;
-   alloc_churn_kernel<betta_type><<<(num_allocs-1)/512+1, 512>>>(allocator, num_threads, num_rounds, smallest, bits, misses);
+   gallatin::utils::timer kernel_timing;
+   alloc_churn_kernel<gallatin_type><<<(num_allocs-1)/512+1, 512>>>(allocator, num_threads, num_rounds, smallest, bits, misses);
    kernel_timing.sync_end();
 
    kernel_timing.print_throughput("Malloc/freed", num_threads*num_rounds);
@@ -1151,7 +1151,7 @@ __host__ void beta_full_churn(uint64_t num_bytes, uint64_t num_threads, int num_
 
 
 
-   betta_type::free_on_device(allocator);
+   gallatin_type::free_on_device(allocator);
 
    cudaDeviceSynchronize();
 
@@ -1172,13 +1172,13 @@ __global__ void pointer_churn_kernel(allocator_type * allocator, uint64_t num_al
 
    uint64_t hash = tid;
 
-   poggers::hashers::murmurHasher;
+   gallatin::hashers::murmurHasher;
 
 
    //each loop, pick a random size and allocate from it.
    for (int i = 0; i < num_rounds; i++){
 
-      hash = poggers::hashers::MurmurHash64A(&hash, sizeof(uint64_t), i);
+      hash = gallatin::hashers::MurmurHash64A(&hash, sizeof(uint64_t), i);
 
       int my_tree_id = hash % (num_trees);
 
@@ -1230,14 +1230,14 @@ __global__ void pointer_churn_kernel(allocator_type * allocator, uint64_t num_al
 //pull from blocks
 //this kernel tests correctness, and outputs misses in a counter.
 template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
-__host__ void beta_pointer_churn(uint64_t num_bytes, uint64_t num_threads, int num_rounds){
+__host__ void gallatin_pointer_churn(uint64_t num_bytes, uint64_t num_threads, int num_rounds){
 
 
-   beta::utils::timer boot_timing;
+   gallatin::utils::timer boot_timing;
 
-   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+   using gallatin_type = gallatin::allocators::Gallatin<mem_segment_size, smallest, largest>;
 
-   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+   uint64_t num_segments = gallatin::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
    uint64_t max_allocs_per_segment = mem_segment_size/smallest;
 
@@ -1246,7 +1246,7 @@ __host__ void beta_pointer_churn(uint64_t num_bytes, uint64_t num_threads, int n
    printf("Starting test with %lu segments, %lu allocs per segment, %lu threads for %d rounds in kernel\n", num_segments, max_allocs_per_segment, num_threads, num_rounds);
 
 
-   betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+   gallatin_type * allocator = gallatin_type::generate_on_device(num_bytes, 42);
 
 
 
@@ -1267,8 +1267,8 @@ __host__ void beta_pointer_churn(uint64_t num_bytes, uint64_t num_threads, int n
 
    std::cout << "Init in " << boot_timing.sync_end() << " seconds" << std::endl;
 
-   beta::utils::timer kernel_timing;
-   pointer_churn_kernel<betta_type><<<(num_allocs-1)/TEST_BLOCK_SIZE+1, TEST_BLOCK_SIZE>>>(allocator, num_threads, num_rounds, smallest, misses);
+   gallatin::utils::timer kernel_timing;
+   pointer_churn_kernel<gallatin_type><<<(num_allocs-1)/TEST_BLOCK_SIZE+1, TEST_BLOCK_SIZE>>>(allocator, num_threads, num_rounds, smallest, misses);
    kernel_timing.sync_end();
 
    kernel_timing.print_throughput("Malloc/freed", num_threads*num_rounds);
@@ -1281,7 +1281,7 @@ __host__ void beta_pointer_churn(uint64_t num_bytes, uint64_t num_threads, int n
 
 
 
-   betta_type::free_on_device(allocator);
+   gallatin_type::free_on_device(allocator);
 
    cudaDeviceSynchronize();
 
@@ -1307,7 +1307,7 @@ __global__ void pointer_churn_no_free_kernel(allocator_type * allocator, uint64_
 
    //each loop, pick a random size and allocate from it.
 
-   hash = poggers::hashers::MurmurHash64A(&hash, sizeof(uint64_t), 1);
+   hash = gallatin::hashers::MurmurHash64A(&hash, sizeof(uint64_t), 1);
 
    int my_tree_id = hash % num_trees;
 
@@ -1345,14 +1345,14 @@ __global__ void pointer_churn_no_free_kernel(allocator_type * allocator, uint64_
 //pull from blocks
 //this kernel tests correctness, and outputs misses in a counter.
 template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
-__host__ void beta_churn_no_free(uint64_t num_bytes, uint64_t num_threads){
+__host__ void gallatin_churn_no_free(uint64_t num_bytes, uint64_t num_threads){
 
 
-   beta::utils::timer boot_timing;
+   gallatin::utils::timer boot_timing;
 
-   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+   using gallatin_type = gallatin::allocators::Gallatin<mem_segment_size, smallest, largest>;
 
-   uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+   uint64_t num_segments = gallatin::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
    uint64_t max_allocs_per_segment = mem_segment_size/smallest;
 
@@ -1361,7 +1361,7 @@ __host__ void beta_churn_no_free(uint64_t num_bytes, uint64_t num_threads){
    printf("Starting test with %lu segments, %lu allocs per segment, %lu threads in kernel\n", num_segments, max_allocs_per_segment, num_threads);
 
 
-   betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
+   gallatin_type * allocator = gallatin_type::generate_on_device(num_bytes, 42);
 
 
 
@@ -1382,8 +1382,8 @@ __host__ void beta_churn_no_free(uint64_t num_bytes, uint64_t num_threads){
 
    std::cout << "Init in " << boot_timing.sync_end() << " seconds" << std::endl;
 
-   beta::utils::timer kernel_timing;
-   pointer_churn_no_free_kernel<betta_type><<<(num_allocs-1)/512+1, 512>>>(allocator, num_threads, smallest, misses);
+   gallatin::utils::timer kernel_timing;
+   pointer_churn_no_free_kernel<gallatin_type><<<(num_allocs-1)/512+1, 512>>>(allocator, num_threads, smallest, misses);
    kernel_timing.sync_end();
 
    kernel_timing.print_throughput("Malloc/freed", num_threads);
@@ -1396,7 +1396,7 @@ __host__ void beta_churn_no_free(uint64_t num_bytes, uint64_t num_threads){
 
 
 
-   betta_type::free_on_device(allocator);
+   gallatin_type::free_on_device(allocator);
 
    cudaDeviceSynchronize();
 
@@ -1437,18 +1437,18 @@ int main(int argc, char** argv) {
    //one_boot_betta_test_all_sizes<16ULL*1024*1024, 16ULL, 16ULL>(num_segments*16*1024*1024);  
 
 
-   //beta_test_allocs_correctness<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
+   //gallatin_test_allocs_correctness<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
 
 
-   beta_test_allocs_pointer<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
+   gallatin_test_allocs_pointer<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
 
-   //beta_full_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
-
-
-   //beta_pointer_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
+   //gallatin_full_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
 
 
-   //beta_churn_no_free<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments);
+   //gallatin_pointer_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
+
+
+   //gallatin_churn_no_free<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments);
 
 
 
