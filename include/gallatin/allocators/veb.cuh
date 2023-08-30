@@ -250,11 +250,16 @@ struct layer {
   __device__ int inline find_next(uint64_t high, int low) {
     // printf("High is %lu, num blocks is %lu\n", high, num_blocks);
     if (bits == nullptr) {
+
+      #if VEB_DEBUG_PRINTS
       printf("Nullptr\n");
+      #endif
     }
 
     if (high >= universe_size) {
+      #if VEB_DEBUG_PRINTS
       printf("High issue %lu > %lu\n", high, universe_size);
+      #endif
       return -1;
     }
 
@@ -1006,10 +1011,15 @@ struct veb_tree {
 
       if (index_to_start == ~0ULL) {
         index_to_start = 0;
+
+        #if VEB_DEBUG_PRINTS
         printf("U issue\n");
+        #endif
       }
 
+      #if VEB_DEBUG_PRINTS
       if (index_to_start >= total_universe) printf("Huge index error\n");
+      #endif
 
       uint64_t offset = lock_offset(index_to_start);
 

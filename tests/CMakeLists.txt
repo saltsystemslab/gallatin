@@ -99,7 +99,7 @@ ConfigureExecutable(counter_slab_one_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/coun
 
 ConfigureExecutable(shared_counter_slab_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/shared_counter_slab_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
-ConfigureExecutable(counter_block_beta_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/counter_block_beta_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
+ConfigureExecutable(gallatin_test "${CMAKE_CURRENT_SOURCE_DIR}/src/gallatin_test.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
 
 ConfigureExecutable(queue_test "${CMAKE_CURRENT_SOURCE_DIR}/src/queue_test.cu" "${POGGERS_TESTS_BINARY_DIR}")
@@ -115,6 +115,8 @@ ConfigureExecutable(beta_large_allocs "${CMAKE_CURRENT_SOURCE_DIR}/src/beta_larg
 ConfigureExecutable(vector_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/vector_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
 ConfigureExecutable(gallatin_single_thread "${CMAKE_CURRENT_SOURCE_DIR}/src/gallatin_single_thread.cu" "${POGGERS_TESTS_BINARY_DIR}")
+
+ConfigureExecutable(global_test "${CMAKE_CURRENT_SOURCE_DIR}/src/global_test.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
 
 

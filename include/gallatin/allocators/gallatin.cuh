@@ -1,8 +1,5 @@
 #ifndef GALLATIN_ALLOCATOR
 #define GALLATIN_ALLOCATOR
-// Betta, the block-based extending-tree thread allocaotor, made by Hunter McCoy
-// (hunter@cs.utah.edu) Copyright (C) 2023 by Hunter McCoy
-
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without l> imitation the
@@ -1488,11 +1485,19 @@ struct Gallatin {
 
     for (uint64_t i = 0; i < table->num_segments; i++){
     
-      if (sub_trees[id]->query(i)){
 
+      if (table->read_tree_id(i) == id){
+      //if (sub_trees[id]->query(i)){
+
+
+        if (table->active_counts[i] == -1) continue;
+
+        if (table->active_counts[i] > nblocks){
+          printf("Big value: index %llu has %llu > %llu\n", i, table->active_counts[i], nblocks);
+        }
         count += 1;
-        malloc_count += nblocks - table->active_counts[i];
-        free_count += table->free_counters[i];
+        malloc_count += table->active_counts[i];
+        free_count += nblocks - table->active_counts[i];
 
       }
 
@@ -1517,6 +1522,6 @@ struct Gallatin {
 
 }  // namespace allocators
 
-}  // namespace beta
+}  // namespace Gallatin
 
 #endif  // End of VEB guard
