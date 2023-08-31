@@ -339,7 +339,7 @@ struct Gallatin {
         max_bytes);
 
     if (print_info){
-      printf("Booted Gallatin with %llu trees in range %llu-%llu and %f GB of memory %llu segments\n", num_trees, smallest, biggest, 1.0*total_mem/1024/1024/1024, max_chunks);
+      printf("Booted Gallatin with %lu trees in range %lu-%lu and %f GB of memory %lu segments\n", num_trees, smallest, biggest, 1.0*total_mem/1024/1024/1024, max_chunks);
     }
     
 
@@ -375,7 +375,7 @@ struct Gallatin {
     sub_tree_type **host_subtrees =
         move_to_host<sub_tree_type *>(host_version->sub_trees, num_trees);
 
-    for (int i = 0; i < num_trees; i++) {
+    for (uint64_t i = 0; i < num_trees; i++) {
       sub_tree_type::free_on_device(host_subtrees[i]);
     }
 
@@ -1362,7 +1362,7 @@ struct Gallatin {
 
     uint64_t max_segments = host_version->segment_tree->report_max();
 
-    printf("Allocator sees %llu/%llu segments available\n", segments_available,
+    printf("Allocator sees %lu/%lu segments available\n", segments_available,
            max_segments);
 
     sub_tree_type **host_trees = copy_to_host<sub_tree_type *>(
@@ -1373,16 +1373,16 @@ struct Gallatin {
 
       uint64_t sub_max = host_trees[i]->report_max();
 
-      printf("Tree %d: size %lu, owns %llu/%llu\n", i, table->get_tree_alloc_size(i), sub_segments, sub_max);
+      printf("Tree %d: size %lu, owns %lu/%lu\n", i, table->get_tree_alloc_size(i), sub_segments, sub_max);
     }
 
-    uint64_t free_indices = host_version->table->report_free();
+    // uint64_t free_indices = host_version->table->report_free();
 
-    printf("Table reports %llu indices have been freed\n", free_indices);
+    // printf("Table reports %llu indices have been freed\n", free_indices);
 
-    uint64_t live_indices = host_version->table->report_live();
+    // uint64_t live_indices = host_version->table->report_live();
 
-    printf("Table reports %llu indices have been used\n", live_indices);
+    // printf("Table reports %llu indices have been used\n", live_indices);
 
     cudaFreeHost(host_trees);
 
@@ -1493,7 +1493,7 @@ struct Gallatin {
         if (table->active_counts[i] == -1) continue;
 
         if (table->active_counts[i] > nblocks){
-          printf("Big value: index %llu has %llu > %llu\n", i, table->active_counts[i], nblocks);
+          printf("Big value: index %lu has %d > %lu\n", i, table->active_counts[i], nblocks);
         }
         count += 1;
         malloc_count += table->active_counts[i];

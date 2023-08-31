@@ -118,7 +118,7 @@ ConfigureExecutable(gallatin_single_thread "${CMAKE_CURRENT_SOURCE_DIR}/src/gall
 
 ConfigureExecutable(global_test "${CMAKE_CURRENT_SOURCE_DIR}/src/global_test.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
-
+ConfigureExecutable(global_churn "${CMAKE_CURRENT_SOURCE_DIR}/src/global_churn.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
 
 

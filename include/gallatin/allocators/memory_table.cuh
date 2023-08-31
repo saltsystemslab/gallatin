@@ -93,8 +93,7 @@ __global__ void count_block_live_kernel(table * alloc_table, uint64_t num_blocks
 // using uint16_t as there shouldn't be that many trees.
 // register atomically insert tree num, or registers memory from chunk_tree.
 
-__global__ void betta_init_counters_kernel(int *malloc_counters,
-                                           int *free_counters,
+__global__ void betta_init_counters_kernel(
                                            int * active_counts,
                                            uint * queue_counters, uint * queue_free_counters,
                                            Block *blocks, uint64_t num_segments,
@@ -102,9 +101,6 @@ __global__ void betta_init_counters_kernel(int *malloc_counters,
   uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
 
   if (tid >= num_segments) return;
-
-  malloc_counters[tid] = -1;
-  free_counters[tid] = -1;
 
   active_counts[tid] = -1;
 
@@ -146,10 +142,6 @@ struct alloc_table {
   //active counts make sure that the # of blocks in movement are acceptable.
   int * active_counts;
 
-
-  // pair of counters for each segment to track use.
-  int *malloc_counters;
-  int *free_counters;
 
   // all memory live in the system.
   char *memory;
@@ -214,12 +206,7 @@ struct alloc_table {
 
 
 
-    host_version->malloc_counters =
-        gallatin::utils::get_device_version<int>(num_segments);
-    host_version->free_counters =
-        gallatin::utils::get_device_version<int>(num_segments);
     betta_init_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
-        host_version->malloc_counters, host_version->free_counters,
         host_version->active_counts, 
         host_version->queue_counters, host_version->queue_free_counters,
         host_version->blocks, num_segments,
@@ -304,13 +291,7 @@ struct alloc_table {
     host_version->queue_free_counters = gallatin::utils::get_device_version<uint>(num_segments);
 
 
-
-    host_version->malloc_counters =
-        gallatin::utils::get_device_version<int>(num_segments);
-    host_version->free_counters =
-        gallatin::utils::get_device_version<int>(num_segments);
     betta_init_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
-        host_version->malloc_counters, host_version->free_counters,
         host_version->active_counts, 
         host_version->queue_counters, host_version->queue_free_counters,
         host_version->blocks, num_segments,
@@ -355,8 +336,6 @@ struct alloc_table {
     cudaFree(host_version->chunk_ids);
 
     cudaFree(host_version->memory);
-
-    cudaFree(host_version->malloc_counters);
 
     cudaFree(dev_version);
 
@@ -428,22 +407,6 @@ struct alloc_table {
 
     }
 
-    int old_free_count =
-        atomicExch(&free_counters[segment], -1);
-
-    if (old_free_count != -1) {
-      printf(
-          "Memory free counter for segment %llu not properly reset: value is "
-          "%d\n",
-          segment, old_free_count);
-
-      #if BETA_TRAP_ON_ERR
-      asm("trap;");
-      #endif
-
-    }
-
-
 
 #endif
 
@@ -452,9 +415,6 @@ struct alloc_table {
     //this allows us to A) specify # of blocks exactly on construction.
     // and B) still give out exact addresses when requesting (still 1 atomic.)
     //the trigger for a failed block alloc is going negative
-
-    //int old_free = atomicExch(&free_counters[segment], num_blocks-1);
-    //int old_malloc = atomicExch(&malloc_counters[segment], num_blocks-1);
 
     //modification, boot queue elements
     //as items can always interact with this, we simply reset.
@@ -522,39 +482,6 @@ struct alloc_table {
     return (atomicCAS((unsigned short int *)&chunk_ids[segment],
                       (unsigned short int)tree_id,
                       (unsigned short int)~0U) == (unsigned short int)tree_id);
-  }
-
-  // atomic wrapper to get block
-  __device__ int get_block_from_segment(uint64_t segment) {
-    return atomicSub(&malloc_counters[segment], 1);
-  }
-
-  // atomic wrapper to free block.
-  __device__ int return_block_to_segment(uint64_t segment) {
-
-
-    #if GALLATIN_MEM_TABLE_DEBUG
-
-    int free_count = atomicSub(&free_counters[segment], 1);
-
-    int malloc_count = atomicCAS(&malloc_counters[segment], 0, 0);
-
-    if (malloc_count >= free_count){
-      printf("Mismatch: malloc %d >= freed %d\n", malloc_count, free_count);
-
-      #if BETA_TRAP_ON_ERR
-      asm("trap;");
-      #endif
-
-    }
-
-    return free_count;
-
-    #else 
-
-    return atomicSub(&free_counters[segment], 1);
-
-    #endif
   }
 
 
@@ -978,7 +905,16 @@ struct alloc_table {
 
   __device__ uint64_t calculate_overhead(){
 
-    return sizeof(my_type) + num_segments*(8 + blocks_per_segment*sizeof(Block));
+    //overhead per segment
+    //4 bytes active count
+    //4 bytes queue_inc
+    //4 bytes_queue_dec
+    //2 bytes tree_id
+    //+ blocks_per_segment*sizeof(block) 
+    //+ blocks+per_segment*sizeof(block *)  - this is the queue structure.
+
+
+    return sizeof(my_type) + num_segments*(14 + blocks_per_segment*(sizeof(Block)+sizeof(Block *)));
 
   }
 

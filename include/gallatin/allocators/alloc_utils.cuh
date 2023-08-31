@@ -112,7 +112,7 @@ __host__ void print_mem_in_use() {
   cudaMemGetInfo(&mem_free, &mem_total);
 
   size_t bytes_in_use = mem_total - mem_free;
-  printf("%llu/%llu bytes used\n", bytes_in_use, mem_total);
+  printf("%lu/%lu bytes used\n", bytes_in_use, mem_total);
 }
 
 template <uint64_t bytes_per_chunk>
