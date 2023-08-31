@@ -339,7 +339,7 @@ struct Gallatin {
         max_bytes);
 
     if (print_info){
-      printf("Booted Gallatin with %lu trees in range %lu-%lu and %f GB of memory %lu segments\n", num_trees, smallest, biggest, 1.0*total_mem/1024/1024/1024, max_chunks);
+      printf("\n\033[1;36mBooted Gallatin with %lu trees in range %lu-%lu and %f GB of memory %lu segments\033[1;0m\n", num_trees, smallest, biggest, 1.0*total_mem/1024/1024/1024, max_chunks);
     }
     
 
