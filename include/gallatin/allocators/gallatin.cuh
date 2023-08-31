@@ -1388,6 +1388,7 @@ struct Gallatin {
 
     cudaFreeHost(host_version);
 
+    printf("\nTree Block Usage stats:\n");
 
     this->print_usage();
 

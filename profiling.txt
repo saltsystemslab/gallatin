@@ -1,1 +1,0 @@
-srun -N 1 -n 1 ncu -f -o recordings/cms_benchmarking --set full --kernel-regex cms_enqueue ./tests/cms_benchmarks
