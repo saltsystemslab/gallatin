@@ -1362,7 +1362,9 @@ struct Gallatin {
 
     uint64_t max_segments = host_version->segment_tree->report_max();
 
-    printf("Allocator sees %lu/%lu segments available\n", segments_available,
+
+    printf("\n\033[1;32mGallatin usage stats:\033[1;0m\n");
+    printf("Segment tree sees %lu/%lu segments available\n", segments_available,
            max_segments);
 
     sub_tree_type **host_trees = copy_to_host<sub_tree_type *>(
@@ -1388,7 +1390,7 @@ struct Gallatin {
 
     cudaFreeHost(host_version);
 
-    printf("\nTree Block Usage stats:\n");
+    printf("\n\033[1;32mTree usage stats:\033[1;0m\n");
 
     this->print_usage();
 
