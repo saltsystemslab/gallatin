@@ -161,6 +161,8 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
 
       misses[0] = 0;
 
+      print_global_stats();
+
 
    }
 

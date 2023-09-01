@@ -312,19 +312,27 @@ struct Block {
 
     }
 
+    //uint64_t amount_to_free = (4095 - (old_count + (old_count == 0)));
+
+    atomicAdd(&free_counter, 4095 - old_count);
+
+    #if GALLATIN_BLOCK_DEBUG
+
     if (old_count != 0){
 
       //we fucked up, but it's ok! just need to add to the free counter so the block cycles
 
-      #if GALLATIN_BLOCK_DEBUG
+      
 
       printf("Block for full segment already malloced. Not an error but concerning.\n")
 
-      #endif
+     
 
-      atomicAdd(&free_counter, (4095-old_count));
+      //atomicAdd(&free_counter, (4095-old_count));
 
     }
+
+    #endif
 
     return old_count;
 
