@@ -250,6 +250,9 @@ struct Gallatin {
   using sub_tree_type = veb_tree;
   using pinned_block_type = pinned_shared_blocks<smallest, biggest>;
 
+
+
+  static_assert(bytes_per_segment >= biggest*4096);
   // internal structures
   veb_tree *segment_tree;
 
@@ -873,14 +876,16 @@ struct Gallatin {
         uint16_t prev_segment_id = table->read_tree_id(block_segment-1);
 
         //read the counters
-        int malloc_status = atomicCAS((int *)&table->malloc_counters[segment], 0, 0);
-        int free_status = atomicCAS((int *)&table->free_counters[segment], 0, 0);
+        // int malloc_status = atomicCAS((int *)&table->malloc_counters[segment], 0, 0);
+        // int free_status = atomicCAS((int *)&table->free_counters[segment], 0, 0);
 
-        //test here verifies that segment is being reset...
-        //It is not a misread of the segment≥
-        #if GALLATIN_DEBUG_PRINTS
-        printf("Mismatch for offset: %llu in tree ids for alloc of size %llu: %u != %u...Block %llu segment %llu offset %llu tree %u... prev is %u Next is %u. Malloc %d, free %d.\n", offset, size, tree_id, alt_tree_id, block_id, block_segment, relative_offset, block_tree, prev_segment_id, next_segment_id, malloc_status, free_status);
-        #endif
+        // //test here verifies that segment is being reset...
+        // //It is not a misread of the segment≥
+        // #if GALLATIN_DEBUG_PRINTS
+        // printf("Mismatch for offset: %llu in tree ids for alloc of size %llu: %u != %u...Block %llu segment %llu offset %llu tree %u... prev is %u Next is %u. Malloc %d, free %d.\n", offset, size, tree_id, alt_tree_id, block_id, block_segment, relative_offset, block_tree, prev_segment_id, next_segment_id, malloc_status, free_status);
+        // #endif
+
+
 
         #if GALLATIN_TRAP_ON_ERR
         asm("trap;");
@@ -1004,9 +1009,13 @@ struct Gallatin {
 
     uint alloc_count = 1;
 
+    uint16_t pre_alt_tree = get_tree_id_from_size(bytes_needed);
+
     if (bytes_needed < smallest) bytes_needed = smallest;
 
     uint16_t tree_id = get_first_bit_bigger(bytes_needed) - smallest_bits;
+
+    if (pre_alt_tree != tree_id) printf("Diff\n");
 
     if (tree_id >= num_trees) {
 
@@ -1533,7 +1542,7 @@ struct Gallatin {
   }
 
 
-  printf("Tree %u: %lu live blocks | avg malloc %f / %llu | avg free %f / %llu\n", id, count, 1.0*malloc_count/count, nblocks, 1.0*free_count/count, nblocks);
+  printf("Tree %u: %lu live blocks | avg available %f / %llu | avg in use %f / %llu\n", id, count, 1.0*malloc_count/count, nblocks, 1.0*free_count/count, nblocks);
 
 
   }

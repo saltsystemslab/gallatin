@@ -24,7 +24,7 @@
 using namespace gallatin::allocators;
 
 
-#if BETA_DEBUG_PRINTS
+#if GALLATIN_DEBUG_PRINTS
    #define TEST_BLOCK_SIZE 256
 #else
    #define TEST_BLOCK_SIZE 512

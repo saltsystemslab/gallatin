@@ -717,7 +717,7 @@ struct alloc_table {
       uint64_t alt_segment = get_segment_from_ptr(alloc);
 
       if (segment_id != alt_segment){
-        printf("Mismatch on segments in allocation to offset, %llu != %llu\n", segment_id, alt_segment)
+        printf("Mismatch on segments in allocation to offset, %llu != %llu\n", segment_id, alt_segment);
 
         #if BETA_TRAP_ON_ERR
         asm("trap;");
