@@ -166,7 +166,7 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
 
    }
 
-   printf("Total missed across %d runs: %lu\n", num_rounds, total_misses);
+   printf("Total missed across %d runs: %lu/%lu\n", num_rounds, total_misses, num_allocs*num_rounds);
 
    print_global_stats();
 

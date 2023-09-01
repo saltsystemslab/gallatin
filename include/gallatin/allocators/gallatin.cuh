@@ -499,6 +499,35 @@ struct Gallatin {
 
   }
 
+
+  __device__ uint64_t malloc_segment_allocation(uint64_t & num_segments_required){
+
+
+    //calculate # of segments needed
+    //uint64_t num_segments_required = (bytes_needed - 1)/ bytes_per_segment + 1;
+
+    uint64_t alloc_index = segment_tree->gather_multiple(num_segments_required);
+
+    if (alloc_index != veb_tree::fail()){
+
+      if (!table->set_tree_id(alloc_index, num_trees + 1+ num_segments_required)){
+
+        #if GALLATIN_DEBUG_PRINTS
+        printf("Failed to set tree id for segment %llu with %llu segments trailing\n", alloc_index, num_segments_required);
+        #endif
+
+        //catastropic - how could we fail to set tree id on bit grabbed from segment tree?
+        #if GALLATIN_TRAP_ON_ERR
+        asm("trap;");
+        #endif
+
+      }
+
+    }
+
+    return alloc_index*table->blocks_per_segment*4096;
+
+  }
   
   __device__ uint64_t malloc_block_allocation(int & tree_id){
 
@@ -996,37 +1025,7 @@ struct Gallatin {
 
         } else {
 
-
           return malloc_block_allocation(block_tree);
-          // // #if GALLATIN_DEBUG_PRINTS
-          // // printf("Alloc of %llu bytes pulling from block in tree %d\n", bytes_needed, block_tree);
-          // // #endif
-
-          // Block * my_block = request_new_block_from_tree((uint16_t ) block_tree);
-
-          // if (my_block == nullptr){
-          //   return ~0ULL;
-          // }
-
-          // uint64_t global_block_id = table->get_global_block_offset(my_block);
-
-          // uint old = my_block->malloc_fill_block(block_tree);
-
-          // if (old != 0){
-
-          //   #if GALLATIN_DEBUG_PRINTS
-          //   printf("Block was already set %u\n", old);
-          //   #endif
-
-
-          //   free_offset(global_block_id*4096);
-
-          //   return ~0ULL;
-
-          // }
-
-
-          // return global_block_id*4096;
 
         }
 
@@ -1038,40 +1037,11 @@ struct Gallatin {
 
         uint64_t num_segments_required = (bytes_needed - 1)/ bytes_per_segment + 1;
 
-        uint64_t alloc_index = segment_tree->gather_multiple(num_segments_required);
-
-        if (alloc_index != veb_tree::fail()){
-
-          if (!table->set_tree_id(alloc_index, num_trees + 1+ num_segments_required)){
-
-            #if GALLATIN_DEBUG_PRINTS
-            printf("Failed to set tree id for segment %llu with %llu segments trailing\n", alloc_index, num_segments_required);
-            #endif
-
-            //catastropic - how could we fail to set tree id on bit grabbed from segment tree?
-            #if GALLATIN_TRAP_ON_ERR
-            asm("trap;");
-            #endif
-
-          }
-
-        }
-
-        return alloc_index*table->blocks_per_segment*4096;
+        return malloc_segment_allocation(num_segments_required);
 
       }
 
-
-      // This should be a dead end, as all current routes return.
-      // this is currently unfinished, is a todo after ouroboros
-      //END DAY HERE: Why is this duplicated?
-
-      // printf("Attempting mid-size multi malloc on tree %u, %u simultaneous\n", tree_id, alloc_count);
-
-      // return ~0ULL;
-
     }
-
 
     return malloc_slice_allocation(tree_id, alloc_count);
 
