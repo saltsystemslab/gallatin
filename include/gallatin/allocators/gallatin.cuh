@@ -811,7 +811,11 @@ struct Gallatin {
 
     uint16_t tree_id = get_tree_id_from_size(size);
     uint alloc_count = 1;
-    int alloc_level = 0;
+
+    uint64_t offset = ~0ULL;
+    uint64_t attempt_counter = 0;
+
+    void * alloc = nullptr;
 
     if (tree_id >= num_trees){
 
@@ -830,119 +834,57 @@ struct Gallatin {
       } else if (block_tree < num_trees){
 
         //block_malloc;
-
-        alloc_level = 1;
         //guaranteed safe as block_tree > 0;
         tree_id = (uint16_t) block_tree;
+
+
+        while (offset == ~0ULL && attempt_counter < GALLATIN_MALLOC_LOOP_ATTEMPTS){
+
+          offset = malloc_block_allocation(tree_id);
+          attempt_counter += 1;
+
+        }
+
+        if (offset != ~0ULL){
+           alloc = offset_to_allocation(offset, tree_id);
+        }
+
+        return alloc;
 
       } else {
 
         //big allocation
         alloc_count = (size - 1)/ bytes_per_segment + 1;
-        alloc_level = 2;
         tree_id = 0;
 
+
+        while (offset == ~0ULL && attempt_counter < GALLATIN_MALLOC_LOOP_ATTEMPTS){
+
+          offset = malloc_segment_allocation(alloc_count);
+          attempt_counter +=1;
+        
+        }
+
+        if (offset != ~0ULL){
+           alloc = offset_to_allocation(offset, tree_id);
+        }
+
+        return alloc;
       }
 
     }
 
-    uint64_t attempt_counter = 0;
-
-    uint64_t offset = malloc_offset_safety(size, tree_id, alloc_count, alloc_level);
 
     while (offset == ~0ULL && attempt_counter < GALLATIN_MALLOC_LOOP_ATTEMPTS){
 
-        offset = malloc_offset_safety(size, tree_id, alloc_count, alloc_level);
-        attempt_counter+=1;
-        
+      offset = malloc_slice_allocation(tree_id, alloc_count);
+      attempt_counter +=1;
+    
     }
 
-    if (offset == ~0ULL){
-
-      #if GALLATIN_DEBUG_PRINTS
-
-      printf("Failed to allocate size %llu\n", size);
-
-      #endif
-
-
-      return nullptr;
-
+    if (offset != ~0ULL){
+       alloc = offset_to_allocation(offset, tree_id);
     }
-
-    #if GALLATIN_DEBUG_PRINTS
-
-      uint64_t segment = table->get_segment_from_offset(offset);
-
-      uint16_t alt_tree_id = table->read_tree_id(segment);
-
-      uint64_t block_id = offset/4096;
-
-      Block * my_block = table->get_block_from_global_block_id(block_id);
-
-      uint64_t block_segment = table->get_segment_from_block_ptr(my_block);
-
-      uint64_t relative_offset = table->get_relative_block_offset(my_block);
-
-      uint64_t block_tree = table->read_tree_id(block_segment);
-
-      if (alt_tree_id != tree_id){
-
-        uint16_t next_segment_id = table->read_tree_id(block_segment+1);
-
-        uint16_t prev_segment_id = table->read_tree_id(block_segment-1);
-
-        //read the counters
-        // int malloc_status = atomicCAS((int *)&table->malloc_counters[segment], 0, 0);
-        // int free_status = atomicCAS((int *)&table->free_counters[segment], 0, 0);
-
-        // //test here verifies that segment is being reset...
-        // //It is not a misread of the segment≥
-        // #if GALLATIN_DEBUG_PRINTS
-        // printf("Mismatch for offset: %llu in tree ids for alloc of size %llu: %u != %u...Block %llu segment %llu offset %llu tree %u... prev is %u Next is %u. Malloc %d, free %d.\n", offset, size, tree_id, alt_tree_id, block_id, block_segment, relative_offset, block_tree, prev_segment_id, next_segment_id, malloc_status, free_status);
-        // #endif
-
-
-
-        #if GALLATIN_TRAP_ON_ERR
-        asm("trap;");
-        #endif
-
-      }
-
-    #endif
-
-
-    void * alloc = offset_to_allocation(offset, tree_id);
-
-    #if GALLATIN_DEBUG_PRINTS
-
-    uint64_t alloc_segment = table->get_segment_from_ptr(alloc);
-
-    if (alloc_segment != segment){
-
-      printf("Malloc: Offset %llu mismatch in segment: %llu != %llu, tree %u\n", offset, segment, alloc_segment, tree_id);
-
-      #if GALLATIN_TRAP_ON_ERR
-      asm("trap;");
-      #endif
-
-    }
-
-    uint64_t alt_offset = allocation_to_offset(alloc, tree_id);
-
-    uint64_t alt_offset_segment = table->get_segment_from_offset(offset);
-
-    if (alt_offset_segment != segment){
-      printf("Malloc: mismatch in cast back: %llu != %llu\n", alt_offset_segment, segment);
-
-      #if GALLATIN_TRAP_ON_ERR
-      asm("trap;");
-      #endif
-
-    }
-
-    #endif
 
     return alloc;
 
