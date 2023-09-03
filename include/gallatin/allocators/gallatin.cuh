@@ -503,7 +503,7 @@ struct Gallatin {
   }
 
 
-  __device__ uint64_t malloc_segment_allocation(uint64_t & num_segments_required){
+  __device__ uint64_t malloc_segment_allocation(uint & num_segments_required){
 
 
     //calculate # of segments needed
@@ -532,13 +532,13 @@ struct Gallatin {
 
   }
   
-  __device__ uint64_t malloc_block_allocation(int & tree_id){
+  __device__ uint64_t malloc_block_allocation(uint16_t & tree_id){
 
     // #if GALLATIN_DEBUG_PRINTS
     // printf("Alloc of %llu bytes pulling from block in tree %d\n", bytes_needed, block_tree);
     // #endif
 
-    Block * my_block = request_new_block_from_tree((uint16_t) tree_id);
+    Block * my_block = request_new_block_from_tree(tree_id);
 
     if (my_block == nullptr){
       return ~0ULL;
@@ -546,7 +546,7 @@ struct Gallatin {
 
     uint64_t global_block_id = table->get_global_block_offset(my_block);
 
-    uint old = my_block->malloc_fill_block((uint16_t) tree_id);
+    uint old = my_block->malloc_fill_block(tree_id);
 
     if (old != 0){
 
@@ -1155,79 +1155,20 @@ struct Gallatin {
   //information passed by the external malloc method.
   __device__ uint64_t malloc_offset_safety(uint64_t bytes_needed, uint16_t ext_tree_id, uint ext_alloc_count, int ext_alloc_level) {
 
-    uint alloc_count = 1;
 
-    if (bytes_needed < smallest) bytes_needed = smallest;
+    if (ext_alloc_level == 0){
 
-    uint16_t tree_id = get_first_bit_bigger(bytes_needed) - smallest_bits;
+      return malloc_slice_allocation(ext_tree_id, ext_alloc_count);
 
-    if (tree_id >= num_trees) {
+    } else if (ext_alloc_level == 1){
 
-      //first, determine if the allocation can be satisfied by a full block
-      int smallest_tree_bits = get_first_bit_bigger(smallest*4096);
+      return malloc_block_allocation(ext_tree_id);
 
-      int block_tree = get_first_bit_bigger(bytes_needed) - smallest_tree_bits;
+    } else {
 
-      if (block_tree < num_trees){
-
-        if (block_tree < 0){
-
-          alloc_count = (1ULL << (tree_id - (num_trees-1)));
-
-          tree_id = num_trees-1;
-
-        } else {
-
-
-          if (ext_alloc_level != 1){
-            printf("Block allocation has different level %d\n", ext_alloc_level);
-          }
-
-          if (ext_tree_id != (uint16_t) block_tree){
-            printf("Block level difference: %u vs %d\n", ext_tree_id, block_tree);
-          }
-
-          return malloc_block_allocation(block_tree);
-
-        }
-
-
-      } else {
-
-
-        //calculate # of segments needed
-
-        uint64_t num_segments_required = (bytes_needed - 1)/ bytes_per_segment + 1;
-
-        if (ext_alloc_level != 2){
-            printf("segment allocation has different level %d\n", ext_alloc_level);
-        }
-
-        if (num_segments_required != ext_alloc_count){
-
-          printf("Segment allocation has different size: %d != %llu\n", ext_alloc_count, num_segments_required);
-
-        }
-
-        return malloc_segment_allocation(num_segments_required);
-
-      }
+      return malloc_segment_allocation(ext_alloc_count);
 
     }
-
-    if (ext_alloc_level != 0){
-     printf("slice allocation has different level %d\n", ext_alloc_level);
-    }
-
-    if (alloc_count != ext_alloc_count){
-      printf("slice level has different count: %u != %u\n", ext_alloc_count, alloc_count);
-    }
-
-    if (ext_tree_id != tree_id){
-      printf("Slice level has different tree id: %u != %u\n", ext_tree_id, tree_id);
-    }
-
-    return malloc_slice_allocation(tree_id, alloc_count);
 
 }
 
