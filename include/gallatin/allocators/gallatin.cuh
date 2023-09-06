@@ -108,6 +108,8 @@ namespace allocators {
 #define REQUEST_BLOCK_MAX_ATTEMPTS 10
 #define GALLATIN_MAX_ATTEMPTS 300
 #define GALLATIN_MALLOC_LOOP_ATTEMPTS 5
+#define GALLATIN_MALLOC_BLOCK_ATTEMPTS 300
+#define GALLATIN_MALLOC_SEGMENT_ATTEMPTS 300
 
 
 
@@ -838,7 +840,7 @@ struct Gallatin {
         tree_id = (uint16_t) block_tree;
 
 
-        while (offset == ~0ULL && attempt_counter < GALLATIN_MALLOC_LOOP_ATTEMPTS){
+        while (offset == ~0ULL && attempt_counter < GALLATIN_MALLOC_BLOCK_ATTEMPTS){
 
           offset = malloc_block_allocation(tree_id);
           attempt_counter += 1;
@@ -858,7 +860,7 @@ struct Gallatin {
         tree_id = 0;
 
 
-        while (offset == ~0ULL && attempt_counter < GALLATIN_MALLOC_LOOP_ATTEMPTS){
+        while (offset == ~0ULL && attempt_counter < GALLATIN_MALLOC_SEGMENT_ATTEMPTS){
 
           offset = malloc_segment_allocation(alloc_count);
           attempt_counter +=1;
@@ -885,138 +887,6 @@ struct Gallatin {
     if (offset != ~0ULL){
        alloc = offset_to_allocation(offset, tree_id);
     }
-
-    return alloc;
-
-  }
-
-
-  __device__ void * malloc_old(uint64_t size){
-
-    //updated version for register sharing
-    // uint alloc_count = 1;
-
-    // // 0 = slice, 1 = block, 2 = segment
-    // int alloc_level = 0;
-
-    // if (size < smallest) size = smallest;
-
-    uint16_t tree_id = get_tree_id_from_size(size);
-
-    if (tree_id >= num_trees){
-
-      int smallest_tree_bits = get_first_bit_bigger(smallest*4096);
-
-      int block_tree = (int) get_first_bit_bigger(size) - smallest_tree_bits;
-
-      if (block_tree < 0){ block_tree = num_trees-1; }
-
-      // #if GALLATIN_DEBUG_PRINTS
-      // printf("Snapped tree id to size %d\n", block_tree);
-      // #endif
-
-      tree_id = (uint16_t) block_tree;
-
-
-    }
-
-    uint64_t attempt_counter = 0;
-
-    uint64_t offset = malloc_offset(size);
-
-    while (offset == ~0ULL && attempt_counter < GALLATIN_MALLOC_LOOP_ATTEMPTS){
-
-        offset = malloc_offset(size);
-        attempt_counter+=1;
-        
-    }
-
-    if (offset == ~0ULL){
-
-      #if GALLATIN_DEBUG_PRINTS
-
-      printf("Failed to allocate size %llu\n", size);
-
-      #endif
-
-
-      return nullptr;
-
-    }
-
-    #if GALLATIN_DEBUG_PRINTS
-
-      uint64_t segment = table->get_segment_from_offset(offset);
-
-      uint16_t alt_tree_id = table->read_tree_id(segment);
-
-      uint64_t block_id = offset/4096;
-
-      Block * my_block = table->get_block_from_global_block_id(block_id);
-
-      uint64_t block_segment = table->get_segment_from_block_ptr(my_block);
-
-      uint64_t relative_offset = table->get_relative_block_offset(my_block);
-
-      uint64_t block_tree = table->read_tree_id(block_segment);
-
-      if (alt_tree_id != tree_id){
-
-        uint16_t next_segment_id = table->read_tree_id(block_segment+1);
-
-        uint16_t prev_segment_id = table->read_tree_id(block_segment-1);
-
-        //read the counters
-        // int malloc_status = atomicCAS((int *)&table->malloc_counters[segment], 0, 0);
-        // int free_status = atomicCAS((int *)&table->free_counters[segment], 0, 0);
-
-        // //test here verifies that segment is being reset...
-        // //It is not a misread of the segment≥
-        // #if GALLATIN_DEBUG_PRINTS
-        // printf("Mismatch for offset: %llu in tree ids for alloc of size %llu: %u != %u...Block %llu segment %llu offset %llu tree %u... prev is %u Next is %u. Malloc %d, free %d.\n", offset, size, tree_id, alt_tree_id, block_id, block_segment, relative_offset, block_tree, prev_segment_id, next_segment_id, malloc_status, free_status);
-        // #endif
-
-
-
-        #if GALLATIN_TRAP_ON_ERR
-        asm("trap;");
-        #endif
-
-      }
-
-    #endif
-
-
-    void * alloc = offset_to_allocation(offset, tree_id);
-
-    #if GALLATIN_DEBUG_PRINTS
-
-    uint64_t alloc_segment = table->get_segment_from_ptr(alloc);
-
-    if (alloc_segment != segment){
-
-      printf("Malloc: Offset %llu mismatch in segment: %llu != %llu, tree %u\n", offset, segment, alloc_segment, tree_id);
-
-      #if GALLATIN_TRAP_ON_ERR
-      asm("trap;");
-      #endif
-
-    }
-
-    uint64_t alt_offset = allocation_to_offset(alloc, tree_id);
-
-    uint64_t alt_offset_segment = table->get_segment_from_offset(offset);
-
-    if (alt_offset_segment != segment){
-      printf("Malloc: mismatch in cast back: %llu != %llu\n", alt_offset_segment, segment);
-
-      #if GALLATIN_TRAP_ON_ERR
-      asm("trap;");
-      #endif
-
-    }
-
-    #endif
 
     return alloc;
 
@@ -1092,77 +962,6 @@ struct Gallatin {
 
   }
 
-
-  //extra version of malloc offset that verifies
-  //information passed by the external malloc method.
-  __device__ uint64_t malloc_offset_safety(uint64_t bytes_needed, uint16_t ext_tree_id, uint ext_alloc_count, int ext_alloc_level) {
-
-
-    if (ext_alloc_level == 0){
-
-      return malloc_slice_allocation(ext_tree_id, ext_alloc_count);
-
-    } else if (ext_alloc_level == 1){
-
-      return malloc_block_allocation(ext_tree_id);
-
-    } else {
-
-      return malloc_segment_allocation(ext_alloc_count);
-
-    }
-
-}
-
-
-  // malloc an individual allocation
-  // returns an offset that can be cast into the associated void *
-  __device__ uint64_t malloc_offset(uint64_t bytes_needed) {
-
-    uint alloc_count = 1;
-
-    if (bytes_needed < smallest) bytes_needed = smallest;
-
-    uint16_t tree_id = get_first_bit_bigger(bytes_needed) - smallest_bits;
-
-    if (tree_id >= num_trees) {
-
-      //first, determine if the allocation can be satisfied by a full block
-      int smallest_tree_bits = get_first_bit_bigger(smallest*4096);
-
-      int block_tree = get_first_bit_bigger(bytes_needed) - smallest_tree_bits;
-
-      if (block_tree < num_trees){
-
-        if (block_tree < 0){
-
-          alloc_count = (1ULL << (tree_id - (num_trees-1)));
-
-          tree_id = num_trees-1;
-
-        } else {
-
-          return malloc_block_allocation(block_tree);
-
-        }
-
-
-      } else {
-
-
-        //calculate # of segments needed
-
-        uint64_t num_segments_required = (bytes_needed - 1)/ bytes_per_segment + 1;
-
-        return malloc_segment_allocation(num_segments_required);
-
-      }
-
-    }
-
-    return malloc_slice_allocation(tree_id, alloc_count);
-
-}
 
   // get a new segment for a given tree!
   __device__ int gather_new_segment(uint16_t tree) {
