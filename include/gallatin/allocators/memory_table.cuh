@@ -49,6 +49,8 @@
 
 #define GALLATIN_TABLE_GLOBAL_READ 1
 
+#define CAS_RETURN 1
+
 namespace gallatin {
 
 namespace allocators {
@@ -807,7 +809,20 @@ struct alloc_table {
     __threadfence();
 
     //determines how many other blocks are live, and signals to the system that re-use is possible
+
+    #if CAS_RETURN
+
+    while((atomicCAS((unsigned int *)&active_counts[segment], enqueue_position, enqueue_position+1) != enqueue_position));
+
+    int return_id = enqueue_position;
+
+    #else
     int return_id = return_slot_to_segment(segment);
+    #endif
+
+    // if (return_id != enqueue_position){
+    //   printf("Potential mismatch: %d != %u\n", return_id, enqueue_position);
+    // }
 
     if (all_blocks_free(return_id, num_blocks)){
 

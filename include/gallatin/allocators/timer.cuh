@@ -63,7 +63,7 @@ struct timer {
 
   // synchronize with device, end the timer, and report duration
   __host__ double sync_end() {
-    cudaDeviceSynchronize();
+    GPUErrorCheck(cudaDeviceSynchronize());
 
     end_timer();
 

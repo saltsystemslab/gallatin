@@ -14,6 +14,7 @@ namespace cg = cooperative_groups;
 
 //using namespace gallatin::allocators;
 
+#ifndef GPUErrorCheck
 #define GPUErrorCheck(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
 {
@@ -23,6 +24,7 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
       if (abort) exit(code);
    }
 }
+#endif
 
 // helper_macro
 // define macros
@@ -325,23 +327,36 @@ __device__ int __cfcll(uint64_t bits){
 
 }
 
-// __device__ uint64_t reduce_less(cg::coalesced_threads active_threads,
-// uint64_t val){
 
-// 	int i = 1;
 
-// }
+#if GALLATIN_USING_DYNAMIC_PARALLELISM
 
-// template <int value>
-// struct return_value
-// {
-//     using size = value;
-// };
 
-// //given bytes used generate the main
-// template<typename Key, typename Val>
-// struct rounded_size : return_value<(((sizeof(Key)+sizeof(Val))-1)/16+1)*16> {};
+__global__ void clear_memory_kernel(void * memory, uint64_t num_bytes, uint64_t n_threads){
 
+  uint64_t tid = gallatin::utils::get_tid();
+
+  char * char_memory = (char *) memory;
+
+  for (uint64_t i = tid; i < num_bytes; i+= n_threads){
+
+    char_memory[i] = (char) 0;
+
+  }
+
+  return;
+
+}
+
+//use dynamic parallelism to clear memory
+__device__ void memclear(void * memory, uint64_t num_bytes, uint64_t num_threads){
+
+  clear_memory_kernel<<<((num_threads-1)/512 +1), 512>>>(memory, num_bytes, num_threads);
+
+}
+
+
+#endif
 
 
 

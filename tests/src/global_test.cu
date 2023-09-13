@@ -27,14 +27,16 @@ using namespace gallatin::allocators;
 #if GALLATIN_DEBUG_PRINTS
    #define TEST_BLOCK_SIZE 256
 #else
-   #define TEST_BLOCK_SIZE 512
+   #define TEST_BLOCK_SIZE 256
 #endif
 
 
 __global__ void alloc_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64_t ** bitarray, uint64_t * misses){
 
 
-   uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+   //uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+   uint64_t tid = gallatin::utils::get_tid();
 
    if (tid >= num_allocs) return;
 

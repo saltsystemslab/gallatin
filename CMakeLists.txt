@@ -50,23 +50,44 @@ if (LINFO)
   set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -lineinfo")
 endif(LINFO)
 
+
+option (GAL_DEBUG "Add debug flags to CMake" OFF)
+
+if (GAL_DEBUG)
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -G -g")
+endif(GAL_DEBUG)
+
+option (GAL_DYNAMIC "Add dynamic parallelism - Needed for calloc calls" OFF)
+
+if (GAL_DYNAMIC)
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -lcudadevrt -rdc=true")
+  add_compile_definitions(GALLATIN_USING_DYNAMIC_PARALLELISM=1)
+  target_link_libraries(gallatin ${CUDA_cudadevrt_LIBRARY})
+  #set_target_properties(gallatin PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)  # this is required for some reason
+
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif(GAL_DYNAMIC)
+
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_C_COMPILER $ENV{CC})
 set(CMAKE_CXX_COMPILER $ENV{CXX})
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}")
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --time timing.txt -res-usage")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}") 
 
 
 set_target_properties(gallatin PROPERTIES CMAKE_CUDA_RUNTIME_LIBRARY Static)
 set_target_properties(gallatin PROPERTIES CUDA_SEPARABLE_COMPILATION ON )
 
-set(POGGERS_TESTS_BINARY_DIR "${CMAKE_BINARY_DIR}/tests")
+set(GALLATIN_TESTS_BINARY_DIR "${CMAKE_BINARY_DIR}/tests")
 
 option(GAL_TESTS "Configure CMake to build tests for the allocator" OFF)
 
 if(GAL_TESTS)
     add_subdirectory(tests)
 endif(GAL_TESTS)
+
+
 

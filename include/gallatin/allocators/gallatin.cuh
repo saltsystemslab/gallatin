@@ -112,8 +112,13 @@ namespace allocators {
 #define GALLATIN_MALLOC_SEGMENT_ATTEMPTS 300
 
 
+//Macros for controlling system behavior
+//Reregister cutoff determines the % of fill at which the allocator
+//adds exhausted segments back to their tree.
 
+//Min pinned cutoff is the minimum # of live blocks allowed in the wavefront for any tree size
 
+//Team free controls if opportunistic coalescing is used for frees
 #define REREGISTER_CUTOFF .1
 #define MIN_PINNED_CUTOFF 4
 #define GALLATIN_TEAM_FREE 1
