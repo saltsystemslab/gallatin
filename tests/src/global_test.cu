@@ -43,7 +43,6 @@ __global__ void alloc_one_size_pointer(uint64_t num_allocs, uint64_t size, uint6
 
    uint64_t * malloc = (uint64_t *) global_malloc(size);
 
-
    if (malloc == nullptr){
       atomicAdd((unsigned long long int *)misses, 1ULL);
 
@@ -52,13 +51,21 @@ __global__ void alloc_one_size_pointer(uint64_t num_allocs, uint64_t size, uint6
    }
 
 
+   uint64_t old = atomicExch((unsigned long long int *)&bitarray[tid], (unsigned long long int) malloc);
 
-   bitarray[tid] = malloc;
+   // if (old != 0){
+   //    printf("Two threads swapping to same addr\n");
+   // }
+
+   //bitarray[tid] = malloc;
 
    malloc[0] = tid;
 
    __threadfence();
 
+   // if (bitarray[tid][0] != tid){
+   //    printf("Err detected\n");
+   // }
 
 }
 
@@ -66,7 +73,9 @@ __global__ void alloc_one_size_pointer(uint64_t num_allocs, uint64_t size, uint6
 __global__ void free_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64_t ** bitarray){
 
 
-   uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+   //uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+   uint64_t tid = gallatin::utils::get_tid();
 
    if (tid >= num_allocs) return;
 
@@ -77,7 +86,23 @@ __global__ void free_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64
 
 
    if (malloc[0] != tid){
-      printf("Double malloc on index %lu: read address is %lu\n", tid, malloc[0]);
+
+
+      uint64_t alt_address = malloc[0];
+
+      printf("Addr: %llx vs %llx\n", (uint64_t) malloc, (uint64_t) bitarray[alt_address]);
+
+
+      global_gallatin->check_alloc_valid((void *)malloc);
+
+      uint64_t miss_amount;
+      if (tid >= malloc[0]){
+         miss_amount = tid-malloc[0];
+      } else {
+         miss_amount = malloc[0] - tid;
+      }
+      printf("Double malloc on index %lu: read address is %lu - diff is %lu\n", tid, malloc[0], miss_amount);
+      return;
    }
 
    global_free(malloc);
@@ -163,7 +188,7 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
 
       misses[0] = 0;
 
-      print_global_stats();
+      //print_global_stats();
 
 
    }

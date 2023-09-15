@@ -358,7 +358,7 @@ struct Gallatin {
 
     boot_shared_block_container<my_type><<<(blocks_per_pinned_block-1)/128+1, 128>>>(device_version,num_trees, blocks_per_pinned_block, MIN_PINNED_CUTOFF);
 
-    cudaDeviceSynchronize();
+    GPUErrorCheck(cudaDeviceSynchronize());
 
     return device_version;
 
@@ -400,6 +400,28 @@ struct Gallatin {
     cudaFreeHost(host_subtrees);
 
     cudaFreeHost(host_version);
+  }
+
+
+  //simple spot check to make sure that the allocator isn't giving off memory
+  //outside of it's addresses.
+  __device__ bool check_alloc_valid(void * allocation){
+
+    uint64_t byte_difference = (uint64_t) allocation - (uint64_t) table->memory;
+
+    uint64_t max_bytes = (table->num_segments) * bytes_per_segment;
+
+    printf("%llx inside of %llx\n", (uint64_t) allocation, (uint64_t) table->memory);
+
+    if (byte_difference > max_bytes){
+
+      printf("Byte difference: %lu > %lu\n", byte_difference, max_bytes);
+      return false;
+    }
+
+    printf("Byte difference: %lu <= %lu\n", byte_difference, max_bytes);
+    return true;
+
   }
 
   // given a pointer, return the segment it belongs to
@@ -679,6 +701,7 @@ struct Gallatin {
 
     //TODO: add check here that global block id does not exceed bounds
 
+    __threadfence();
 
     uint group_sum = cg::exclusive_scan(coalesced_team, alloc_count, cg::plus<uint>());
 
@@ -727,6 +750,7 @@ struct Gallatin {
     //sync is necessary for block transistion - illegal to free block until detached.
     __threadfence();
     coalesced_team.sync();
+    //__threadfence();
 
     if (allocation != ~0ULL){
 
@@ -836,6 +860,7 @@ struct Gallatin {
         alloc_count = (1ULL << (tree_id - (num_trees-1)));
         tree_id = num_trees-1;
 
+
         //big slice_malloc - fall through
 
       } else if (block_tree < num_trees){
@@ -876,6 +901,7 @@ struct Gallatin {
            alloc = offset_to_allocation(offset, tree_id);
         }
 
+        printf("nullptr\n");
         return alloc;
       }
 
@@ -1005,13 +1031,13 @@ struct Gallatin {
 
     __threadfence();
 
-    #if GALLATIN_DEBUG_PRINTS
+    // #if GALLATIN_DEBUG_PRINTS
 
-    bool found = sub_trees[tree]->query(new_segment_id);
+    // bool found = sub_trees[tree]->query(new_segment_id);
 
-    printf("Sub tree %u owns segment %llu: inserted %d queried %d\n", tree, new_segment_id, inserted, found);
+    // printf("Sub tree %u owns segment %llu: inserted %d queried %d\n", tree, new_segment_id, inserted, found);
 
-    #endif
+    // #endif
 
     return new_segment_id;
   }
@@ -1109,11 +1135,11 @@ struct Gallatin {
         #if GALLATIN_DEBUG_PRINTS
 
         //only worth bringing up if it failed.
-        if (!removed){
-          printf("Removed segment %llu from tree %u: %d success?\n", segment, tree, removed);
-        } else {
-          printf("Removed segment %llu from tree %u\n", segment, tree);
-        }
+        // if (!removed){
+        //   printf("Removed segment %llu from tree %u: %d success?\n", segment, tree, removed);
+        // } else {
+        //   printf("Removed segment %llu from tree %u\n", segment, tree);
+        // }
 
         #endif
 
