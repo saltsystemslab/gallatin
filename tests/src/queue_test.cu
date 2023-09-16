@@ -10,12 +10,14 @@
 
 
 
-#include <poggers/allocators/alloc_utils.cuh>
-#include <poggers/counter_blocks/beta.cuh>
+#include <gallatin/allocators/alloc_utils.cuh>
+#include <gallatin/allocators/gallatin.cuh>
 
-#include <poggers/counter_blocks/timer.cuh>
+#include <gallatin/allocators/timer.cuh>
 
-#include <poggers/data_structs/custring.cuh>
+#include <gallatin/data_structs/custring.cuh>
+
+#include <gallatin/data_structs/queue.cuh>
 
 
 #include <stdio.h>
@@ -23,7 +25,7 @@
 #include <assert.h>
 #include <chrono>
 
-using namespace beta::allocators;
+using namespace gallatin::allocators;
 
 using namespace gallatin::data_structs;
 
@@ -33,7 +35,7 @@ using namespace gallatin::data_structs;
 template <typename queue> 
 __global__ void enqueue_test_kernel(queue * dev_queue, uint64_t nitems){
 
-   uint64_t tid = poggers::utils::get_tid();
+   uint64_t tid = gallatin::utils::get_tid();
 
    if (tid >= nitems) return;
 
@@ -45,7 +47,7 @@ __global__ void enqueue_test_kernel(queue * dev_queue, uint64_t nitems){
 template <typename queue>
 __global__ void dequeue_test_kernel(queue * dev_queue, uint64_t * bitarray, uint64_t nitems){
 
-   uint64_t tid = poggers::utils::get_tid();
+   uint64_t tid = gallatin::utils::get_tid();
 
    if (tid >= nitems) return;
 
@@ -75,7 +77,7 @@ __global__ void dequeue_test_kernel(queue * dev_queue, uint64_t * bitarray, uint
 
 __host__ void queue_test(uint64_t n_threads){
 
-   using gallatin_allocator = beta::allocators::beta_allocator<16ULL*1024*1024, 16ULL, 4096ULL>;
+   using gallatin_allocator = gallatin::allocators::Gallatin<16ULL*1024*1024, 16ULL, 4096ULL>;
 
    using queue_type = queue<uint64_t, gallatin_allocator>;
 
@@ -97,7 +99,7 @@ __host__ void queue_test(uint64_t n_threads){
 
    printf("Starting queue test\n");
 
-   beta::utils::timer enqueue_timing;
+   gallatin::utils::timer enqueue_timing;
 
    enqueue_test_kernel<queue_type><<<(n_threads-1)/256 +1, 256>>>(dev_queue, n_threads);
 
@@ -105,7 +107,7 @@ __host__ void queue_test(uint64_t n_threads){
 
    enqueue_timing.print_throughput("Enqueued", n_threads);
 
-   beta::utils::timer dequeue_timing;
+   gallatin::utils::timer dequeue_timing;
 
    dequeue_test_kernel<queue_type><<<(n_threads-1)/256 +1, 256>>>(dev_queue, bits, n_threads);
 

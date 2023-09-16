@@ -10,59 +10,103 @@
 
 
 
-#include <poggers/allocators/alloc_utils.cuh>
-#include <poggers/counter_blocks/beta.cuh>
-
-#include <poggers/counter_blocks/timer.cuh>
-
-#include <poggers/data_structs/custring.cuh>
-
+   
+#include <gallatin/allocators/global_allocator.cuh>
+#include <gallatin/data_structs/custring.cuh>
+#include <gallatin/allocators/timer.cuh>
 
 #include <stdio.h>
 #include <iostream>
 #include <assert.h>
 #include <chrono>
 
-using namespace beta::allocators;
-
-using namespace gallatin::data_structs;
+using namespace gallatin::allocators;
 
 
-//enqueue test kernel loads nitems into the queue, with every item unique based on TID
-//then dequeue tests correctness by mapping to bitarry.
-template <typename Allocator> 
-__global__ void string_boot_test_kernel(Allocator * allocator){
+#if BETA_DEBUG_PRINTS
+   #define TEST_BLOCK_SIZE 256
+#else
+   #define TEST_BLOCK_SIZE 512
+#endif
 
-   uint64_t tid = poggers::utils::get_tid();
 
-   if (tid != 0) return;
+__global__ void single_string_test(uint64_t n_sums){
 
-   using str_type = custring<Allocator>;
+   uint64_t tid = gallatin::utils::get_tid();
 
-   str_type string1("test", allocator);
+   if (tid != 0 )return;
 
-   string1.print_info();
+   gallatin::data_structs::custring test_string("Data ");
 
-   str_type string2(1234ULL, allocator);
+   for (uint i = 0; i < 1000; i++){
 
-   string2.print_info();
+      gallatin::data_structs::custring alt_string(i);
 
-   
+      alt_string.print_string_device();
+
+      test_string = test_string + alt_string;
+
+   }
+
+   test_string.print_string_device();
+   // for (uint64_t i = 0; i < n_sums; i++){
+
+   //    if (i != n_sums -1){
+
+   //       gallatin::data_structs::custring alt_string = gallatin::data_structs::custring(i) + ",";
+   //       test_string = test_string + alt_string;
+   //    } else {
+   //       test_string = test_string + gallatin::data_structs::custring(i) + ".";
+   //    }
+      
+   //    test_string.print_string_device();
+   // }
+
 }
 
+//test the copy constructor when not reflexive?
+__global__ void single_string_test_copy(){
 
-__host__ void string_boot_test(){
+   uint64_t tid = gallatin::utils::get_tid();
 
-   using gallatin_allocator = beta::allocators::beta_allocator<16ULL*1024*1024, 16ULL, 4096ULL>;
+   if (tid != 0 )return;
 
-   //boot with 20 Gigs
-   gallatin_allocator * alloc = gallatin_allocator::generate_on_device(20ULL*1024*1024*1024, 111);
+   gallatin::data_structs::custring test_string("FOO");
 
-   string_boot_test_kernel<gallatin_allocator><<<1,1>>>(alloc);
+   gallatin::data_structs::custring alt_string("BAR");
+     
+   //this works   
+   //gallatin::data_structs::custring mixed = test_string + alt_string;
 
-   cudaDeviceSynchronize();
+   test_string = test_string+alt_string;
+   test_string.print_string_device();
 
-   gallatin_allocator::free_on_device(alloc);
+
+
+}
+
+__global__ void string_test_floats(uint64_t n_sums){
+
+   uint64_t tid = gallatin::utils::get_tid();
+
+   if (tid != 0 )return;
+
+   gallatin::data_structs::custring test_string("Data ");
+
+   for (uint64_t i = 0; i < n_sums; i++){
+
+      if (i != n_sums -1){
+         test_string = test_string + gallatin::data_structs::custring(1.0*i/n_sums) + ", ";
+      } else {
+         test_string = test_string + gallatin::data_structs::custring(1.0*i/n_sums);
+      }
+      
+     
+   }
+
+   test_string.print_string_device();
+   test_string.print_info();
+
 
 }
 
@@ -72,7 +116,22 @@ __host__ void string_boot_test(){
 
 int main(int argc, char** argv) {
 
-   string_boot_test();
+
+   gallatin::allocators::init_global_allocator(8ULL*1024*1024*1024, 42);
+
+
+   cudaDeviceSynchronize();
+
+   single_string_test<<<1,1>>>(1);
+
+   //single_string_test_copy<<<1,1>>>();
+   cudaDeviceSynchronize();
+
+   string_test_floats<<<1,1>>>(1000);
+
+   cudaDeviceSynchronize();
+
+   gallatin::allocators::free_global_allocator();
 
    cudaDeviceReset();
    return 0;

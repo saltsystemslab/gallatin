@@ -116,6 +116,8 @@ namespace allocators {
 #define MIN_PINNED_CUTOFF 4
 #define GALLATIN_TEAM_FREE 1
 
+#define GALLATIN_FAST_INIT 0
+
 // alloc table associates chunks of memory with trees
 
 // using uint16_t as there shouldn't be that many trees.
@@ -277,14 +279,24 @@ struct Gallatin {
 
     uint64_t total_mem = max_bytes;
 
-    host_version->segment_tree = veb_tree::generate_on_device_nowait(max_chunks, seed);
-
+    #if GALLATIN_FAST_INIT
+      host_version->segment_tree = veb_tree::generate_on_device_nowait(max_chunks, seed);
+    #else
+      host_version->segment_tree = veb_tree::generate_on_device(max_chunks, seed);  
+    #endif
     // estimate the max_bits
     uint64_t blocks_per_pinned_block = 128;
     uint64_t num_bits = bytes_per_segment / (4096 * smallest);
 
+
+    #if GALLATIN_FAST_INIT
     host_version->local_blocks =
         pinned_block_type::generate_on_device_nowait(blocks_per_pinned_block, MIN_PINNED_CUTOFF);
+    #else
+    host_version->local_blocks =
+        pinned_block_type::generate_on_device(blocks_per_pinned_block, MIN_PINNED_CUTOFF);
+    #endif
+
 
     uint64_t num_bytes = 0;
 
@@ -307,14 +319,27 @@ struct Gallatin {
     sub_tree_type **ext_sub_trees =
         get_host_version<sub_tree_type *>(num_trees);
 
+
     for (int i = 0; i < num_trees; i++) {
-      sub_tree_type *temp_tree =
-          sub_tree_type::generate_on_device_nowait(max_chunks, i + seed);
-      ext_sub_trees[i] = temp_tree;
+
+      #if GALLATIN_FAST_INIT
+        sub_tree_type *temp_tree =
+            sub_tree_type::generate_on_device_nowait(max_chunks, i + seed);
+        ext_sub_trees[i] = temp_tree;
+      #else
+         sub_tree_type *temp_tree =
+                  sub_tree_type::generate_on_device(max_chunks, i + seed);
+              ext_sub_trees[i] = temp_tree;
+      #endif
+
     }
 
     host_version->sub_trees =
         move_to_device<sub_tree_type *>(ext_sub_trees, num_trees);
+
+    #if !GALLATIN_FAST_INIT
+        cudaDeviceSynchronize();
+    #endif
 
     boot_segment_trees<<<(max_chunks - 1) / 512 + 1, 512>>>(
         host_version->sub_trees, max_chunks, num_trees);
@@ -334,21 +359,39 @@ struct Gallatin {
 
     host_version->locks = 0;
 
+    #if GALLATIN_FAST_INIT
     host_version
         ->table = alloc_table<bytes_per_segment, smallest>::generate_on_device_nowait(
         max_bytes);
+
+    #else
+    host_version
+        ->table = alloc_table<bytes_per_segment, smallest>::generate_on_device(
+        max_bytes);
+
+    #endif
 
     if (print_info){
       printf("Booted Gallatin with %lu trees in range %lu-%lu and %f GB of memory %lu segments\n", num_trees, smallest, biggest, 1.0*total_mem/1024/1024/1024, max_chunks);
     }
     
 
-
+    #if GALLATIN_FAST_INIT
     auto device_version = move_to_device_nowait(host_version);
 
     boot_shared_block_container<my_type><<<(blocks_per_pinned_block-1)/128+1, 128>>>(device_version,num_trees, blocks_per_pinned_block, MIN_PINNED_CUTOFF);
 
+    #else
+
+    auto device_version = move_to_device(host_version);
+
+    boot_shared_block_container<my_type><<<(blocks_per_pinned_block-1)/128+1, 128>>>(device_version,num_trees, blocks_per_pinned_block, MIN_PINNED_CUTOFF);
+
+
+    #endif
+
     cudaDeviceSynchronize();
+
 
     return device_version;
 
@@ -566,7 +609,7 @@ struct Gallatin {
 
 
   //experimental - acquire a slice given a tree_id  
-  __device__ uint64_t malloc_slice_allocation(uint16_t & tree_id, uint & alloc_count){
+  __device__ uint64_t malloc_slice_allocation(uint16_t tree_id, uint alloc_count){
 
      // get local block storage and thread storage
     per_size_pinned_blocks * local_shared_block_storage =
@@ -597,11 +640,25 @@ struct Gallatin {
     shared_block_storage_index = coalesced_team.shfl(shared_block_storage_index, 0);
     my_block = coalesced_team.shfl(my_block, 0);
 
+    coalesced_team.sync();
+
+
+
     //cycle if we read an old block
     if (my_block == nullptr){
       num_attempts+=1;
       continue;
     }
+
+
+    //read from null check
+    // uint64_t segment = table->get_segment_from_block_ptr(my_block);
+    // uint16_t tree_id = table->read_tree_id(segment);
+
+    // if (tree_id != 0){
+    //   printf("Segment %lu tree id %u\n", segment, tree_id);
+    // }
+
 
     #if GALLATIN_DEBUG_PRINTS
 
@@ -669,7 +726,7 @@ struct Gallatin {
 
     //TODO: add check here that global block id does not exceed bounds
 
-
+    //bug is in this set
     uint group_sum = cg::exclusive_scan(coalesced_team, alloc_count, cg::plus<uint>());
 
 
@@ -677,7 +734,9 @@ struct Gallatin {
 
     uint64_t allocation = my_block->extract_count_multi_size(coalesced_team, merged_count, group_sum, alloc_count);
 
-    
+    // if (coalesced_team.thread_rank() == coalesced_team.size()-1){
+    //   printf("Group sum is %u, alloc_count %u, %u merged, %lu alloc\n", group_sum, alloc_count, merged_count, allocation);
+    // }
 
     //this is now correct - final allocation may be incorrect, but we need it.
     bool should_replace = (allocation <= 4095 && (allocation + alloc_count) > 4095);
@@ -718,6 +777,10 @@ struct Gallatin {
     __threadfence();
     coalesced_team.sync();
 
+    // if (allocation > 4095 && allocation != ~0ULL){
+    //   printf("weird alloc: %lu\n", allocation);
+    // }
+
     if (allocation != ~0ULL){
 
       if (!my_block->check_valid(merged_count, tree_id)){
@@ -727,6 +790,8 @@ struct Gallatin {
 
         my_block->check_valid(merged_count, tree_id);
         #endif
+
+        //printf("Valid failure\n");
 
         free_offset(allocation+global_block_id*4096);
 
@@ -1241,7 +1306,7 @@ struct Gallatin {
 
     }
 
-    bool need_to_deregister = table->finish_freeing_block(segment, num_blocks);
+    bool need_to_deregister = table->finish_freeing_block(segment, num_blocks, reserved_slot);
 
     //bool need_to_deregister =
         //table->free_block(block_to_free);

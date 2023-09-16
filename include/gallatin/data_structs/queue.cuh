@@ -6,7 +6,7 @@
 #include <cuda_runtime_api.h>
 
 //alloc utils needed for easy host_device transfer
-#include <poggers/allocators/alloc_utils.cuh>
+#include <gallatin/allocators/alloc_utils.cuh>
 
 
 namespace gallatin {
@@ -71,11 +71,11 @@ namespace data_structs {
 		//currently does not pull from the allocator, but it totally should
 		static __host__ my_type * generate_on_device(allocator * backing_allocator){
 
-			my_type * host_version = poggers::utils::get_host_version<my_type>();
+			my_type * host_version = gallatin::utils::get_host_version<my_type>();
 
 			host_version->init(backing_allocator);
 
-			return poggers::utils::move_to_device<my_type>(host_version);
+			return gallatin::utils::move_to_device<my_type>(host_version);
 
 
 		}
@@ -197,11 +197,11 @@ namespace data_structs {
 	template<typename T, int width, typename allocator>
 	struct circular_CAS_queue {
 
-		using my_type = circular_CAS_queue<T, width, allocator>
+		using my_type = circular_CAS_queue<T, width, allocator>;
 
 		uint64_t malloc_counter;
 		uint64_t free_counter;
-		queue queue_list[width];
+		queue queue_list[width]; 
 
 		__host__ __device__ void init(allocator * backing_allocator){
 
@@ -219,11 +219,11 @@ namespace data_structs {
 		//generate a live version of the queue
 		__host__ my_type * generate_on_device(allocator * backing_allocator){
 
-			my_type * host_version = poggers::utils::get_host_version<my_type>();
+			my_type * host_version = gallatin::utils::get_host_version<my_type>();
 
 			host_version->init(backing_allocator);
 
-			return poggers::utils::move_to_device<my_type>(host_version);
+			return gallatin::utils::move_to_device<my_type>(host_version);
 
 		}
 

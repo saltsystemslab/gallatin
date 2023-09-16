@@ -49,6 +49,8 @@
 
 #define GALLATIN_TABLE_GLOBAL_READ 1
 
+#define CAS_RETURN 0
+
 namespace gallatin {
 
 namespace allocators {
@@ -764,9 +766,28 @@ struct alloc_table {
 
 
   //once the messy logic of the tree reset is done, clean up
-  __device__ bool finish_freeing_block(uint64_t segment, uint64_t num_blocks){
+  __device__ bool finish_freeing_block(uint64_t segment, uint64_t num_blocks, int enqueue_position){
 
+    #if CAS_RETURN
+
+    //printf("Triggering\n");
+
+    while((atomicCAS((int *)&active_counts[segment], enqueue_position, enqueue_position+1) != enqueue_position));
+
+    int return_id = enqueue_position;
+
+    #else
+
+    //printf("Triggering free\n");
     int return_id = return_slot_to_segment(segment);
+
+    if (return_id != enqueue_position){
+      printf("Bug: %d != %d\n", return_id, enqueue_position);
+    }
+
+    #endif
+
+    //int return_id = return_slot_to_segment(segment);
 
     if (all_blocks_free(return_id, num_blocks)){
 
@@ -789,6 +810,8 @@ struct alloc_table {
   //this guarantees that the system is visible *before* being returned.
   __device__ bool free_block(Block *block_ptr) {
 
+    printf("In free block\n");
+
 
     uint64_t segment = get_segment_from_block_ptr(block_ptr);
 
@@ -807,7 +830,19 @@ struct alloc_table {
     __threadfence();
 
     //determines how many other blocks are live, and signals to the system that re-use is possible
+    #if CAS_RETURN
+
+    //printf("Triggering\n");
+
+    while((atomicCAS((unsigned int *)&active_counts[segment], enqueue_position, enqueue_position+1) != enqueue_position));
+
+    int return_id = enqueue_position;
+
+    #else
+
+    //printf("Triggering free\n");
     int return_id = return_slot_to_segment(segment);
+    #endif
 
     if (all_blocks_free(return_id, num_blocks)){
 

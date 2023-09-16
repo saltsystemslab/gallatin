@@ -126,6 +126,7 @@ struct Block {
 
     uint old_count;
 
+    //highest thread has full count
     if (active_threads.thread_rank() == active_threads.size()-1){
 
       old_count = atomicAdd((unsigned int *)&malloc_counter, my_group_sum+copies_needed);

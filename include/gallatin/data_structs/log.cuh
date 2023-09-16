@@ -6,10 +6,14 @@
 #include <cuda_runtime_api.h>
 
 //alloc utils needed for easy host_device transfer
-#include <poggers/allocators/alloc_utils.cuh>
+//and the global allocator
+#include <gallatin/allocators/global_allocator.cuh>
+#include <gallatin/allocators/alloc_utils.cuh>
 
-//needs a queue structure to record operations
-#include <poggers/data_structs/queue.cuh>
+#include <gallatin/data_structs/custring.cuh>
+
+#include <gallatin/data_structs/dev_host_queue.cuh>
+
 
 
 //This is a logger for cuda! Uses a queue structure to record

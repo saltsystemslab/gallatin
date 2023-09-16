@@ -24,10 +24,10 @@
 using namespace gallatin::allocators;
 
 
-#if BETA_DEBUG_PRINTS
+#if GALLATIN_DEBUG_PRINTS
    #define TEST_BLOCK_SIZE 256
 #else
-   #define TEST_BLOCK_SIZE 512
+   #define TEST_BLOCK_SIZE 256
 #endif
 
 
@@ -36,11 +36,17 @@ __global__ void alloc_one_size_pointer(uint64_t num_allocs, uint64_t size, uint6
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
+   uint64_t alt_tid = gallatin::utils::get_tid();
+
+   if (tid != alt_tid){
+      printf("Mismatch: %lu != %lu\n", tid, alt_tid);
+   }
+
+
    if (tid >= num_allocs) return;
 
 
    uint64_t * malloc = (uint64_t *) global_malloc(size);
-
 
    if (malloc == nullptr){
       atomicAdd((unsigned long long int *)misses, 1ULL);
@@ -50,13 +56,21 @@ __global__ void alloc_one_size_pointer(uint64_t num_allocs, uint64_t size, uint6
    }
 
 
+   uint64_t old = atomicExch((unsigned long long int *)&bitarray[tid], (unsigned long long int) malloc);
 
-   bitarray[tid] = malloc;
+   // if (old != 0){
+   //    printf("Two threads swapping to same addr\n");
+   // }
+
+   //bitarray[tid] = malloc;
 
    malloc[0] = tid;
 
    __threadfence();
 
+   // if (bitarray[tid][0] != tid){
+   //    printf("Err detected\n");
+   // }
 
 }
 
@@ -65,6 +79,12 @@ __global__ void free_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64
 
 
    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+   uint64_t alt_tid = gallatin::utils::get_tid();
+
+   if (tid != alt_tid){
+      printf("Mismatch: %lu != %lu\n", tid, alt_tid);
+   }
 
    if (tid >= num_allocs) return;
 
@@ -75,7 +95,25 @@ __global__ void free_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64
 
 
    if (malloc[0] != tid){
-      printf("Double malloc on index %lu: read address is %lu\n", tid, malloc[0]);
+
+
+      uint64_t alt_address = malloc[0];
+
+      printf("Addr: %llx vs %llx\n", (uint64_t) malloc, (uint64_t) bitarray[alt_address]);
+
+
+      uint64_t miss_amount;
+      if (tid >= malloc[0]){
+         miss_amount = tid-malloc[0];
+      } else {
+         miss_amount = malloc[0] - tid;
+      }
+
+      uint64_t segment = global_gallatin->table->get_segment_from_ptr((void *)malloc);
+
+      uint16_t tree_id = global_gallatin->table->read_tree_id(segment);
+ 
+      printf("Double malloc %lu: read is %lu - diff is %lu. Tree %u Segment %lu\n", tid, malloc[0], miss_amount, tree_id, segment);
       return;
    }
 
@@ -162,14 +200,14 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
 
       misses[0] = 0;
 
-      print_global_stats();
+      //print_global_stats();
 
 
    }
 
    printf("Total missed across %d runs: %lu/%lu\n", num_rounds, total_misses, num_allocs*num_rounds);
 
-   print_global_stats();
+   //print_global_stats();
 
    cudaFree(misses);
 

@@ -23,15 +23,22 @@ namespace data_structs {
 	template <typename T, int num_items>
 	struct block_queue_node {
 
-		T item[num_items];
+		T items[num_items];
 		block_queue_node<T> * next;
 
 		//fused counters for ops - block size is a maximum of 16 billion.
-		uint64_t counters;
+		uint enqueue_counter;
 
-		__device__ void init(T new_item){
-			item = new_item;
+		int live;
+
+		uint dequeue_counter;
+
+		__device__ void init(){
+			//items[0] = new_item;
 			next = nullptr;
+			enqueue_counter = 0;
+			live = 0;
+			dequeue_counter = 0;
 		}
 
 		__device__ void set_next(queue_node<T> * ext_next){
@@ -44,9 +51,71 @@ namespace data_structs {
 		}
 
 		//returns the address claimed, malloc occupies the lower bits. 
-		__device__ uint64_t enqueue_increment_next(){
+		//does not do boundary checking
+		__device__ uint enqueue_increment_next(){
 
-			return (atomicAdd((unsigned long long int *) counters, 1ULL) & BITMASK(DIVISION_BIT));
+			return (atomicAdd((unsigned int *) &enqueue_counter, 1U));
+
+		}
+
+
+		__device__ bool enqueue(T item){
+
+			uint enqueue_pos = enqueue_increment_next();
+
+			//this segment is empty.
+			if (enqueue_pos >= num_items) return false;
+
+			//else write!
+			place_item(item, enqueue_pos);
+
+			int num_active = signal_active();
+
+			if (enqueue_pos != num_active){
+				printf("Discrepancy: %u != %d\n", enqueue_pos, num_active);
+			}
+
+			return true;
+
+		}
+
+		//attempt to read item from this queue block.
+		//pass in item & so that the user gets to deal with that 
+		// as we don't know what the ty
+		__device__ bool dequeue(T & item){
+
+			success = grab_active();
+
+			if (success){
+
+				uint read_addr = get_dequeue_position();
+
+				item = items[read_addr];
+
+
+			}
+
+			return success;
+		}
+
+		__device__ bool grab_active(){
+
+			uint old = atomicSub((int *)&live, 1);
+
+			if (old > 0) return true;
+
+			atomicAdd((int *)&live, 1);
+
+			return false;
+
+		}
+
+
+		//this may violate a precondition.
+		//if so, need to use looped CAS.
+		__device__ int signal_active(){
+
+			return atomicAdd((int *) &live, 1);
 
 		}
 
@@ -61,8 +130,32 @@ namespace data_structs {
 		}
 
 		//dequeue a segment
-		//return -1 if 
-		__device__ uint64_t dequeue_increment_next
+		//does not check if too large/too small
+		//NOTE: This gives you an exclusive slot - does not guarantee
+		__device__ uint get_dequeue_position(){
+
+			return atomicAdd(((unsigned int *) &dequeue_counter, 1ULL));
+
+
+		}
+
+		//Insert items with non_atomic + threadfence?
+		__device__ void place_item(T item, uint write_pos){
+
+			items[write_pos] = item;
+			__threadfence();
+
+		}
+
+
+		//use ldca to force a global read of T
+		//if bigger than 64_bits, use indirection
+		//no idea if this works LMAO
+		__device__ T global_read(uint pos){
+
+			return ((T *)  gallatin::utils::ldca((void *) (items + pos)))[0];
+
+		}
 
 
 	};
@@ -79,24 +172,24 @@ namespace data_structs {
 	// - alloc new node
 	// - set next of node to current
 
-	template <typename T, typename allocator>
-	struct queue {
+	template <typename T, int items_per_block>
+	struct block_queue {
 
-		using my_type = queue<T, allocator>;
+		using my_type = block_queue<T, items_per_block>;
+		using node_type = block_queue_node<T, items_per_block>;
 
 		queue_node<T> * head;
 		queue_node<T> * tail;
 
-		allocator * my_backing_allocator;
 
 
 		//instantiate a queue on device.
 		//currently does not pull from the allocator, but it totally should
-		static __host__ my_type * generate_on_device(allocator * backing_allocator){
+		static __host__ my_type * generate_on_device(){
 
 			my_type * host_version = poggers::utils::get_host_version<my_type>();
 
-			host_version->my_backing_allocator = backing_allocator;
+			//host_version->my_backing_allocator = backing_allocator;
 
 			return poggers::utils::move_to_device<my_type>(host_version);
 
@@ -104,12 +197,42 @@ namespace data_structs {
 		}
 
 		__device__ void init(allocator * backing_allocator){
-			my_backing_allocator = backing_allocator;
 			head = nullptr;
 			tail = nullptr;
 		}
 
 		__device__ void enqueue(T new_item){
+
+			my_head = head;
+
+			while (true){
+
+
+				if (my_head == nullptr){
+
+					//create new_node
+					node_type * next_node = global_malloc(sizeof(next_node));
+
+					next_node->init();
+
+					__threadfence();
+
+					if (atomicCAS((unsigned long long int *)&head, 0ULL, (unsigned long long int)next_node) == 0ULL){
+
+						atomicCAS((unsigned long long int *)&tail, 0ULL, (unsigned long long int) next_node);
+
+						continue;
+					}
+
+					global_free(next_node);
+
+
+
+				}
+
+			}
+
+			
 
 			queue_node<T> * new_node = (queue_node<T> *) my_backing_allocator->malloc(sizeof(queue_node<T>));
 
