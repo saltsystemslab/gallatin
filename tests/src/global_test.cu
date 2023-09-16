@@ -76,6 +76,7 @@ __global__ void free_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64
 
    if (malloc[0] != tid){
       printf("Double malloc on index %lu: read address is %lu\n", tid, malloc[0]);
+      return;
    }
 
    global_free(malloc);
