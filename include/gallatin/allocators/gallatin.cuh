@@ -111,6 +111,7 @@ namespace allocators {
 #define GALLATIN_MALLOC_BLOCK_ATTEMPTS 300
 #define GALLATIN_MALLOC_SEGMENT_ATTEMPTS 300
 
+#define GALLATIN_BLOCK_CHECK 0
 
 //Macros for controlling system behavior
 //Reregister cutoff determines the % of fill at which the allocator
@@ -466,9 +467,7 @@ struct Gallatin {
 
     if (smid >= local_shared_block_storage->num_blocks){
 
-      #if GALLATIN_DEBUG_PRINTS
       printf("ERR %d >= %llu\n", smid, local_shared_block_storage->num_blocks);
-      #endif
 
       #if GALLATIN_TRAP_ON_ERR
       asm("trap;");
@@ -482,9 +481,7 @@ struct Gallatin {
 
   	if (new_block == nullptr){
 
-      #if GALLATIN_DEBUG_PRINTS
   		printf("Failed to initialize block %d from tree %u", smid, tree_id);
-      #endif
 
       #if GALLATIN_TRAP_ON_ERR
       asm("trap;");
@@ -492,9 +489,6 @@ struct Gallatin {
 
   		return;
   	}
-
-
-    #if GALLATIN_DEBUG_PRINTS
 
 
     uint64_t alt_block_segment = table->get_segment_from_block_ptr(new_block);
@@ -513,15 +507,12 @@ struct Gallatin {
         #endif
 
       }
-    #endif
 
 
 
     if(!local_shared_block_storage->swap_out_nullptr(smid, new_block)){
 
-      #if GALLATIN_DEBUG_PRINTS
     	printf("Error: Block in position %d for tree %d already initialized\n", smid, tree_id);
-      #endif
 
       #if GALLATIN_TRAP_ON_ERR
       asm("trap;");
@@ -635,12 +626,24 @@ struct Gallatin {
       continue;
     }
 
-    #if GALLATIN_DEBUG_PRINTS
-
-
+    #if GALLATIN_BLOCK_CHECK
     uint64_t alt_block_segment = table->get_segment_from_block_ptr(my_block);
 
     uint16_t alt_tree_id = table->read_tree_id(alt_block_segment);
+
+    if (alt_tree_id != tree_id){
+
+      //printf("Trigger bad tree read\n");
+      return ~0ULL;
+    }
+    #endif
+
+    #if GALLATIN_DEBUG_PRINTS
+
+
+    // uint64_t alt_block_segment = table->get_segment_from_block_ptr(my_block);
+
+    // uint16_t alt_tree_id = table->read_tree_id(alt_block_segment);
 
     uint64_t block_id = table->get_global_block_offset(my_block);
 
@@ -756,11 +759,19 @@ struct Gallatin {
 
       if (!my_block->check_valid(merged_count, tree_id)){
 
+
+        
+
         #if GALLATIN_DEBUG_PRINTS
+
         printf("Gave out wrong offset\n");
 
         my_block->check_valid(merged_count, tree_id);
         #endif
+
+        // #if GALLATIN_TRAP_ON_ERR
+        // asm("trap;");
+        // #endif
 
         free_offset(allocation+global_block_id*4096);
 
@@ -810,6 +821,11 @@ struct Gallatin {
         #endif
 
   			free_block(new_block);
+
+        #if GALLATIN_TRAP_ON_ERR
+        asm("trap;");
+        #endif
+
   			return false;
   		}
 
@@ -947,7 +963,15 @@ struct Gallatin {
 
       __threadfence();
 
-      table->reset_tree_id(segment, tree_id);
+      bool reset = table->reset_tree_id(segment, tree_id);
+
+      #if GALLATIN_DEBUG_PRINTS
+
+      if (! reset){
+        printf("Failed to reset tree id for segment %lu\n", segment);
+      }
+
+      #endif
 
       return;
     }
@@ -1021,7 +1045,7 @@ struct Gallatin {
       asm("trap;");
       #endif
 
-      return new_segment_id;
+      return -1;
     }
 
     __threadfence();
@@ -1132,15 +1156,13 @@ struct Gallatin {
 
         bool removed = sub_trees[tree]->remove(segment);
 
+
         #if GALLATIN_DEBUG_PRINTS
 
         //only worth bringing up if it failed.
-        // if (!removed){
-        //   printf("Removed segment %llu from tree %u: %d success?\n", segment, tree, removed);
-        // } else {
-        //   printf("Removed segment %llu from tree %u\n", segment, tree);
-        // }
-
+        if (!removed){
+          printf("Failed Remove segment %llu from tree %u: %d success?\n", segment, tree, removed);
+        }
         #endif
 
         if (acquire_tree_lock(tree)) {
@@ -1176,7 +1198,7 @@ struct Gallatin {
     uint64_t num_blocks = table->get_blocks_per_segment(tree);
 
 
-    int reserved_slot = table->reserve_segment_slot(block_to_free, segment, tree, num_blocks);
+    uint reserved_slot = table->reserve_segment_slot(block_to_free, segment, tree, num_blocks);
 
 
     if (1.0*reserved_slot/num_blocks >= REREGISTER_CUTOFF && ((1.0*(reserved_slot-1)/num_blocks) < REREGISTER_CUTOFF)){
@@ -1193,6 +1215,7 @@ struct Gallatin {
     //bool need_to_deregister =
         //table->free_block(block_to_free);
 
+    __threadfence();
     
 
     if (need_to_deregister) {
@@ -1219,21 +1242,29 @@ struct Gallatin {
       // pull from tree
       // should be fine, no one can update till this point
       //this should have happened earlier
-      if (sub_trees[tree]->remove(segment)){
+
+      sub_trees[tree]->remove(segment);
+      // if (sub_trees[tree]->remove(segment)){
 
 
-        //in new version, this is fine... - blocks can live in the tree until full reset.
-        // #if GALLATIN_DEBUG_PRINTS
-        // printf("Failed to properly release segment %llu from tree %u\n", segment, tree);
-        // #endif
+      //   //in new version, this is fine... - blocks can live in the tree until full reset.
+      //   // #if GALLATIN_DEBUG_PRINTS
+      //   // printf("Failed to properly release segment %llu from tree %u\n", segment, tree);
+      //   // #endif
 
-      }
+      // }
+
+      __threadfence();
 
       if (!table->reset_tree_id(segment, tree)){
 
         #if GALLATIN_DEBUG_PRINTS
         printf("Failed to reset tree id for segment %llu, old ID %u\n", segment, tree);
 
+        #endif
+
+        #if GALLATIN_TRAP_ON_ERR
+        asm("trap;");
         #endif
       }
       __threadfence();

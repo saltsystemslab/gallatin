@@ -34,12 +34,22 @@ using namespace gallatin::allocators;
 __global__ void alloc_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64_t ** bitarray, uint64_t * misses){
 
 
-   //uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+   //introduce some randomness
 
-   uint64_t tid = gallatin::utils::get_tid();
+   uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+   //uint64_t tid = gallatin::utils::get_tid();
 
    if (tid >= num_allocs) return;
 
+
+   uint64_t counter = tid;
+
+   for (int i = 0; i < tid % 128; i++){
+      counter = counter/(i+1) + tid;
+   }
+
+   //printf("Tid %lu counter %lu\n", tid, counter);
 
    uint64_t * malloc = (uint64_t *) global_malloc(size);
 
@@ -90,10 +100,10 @@ __global__ void free_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64
 
       uint64_t alt_address = malloc[0];
 
-      printf("Addr: %llx vs %llx\n", (uint64_t) malloc, (uint64_t) bitarray[alt_address]);
+      //printf("Addr: %llx vs %llx\n", (uint64_t) malloc, (uint64_t) bitarray[alt_address]);
 
 
-      global_gallatin->check_alloc_valid((void *)malloc);
+      //global_gallatin->check_alloc_valid((void *)malloc);
 
       uint64_t miss_amount;
       if (tid >= malloc[0]){
@@ -106,7 +116,13 @@ __global__ void free_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64
 
       uint16_t tree_id = global_gallatin->table->read_tree_id(segment);
 
-      printf("Double malloc %lu vs %lu - diff is %lu, %u\n", tid, malloc[0], miss_amount, tree_id);
+      //get the block
+
+      if (tree_id != 0){
+         printf("Tree mismatch %u != 0\n", tree_id);
+      }
+
+      printf("Double malloc %lu vs %lu - diff is %lu, tree %u\n", tid, malloc[0], miss_amount, tree_id);
       return;
    }
 
@@ -140,10 +156,10 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
 
    uint64_t num_allocs = allocs_per_segment_size*num_segments;
 
-   printf("Starting test with %lu segments, %lu allocs per segment\n", num_segments, max_allocs_per_segment);
-   printf("Actual allocs per segment %lu total allocs %lu\n", allocs_per_segment_size, num_allocs);
+   // printf("Starting test with %lu segments, %lu allocs per segment\n", num_segments, max_allocs_per_segment);
+   // printf("Actual allocs per segment %lu total allocs %lu\n", allocs_per_segment_size, num_allocs);
 
-   init_global_allocator(num_bytes, 42);
+   init_global_allocator(num_bytes, 42, false);
 
 
    //generate bitarry
@@ -167,11 +183,11 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
 
 
 
-   std::cout << "Init in " << boot_timing.sync_end() << " seconds" << std::endl;
+   //std::cout << "Init in " << boot_timing.sync_end() << " seconds" << std::endl;
 
    for (int i = 0; i < num_rounds; i++){
 
-      printf("Starting Round %d/%d\n", i, num_rounds);
+      //printf("Starting Round %d/%d\n", i, num_rounds);
 
       gallatin::utils::timer kernel_timing;
       alloc_one_size_pointer<<<(num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(.9*num_allocs, size, bits, misses);
@@ -181,9 +197,9 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
       free_one_size_pointer<<<(num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(.9*num_allocs, size, bits);
       free_timing.sync_end();
 
-      kernel_timing.print_throughput("Malloced", .9*num_allocs);
+      //kernel_timing.print_throughput("Malloced", .9*num_allocs);
 
-      free_timing.print_throughput("Freed", .9*num_allocs);
+      //free_timing.print_throughput("Freed", .9*num_allocs);
 
       printf("Missed: %lu\n", misses[0]);
 
@@ -198,9 +214,9 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
 
    }
 
-   printf("Total missed across %d runs: %lu/%lu\n", num_rounds, total_misses, num_allocs*num_rounds);
+   //printf("Total missed across %d runs: %lu/%lu\n", num_rounds, total_misses, num_allocs*num_rounds);
 
-   print_global_stats();
+   //print_global_stats();
 
    cudaFree(misses);
 

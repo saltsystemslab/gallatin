@@ -295,7 +295,7 @@ static __host__ __device__ int get_first_bit_bigger(uint64_t counter) {
 }
 
 __device__ uint64_t get_tid() {
-  return ((uint64_t)threadIdx.x) + ((uint64_t)blockIdx.x) * blockDim.x;
+  return ((uint64_t)threadIdx.x) + ((uint64_t)blockIdx.x) * ((uint64_t) blockDim.x);
 }
 
 __device__ void cooperative_copy(char *dst, char *src, uint64_t num_bytes) {

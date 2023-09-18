@@ -49,8 +49,6 @@
 
 #define GALLATIN_TABLE_GLOBAL_READ 1
 
-#define CAS_RETURN 1
-
 namespace gallatin {
 
 namespace allocators {
@@ -98,7 +96,7 @@ __global__ void count_block_live_kernel(table * alloc_table, uint64_t num_blocks
 __global__ void betta_init_counters_kernel(
                                            int * active_counts,
                                            uint * queue_counters, uint * queue_free_counters,
-                                           Block *blocks, uint64_t num_segments,
+                                           Block *blocks, Block ** queues, uint64_t num_segments,
                                            uint64_t blocks_per_segment) {
   uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -115,6 +113,9 @@ __global__ void betta_init_counters_kernel(
     Block *my_block = &blocks[base_offset + i];
 
     my_block->init();
+
+    queues[base_offset+i] = nullptr;
+
   }
 
   __threadfence();
@@ -211,7 +212,7 @@ struct alloc_table {
     betta_init_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
         host_version->active_counts, 
         host_version->queue_counters, host_version->queue_free_counters,
-        host_version->blocks, num_segments,
+        host_version->blocks, host_version->queues, num_segments,
         blocks_per_segment);
 
     GPUErrorCheck(cudaDeviceSynchronize());
@@ -296,7 +297,7 @@ struct alloc_table {
     betta_init_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
         host_version->active_counts, 
         host_version->queue_counters, host_version->queue_free_counters,
-        host_version->blocks, num_segments,
+        host_version->blocks, host_version->queues, num_segments,
         blocks_per_segment);
 
     //GPUErrorCheck(cudaDeviceSynchronize());
@@ -396,37 +397,39 @@ struct alloc_table {
     // should stop interlopers
     bool did_set = set_tree_id(segment, tree_id);
 
-    int num_blocks = get_blocks_per_segment(tree_id);
-
-#if GALLATIN_MEM_TABLE_DEBUG
-
+    //this shouldn't fail.
     if (!did_set){
-      printf("Failed to set tree id for segment %llu\n", segment);
 
-      #if BETA_TRAP_ON_ERR
-      asm("trap;");
+      #if GALLATIN_MEM_TABLE_DEBUG
+      printf("Failed to set tree id for segment %lu\n", segment);
       #endif
 
+      return false;
     }
 
-
-#endif
-
+    int num_blocks = get_blocks_per_segment(tree_id);
 
     //Segments now give out negative counters...
     //this allows us to A) specify # of blocks exactly on construction.
     // and B) still give out exact addresses when requesting (still 1 atomic.)
     //the trigger for a failed block alloc is going negative
 
+
+    for (int i = 0; i < num_blocks; i++){
+      queues[segment*blocks_per_segment+i] = nullptr;
+    }
+
+    __threadfence();
+
     //modification, boot queue elements
     //as items can always interact with this, we simply reset.
     //init with blocks per segment so that mallocs always understand a true count
-    int old_active_count = atomicExch(&active_counts[segment], num_blocks-1);
-
-    //init queue counters.
     atomicExch(&queue_counters[segment], 0);
     atomicExch(&queue_free_counters[segment], 0);
 
+    int old_active_count = atomicExch(&active_counts[segment], num_blocks-1);
+
+    //init queue counters.
 
 
     #if GALLATIN_MEM_TABLE_DEBUG
@@ -545,6 +548,8 @@ struct alloc_table {
 
     empty = false;
 
+
+    //precondition that if it's available we go for it...
     int active_count = get_slot_in_segment(segment_id);
 
     if (!active_count_valid(active_count)){
@@ -751,16 +756,43 @@ struct alloc_table {
   __device__ uint reserve_segment_slot(Block * block_ptr, uint64_t & segment, uint16_t & global_tree_id, uint64_t & num_blocks){
 
 
+    uint current_enqueue_position = read_free_queue_position(segment);
+
+
+    while (true){
+
+      uint live_enqueue_position = current_enqueue_position % num_blocks;
+
+      uint64_t old_block = atomicCAS((unsigned long long int *)&queues[segment*blocks_per_segment+live_enqueue_position], 0ULL, (unsigned long long int) block_ptr);
+
+      if (old_block == 0ULL){
+        //success! swapped in successfully
+        //signal to other threads that swap is possible.
+
+        increment_free_queue_position(segment);
+
+        __threadfence();
+        return current_enqueue_position;
+
+      }
+
+      //drat, we failed!
+      //we know that slot is occupied, so lets try the next one!
+      current_enqueue_position++;
+
+
+    }
+    
     //get enqueue position.
-    uint enqueue_position = increment_free_queue_position(segment) % num_blocks;
+    // uint enqueue_position = increment_free_queue_position(segment) % num_blocks;
 
-    //swap into queue
-    atomicExch((unsigned long long int *)&queues[segment*blocks_per_segment+enqueue_position], (unsigned long long int) block_ptr);
+    // //swap into queue
+    // atomicExch((unsigned long long int *)&queues[segment*blocks_per_segment+enqueue_position], (unsigned long long int) block_ptr);
 
 
-    __threadfence();
+    // __threadfence();
 
-    return enqueue_position;
+    // return enqueue_position;
 
   }
 
@@ -783,59 +815,54 @@ struct alloc_table {
 
   }
 
+  __device__ uint read_free_queue_position(uint64_t segment){
+    return gallatin::utils::ldca(&queue_free_counters[segment]);
+  }
+
   // free block, returns true if this block was the last section needed.
   //split this into two sections
   //section one reserves free index
   //  returns index and flag if segment should be reinserted
   //Section two adds the item back.
   //this guarantees that the system is visible *before* being returned.
-  __device__ bool free_block(Block *block_ptr) {
+//   __device__ bool free_block(Block *block_ptr) {
 
 
-    uint64_t segment = get_segment_from_block_ptr(block_ptr);
+//     uint64_t segment = get_segment_from_block_ptr(block_ptr);
 
-    uint16_t global_tree_id = read_tree_id(segment);
+//     uint16_t global_tree_id = read_tree_id(segment);
 
-    uint64_t num_blocks = get_blocks_per_segment(global_tree_id);
+//     uint64_t num_blocks = get_blocks_per_segment(global_tree_id);
 
+//     //read segment position
 
-    //get enqueue position.
-    uint enqueue_position = increment_free_queue_position(segment) % num_blocks;
-
-    //swap into queue
-    atomicExch((unsigned long long int *)&queues[segment*blocks_per_segment+enqueue_position], (unsigned long long int) block_ptr);
+//     //read segment 
 
 
-    __threadfence();
+//     //get enqueue position.
+//     uint enqueue_position = increment_free_queue_position(segment) % num_blocks;
 
-    //determines how many other blocks are live, and signals to the system that re-use is possible
+//     //swap into queue
+//     atomicExch((unsigned long long int *)&queues[segment*blocks_per_segment+enqueue_position], (unsigned long long int) block_ptr);
 
-    #if CAS_RETURN
 
-    while((atomicCAS((unsigned int *)&active_counts[segment], enqueue_position, enqueue_position+1) != enqueue_position));
+//     __threadfence();
 
-    int return_id = enqueue_position;
+//     //determines how many other blocks are live, and signals to the system that re-use is possible
+//     int return_id = return_slot_to_segment(segment);
 
-    #else
-    int return_id = return_slot_to_segment(segment);
-    #endif
+//     if (all_blocks_free(return_id, num_blocks)){
 
-    // if (return_id != enqueue_position){
-    //   printf("Potential mismatch: %d != %u\n", return_id, enqueue_position);
-    // }
+//       if (atomicCAS(&active_counts[segment], num_blocks-1, -1) == num_blocks-1){
 
-    if (all_blocks_free(return_id, num_blocks)){
+//         //exclusive owner
+//         return true;
+//       }
+//     }
 
-      if (atomicCAS(&active_counts[segment], num_blocks-1, -1) == num_blocks-1){
+//     return false;
 
-        //exclusive owner
-        return true;
-      }
-    }
-
-    return false;
-
-}
+// }
 
 
 

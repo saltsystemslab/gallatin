@@ -30,6 +30,8 @@ namespace allocators {
 
 #define SHARED_BLOCK_COUNTER_CUTOFF 30
 
+#define GAL_BLOCK_STORAGE_READ_BLOCK_ATOMIC 1
+
 // should these start initialized? I can try it.
 __global__ void gallatin_set_block_bitarrs(Block **blocks, uint64_t num_blocks) {
   uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -131,7 +133,16 @@ struct per_size_pinned_blocks {
     return my_smid;
   }
 
-  __device__ Block *get_my_block(int id) { return blocks[id]; }
+  __device__ Block *get_my_block(int id) {
+
+    #if GAL_BLOCK_STORAGE_READ_BLOCK_ATOMIC
+      return (Block *) gallatin::utils::ldca((uint64_t *)&blocks[id]);
+    #else 
+      return blocks[id]; 
+    #endif
+    
+
+ }
 
   __device__ Block *get_alt_block() {
     int my_smid = gallatin::utils::get_smid();
