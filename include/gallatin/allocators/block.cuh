@@ -62,8 +62,9 @@ struct Block {
   uint free_counter;
 
   __device__ void init() {
-    malloc_counter = 0ULL;
-    free_counter = 0ULL;
+    //f u its gotta be big.
+    malloc_counter = 4097UL;
+    free_counter = 0UL;
   }
 
   // helper functions
@@ -179,21 +180,21 @@ struct Block {
 
   }
 
-  __device__ void reset_block() {
-    uint old = atomicExch((unsigned int *)&free_counter, 0ULL);
+//   __device__ void reset_block() {
+//     uint old = atomicExch((unsigned int *)&free_counter, 0ULL);
 
-#if GALLATIN_BLOCK_DEBUG
+// #if GALLATIN_BLOCK_DEBUG
 
-    if (old != 4096) {
-      printf("Double free issue %u != 4096\n", old);
-    }
+//     if (old != 4096) {
+//       printf("Double free issue %u != 4096\n", old);
+//     }
 
-#endif
+// #endif
 
-    atomicExch((unsigned int *)&malloc_counter, 0ULL);
+//     atomicExch((unsigned int *)&malloc_counter, 4097ULL);
 
 
-  }
+//   }
 
 
   __device__ void reset_free(){

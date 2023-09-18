@@ -42,13 +42,6 @@ __global__ void alloc_one_size_pointer(uint64_t num_allocs, uint64_t size, uint6
 
    if (tid >= num_allocs) return;
 
-
-   uint64_t counter = tid;
-
-   for (int i = 0; i < tid % 128; i++){
-      counter = counter/(i+1) + tid;
-   }
-
    //printf("Tid %lu counter %lu\n", tid, counter);
 
    uint64_t * malloc = (uint64_t *) global_malloc(size);
@@ -80,7 +73,7 @@ __global__ void alloc_one_size_pointer(uint64_t num_allocs, uint64_t size, uint6
 }
 
 
-__global__ void free_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64_t ** bitarray){
+__global__ void free_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64_t ** bitarray, uint64_t * block_counts){
 
 
    //uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
@@ -93,6 +86,23 @@ __global__ void free_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64
    uint64_t * malloc = bitarray[tid];
 
    if (malloc == nullptr) return;
+
+
+   uint64_t segment = global_gallatin->table->get_segment_from_ptr((void *)malloc);
+
+   uint16_t tree_id = global_gallatin->table->read_tree_id(segment);
+
+   //get the block
+
+   uint64_t offset = global_gallatin->allocation_to_offset((void *)malloc, tree_id);
+
+   uint64_t block_id = offset/4096;
+
+   uint64_t old_count = atomicAdd((unsigned long long int *)&block_counts[block_id], 1ULL);
+
+   // if (old_count >= 4096){
+   //    printf("Large count: %llu\n", old_count);
+   // }
 
 
    if (malloc[0] != tid){
@@ -112,11 +122,11 @@ __global__ void free_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64
          miss_amount = malloc[0] - tid;
       }
 
-      uint64_t segment = global_gallatin->table->get_segment_from_ptr((void *)malloc);
+      Block * block_ptr = global_gallatin->table->get_block_from_global_block_id(block_id);
 
-      uint16_t tree_id = global_gallatin->table->read_tree_id(segment);
+      Block * block_before = global_gallatin->table->get_block_from_global_block_id(block_id-1);
 
-      //get the block
+      printf("Block %llu stats: malloc %u free %u - block before %u - %u\n", block_id, block_ptr->malloc_counter, block_ptr->free_counter, block_before->malloc_counter, block_before->free_counter);
 
       if (tree_id != 0){
          printf("Tree mismatch %u != 0\n", tree_id);
@@ -126,9 +136,33 @@ __global__ void free_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64
       return;
    }
 
-   global_free(malloc);
+   //global_free(malloc);
 
    __threadfence();
+
+
+}
+
+
+__global__ void check_blocks(uint64_t * blocks, uint64_t nblocks){
+
+   uint64_t tid = gallatin::utils::get_tid();
+
+   if (tid >= nblocks) return;
+
+   uint64_t my_block_count = blocks[tid];
+
+   if (my_block_count > 4096){
+
+      Block * my_block = global_gallatin->table->get_block_from_global_block_id(tid);
+
+      Block * prev_block = global_gallatin->table->get_block_from_global_block_id(tid-1);
+
+      Block * next_block = global_gallatin->table->get_block_from_global_block_id(tid+1);
+
+
+      printf("Block %lu count %lu: <malloc %u free %u> previous %lu next %lu\n", tid, my_block_count, my_block->malloc_counter, my_block->free_counter, blocks[tid-1], blocks[tid+1]);
+   }
 
 
 }
@@ -156,6 +190,10 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
 
    uint64_t num_allocs = allocs_per_segment_size*num_segments;
 
+   uint64_t blocks_per_segment = max_allocs_per_segment/4096;
+
+   uint64_t total_num_blocks = blocks_per_segment*num_segments;
+
    // printf("Starting test with %lu segments, %lu allocs per segment\n", num_segments, max_allocs_per_segment);
    // printf("Actual allocs per segment %lu total allocs %lu\n", allocs_per_segment_size, num_allocs);
 
@@ -165,15 +203,22 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
    //generate bitarry
    //space reserved is one 
    uint64_t ** bits;
-   cudaMalloc((void **)&bits, sizeof(uint64_t *)*num_allocs);
+   GPUErrorCheck(cudaMalloc((void **)&bits, sizeof(uint64_t *)*num_allocs));
 
-   cudaMemset(bits, 0, sizeof(uint64_t *)*num_allocs);
+   GPUErrorCheck(cudaMemset(bits, 0, sizeof(uint64_t *)*num_allocs));
 
 
    uint64_t * misses;
-   cudaMallocManaged((void **)&misses, sizeof(uint64_t));
+   GPUErrorCheck(cudaMallocManaged((void **)&misses, sizeof(uint64_t)));
 
-   cudaDeviceSynchronize();
+
+   uint64_t * block_counts;
+
+   GPUErrorCheck(cudaMalloc((void **)&block_counts, sizeof(uint64_t)*total_num_blocks));
+
+   GPUErrorCheck(cudaMemset(block_counts, 0, sizeof(uint64_t)*total_num_blocks));
+
+   GPUErrorCheck(cudaDeviceSynchronize());
 
    misses[0] = 0;
 
@@ -194,8 +239,13 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
       kernel_timing.sync_end();
 
       gallatin::utils::timer free_timing;
-      free_one_size_pointer<<<(num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(.9*num_allocs, size, bits);
+      free_one_size_pointer<<<(num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(.9*num_allocs, size, bits, block_counts);
       free_timing.sync_end();
+
+
+      check_blocks<<<(total_num_blocks-1)/256+1, 256>>>(block_counts, total_num_blocks);
+
+      cudaDeviceSynchronize();
 
       //kernel_timing.print_throughput("Malloced", .9*num_allocs);
 

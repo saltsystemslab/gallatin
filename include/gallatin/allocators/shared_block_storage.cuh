@@ -30,7 +30,7 @@ namespace allocators {
 
 #define SHARED_BLOCK_COUNTER_CUTOFF 30
 
-#define GAL_BLOCK_STORAGE_READ_BLOCK_ATOMIC 1
+#define GAL_BLOCK_STORAGE_READ_BLOCK_ATOMIC 0
 
 // should these start initialized? I can try it.
 __global__ void gallatin_set_block_bitarrs(Block **blocks, uint64_t num_blocks) {
