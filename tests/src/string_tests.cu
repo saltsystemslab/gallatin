@@ -110,6 +110,24 @@ __global__ void string_test_floats(uint64_t n_sums){
 
 }
 
+__global__ void test_string_combination(){
+
+   uint64_t tid = gallatin::utils::get_tid();
+
+   //gallatin::data_structs::make_string("This is a test with tid: ", tid, "/", 10U, "\n");
+
+
+   auto s1 = gallatin::data_structs::make_string("This is a test with tid: ", 12345.12345, " ", 12345.12345*-1, " ", 1000/100, " ", 1000.0/100);
+
+      //, ", Next is gonna be: ", tid+1, " along with double: ", .5, " and negative ", -5, " vs positive: ", 5*25, "\n");
+
+   s1.print_string_device();
+
+   auto my_string = gallatin::data_structs::make_string("This is a test with tid: ", tid, ", Next is gonna be: ", tid+1, " along with double: ", .5, " and negative ", -5, " vs positive: ", 5*25, "\n");
+
+   my_string.print_string_device();
+
+}
 
 
 //using allocator_type = buddy_allocator<0,0>;
@@ -122,12 +140,14 @@ int main(int argc, char** argv) {
 
    cudaDeviceSynchronize();
 
-   single_string_test<<<1,1>>>(1);
+   //single_string_test<<<1,1>>>(1);
 
    //single_string_test_copy<<<1,1>>>();
    cudaDeviceSynchronize();
 
-   string_test_floats<<<1,1>>>(1000);
+   //string_test_floats<<<1,1>>>(1000);
+
+   test_string_combination<<<1,1>>>();
 
    cudaDeviceSynchronize();
 

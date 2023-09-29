@@ -20,7 +20,13 @@ ConfigureExecutable(gallatin_churn "${CMAKE_CURRENT_SOURCE_DIR}/src/gallatin_chu
 
 ConfigureExecutable(global_test_noprint "${CMAKE_CURRENT_SOURCE_DIR}/src/global_test_noprint.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+ConfigureExecutable(ht_test "${CMAKE_CURRENT_SOURCE_DIR}/src/ht_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+ConfigureExecutable(callocable_test "${CMAKE_CURRENT_SOURCE_DIR}/src/callocable_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
+ConfigureExecutable(callocable_random_test "${CMAKE_CURRENT_SOURCE_DIR}/src/callocable_random_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
+ConfigureExecutable(chaining_test "${CMAKE_CURRENT_SOURCE_DIR}/src/chaining_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
 
 

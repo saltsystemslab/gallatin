@@ -128,10 +128,6 @@ __global__ void free_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64
 
       printf("Block %llu stats: malloc %u free %u - block before %u - %u\n", block_id, block_ptr->malloc_counter, block_ptr->free_counter, block_before->malloc_counter, block_before->free_counter);
 
-      if (tree_id != 0){
-         printf("Tree mismatch %u != 0\n", tree_id);
-      }
-
       printf("Double malloc %lu vs %lu - diff is %lu, tree %u\n", tid, malloc[0], miss_amount, tree_id);
       return;
    }

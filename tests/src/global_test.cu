@@ -31,7 +31,7 @@ using namespace gallatin::allocators;
 #endif
 
 
-__global__ void alloc_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64_t ** bitarray, uint64_t * misses){
+__global__ void insert_one_size(uint64_t num_inserts, uint64_t size, uint64_t ** bitarray, uint64_t * misses){
 
 
    //uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
@@ -210,7 +210,6 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
 
 
 }
-
 
 
 int main(int argc, char** argv) {

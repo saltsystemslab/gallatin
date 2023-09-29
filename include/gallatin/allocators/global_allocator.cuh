@@ -67,12 +67,12 @@ __host__ void free_global_allocator(){
 
 }
 
-
 __device__ void * global_malloc(uint64_t num_bytes){
 
   return global_gallatin->malloc(num_bytes);
 
 }
+
 
 __device__ void global_free(void * ptr){
 

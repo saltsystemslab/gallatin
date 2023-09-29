@@ -18,27 +18,12 @@
 
 
 
-
+//atomic version of the table
+//ldcg is for chumps...
+//this is to verify correctness before moving to looser instructions.
 namespace gallatin {
 
 namespace data_structs {
-
-	//finish upsize memclear by setting the values of the pointers.
-	template<typename Key, typename Val>
-	__global__ void ht_upsize_tail(Key ** key_loc, Key * new_key_array, Val ** val_loc, Val * new_val_array){
-
-		uint64_t tid = gallatin::utils::get_tid();
-
-		if (tid != 0) return;
-
-		key_loc[0] = new_key_array;
-
-		val_loc[0] = new_val_array;
-
-		__threadfence();
-
-
-	}
 
 
 	#define GAL_QUAD_ASSIST_STRIDE 32
@@ -53,23 +38,29 @@ namespace data_structs {
 	struct quad_table {
 
 
-		using key_arr_type = callocable<Key>;
-		using val_arr_type = callocable<Val>;
-
 		int resizing;
 		uint64_t nslots;
 		uint64_t seed;
 
-		key_arr_type * keys;
-		val_arr_type * vals;
+		Key * keys;
+		Val * vals;
 
 
 		//counters control intro/exit of data movement.
 		uint64_t next_nslots;
+
+
+		//data copy values
 		uint64_t finished_move_nslots;
 		uint64_t moved_nslots;
-		key_arr_type * new_keys;
-		val_arr_type * new_vals;
+
+		//new array values
+		uint64_t clear_nslots;
+		uint64_t finished_clear_nslots;
+
+
+		Key * new_keys;
+		Val * new_vals;
 
 		//how to perform swap
 		//if resizing, 
@@ -77,12 +68,20 @@ namespace data_structs {
 
 		__device__ void init(uint64_t initial_nslots=100, uint64_t ext_seed=4095){
 
-			keys = key_arr_type::get_pointer(initial_nslots);
+			keys = (Key *) gallatin::allocators::global_malloc(sizeof(Key)*initial_nslots);
 
-			vals = val_arr_type::get_pointer(initial_nslots); 
+			vals = (Val *) gallatin::allocators::global_malloc(sizeof(Val)*initial_nslots); 
 
 			//gallatin::utils::memclear(keys, initial_nslots, initial_nslots/32);
 			//gallatin::utils::memclear(vals, initial_nslots, initial_nslots/32);
+
+			//non global init.
+			for (uint64_t i = 0; i < initial_nslots; i++){
+
+				keys[i] = 0;
+				vals[i] = 0;
+
+			}
 
 			new_keys = keys;
 			new_vals = vals;
@@ -103,17 +102,23 @@ namespace data_structs {
 			//then everyone waits on assert_key_vals_loaded
 			if (atomicCAS((int *)&resizing, 0, 1) == 0){
 
+				//printf("Starting resize: %llu\n", nslots*2);
+
 				typed_atomic_exchange(&finished_move_nslots, (uint64_t) 0ULL);
 				typed_atomic_exchange(&moved_nslots, (uint64_t) 0ULL);
 				typed_atomic_exchange(&next_nslots,  nslots*2);
+
+				typed_atomic_exchange(&clear_nslots, (uint64_t) 0ULL);
+				typed_atomic_exchange(&finished_clear_nslots, (uint64_t) 0ULL);
 
 				__threadfence();
 
 				//printf("Gathering new memory with size %lu->%lu\n", nslots, next_nslots);
 
-				key_arr_type * temp_newkeys = key_arr_type::get_pointer(next_nslots); 
+				Key * temp_newkeys = (Key *) gallatin::allocators::global_malloc(sizeof(Key)*next_nslots);
+				//Key::get_pointer(next_nslots); 
 
-				val_arr_type * temp_newvals = val_arr_type::get_pointer(next_nslots);
+				Val * temp_newvals = (Val *) gallatin::allocators::global_malloc(sizeof(Val)*next_nslots);
 		
 				//Val * temp_newvals = (Val *) global_malloc(sizeof(Val)*next_nslots);
 
@@ -160,14 +165,14 @@ namespace data_structs {
 			uint64_t * addr_of_new_keys = (uint64_t *) &new_keys;
 			uint64_t * addr_of_new_vals = (uint64_t *) &new_vals;
 
-			while(((key_arr_type *) gallatin::utils::ldcg(addr_of_new_keys)) == keys){
+			while(((Key *) gallatin::utils::ldcg(addr_of_new_keys)) == keys){
 
 				addr_of_new_keys = (uint64_t *) &new_keys;
 				//printf("Spinning\n");
 
 			}
 
-			while(((key_arr_type *) gallatin::utils::ldcg(addr_of_new_vals)) == vals){
+			while(((Key *) gallatin::utils::ldcg(addr_of_new_vals)) == vals){
 				addr_of_new_vals = (uint64_t *) &new_vals;
 			}
 
@@ -200,11 +205,64 @@ namespace data_structs {
 
 
 
+			//start clear of data
+
+			while (true){
+
+
+				uint64_t my_copy_start = atomicAdd((unsigned long long int *)&clear_nslots, GAL_QUAD_ASSIST_STRIDE);
+
+				uint64_t items_to_move;
+
+				if (my_copy_start >= my_nslots){
+					//all items already copied - end
+
+					items_to_move = 0;
+
+				} else {
+					uint64_t items_left = my_nslots - my_copy_start;
+
+					
+
+					if (items_left > GAL_QUAD_ASSIST_STRIDE){
+						items_to_move = GAL_QUAD_ASSIST_STRIDE;
+					} else {
+						items_to_move = items_left;
+					}
+
+				}
+
+				for (uint64_t i = 0; i < items_to_move; i++){
+
+
+
+					uint64_t slot_index = (my_copy_start + i); // % my_nslots;
+
+					Key copy_key = typed_atomic_exchange(&new_keys[slot_index], (Key) 0);
+
+
+				}
+
+				uint64_t copied_so_far = atomicAdd((unsigned long long int *)&finished_clear_nslots, items_to_move);
+
+				//printf("Copied so far: %lu + %lu out of %lu: %f\n", copied_so_far, items_to_move, my_nslots, 1.0*(copied_so_far+items_to_move)/my_nslots);
+
+				if ( (copied_so_far + items_to_move) == my_nslots) break;
+
+					
+
+			}
+
+			//printf("Done with clear\n");
+
+
+
+			//start copy
 			while (true){
 
 				//printf("Starting copy iteration\n");
 
-				cg::coalesced_group full_warp_team = cg::coalesced_threads();
+				//cg::coalesced_group full_warp_team = cg::coalesced_threads();
 
 				
 
@@ -239,17 +297,17 @@ namespace data_structs {
 
 					uint64_t slot_index = (my_copy_start + i); // % my_nslots;
 
-					Key copy_key = typed_atomic_exchange(&keys[0][slot_index], (Key) 0);
+					Key copy_key = typed_atomic_exchange(&keys[slot_index], (Key) 0);
 
 					//non-empty keys go to the new table.
 					if (copy_key != (Key)0){
 
 						//read and insert new val
-						Val copy_val = typed_global_read(&vals[0][slot_index]);
+						Val copy_val = typed_global_read(&vals[slot_index]);
 
-						//auto num_copy_write = internal_insert_key_val_pair(new_keys, new_vals, my_next_nslots, copy_key, copy_val);
+						auto num_copy_write = internal_insert_key_val_pair(new_keys, new_vals, my_next_nslots, copy_key, copy_val);
 
-						auto num_copy_write = 0;
+						//auto num_copy_write = 0;
 						if (num_copy_write == GAL_QUAD_PROBE_DEPTH){
 							printf("Failed to write!\n");
 						}
@@ -278,7 +336,7 @@ namespace data_structs {
 						//typed_atomic_exchange((uint64_t *) &keys, (uint64_t) new_keys);
 						//typed_atomic_exchange((uint64_t *) &vals, (uint64_t) new_vals);
 
-						//printf("Starting end: %lu vs %lu\n", copied_so_far+items_to_move, my_nslots);
+						//printf("Ending copy: %lu vs %lu\n", copied_so_far+items_to_move, my_nslots);
 
 						swap_to_new_array(keys, new_keys);
 						swap_to_new_array(vals, new_vals);
@@ -293,7 +351,7 @@ namespace data_structs {
 				
 				}
 
-				full_warp_team.sync();
+				//full_warp_team.sync();
 
 				if (items_to_move == 0){
 
@@ -317,7 +375,7 @@ namespace data_structs {
 		//assumes as a precondition table is large enough
 		//this returns true if success,
 		//false if probe depth exceeded
-		__device__ int internal_insert_key_val_pair(key_arr_type * ext_keys, key_arr_type * ext_vals, uint64_t ext_nslots, Key key, Val val){
+		__device__ int internal_insert_key_val_pair(Key * ext_keys, Val * ext_vals, uint64_t ext_nslots, Key key, Val val){
 
 
 			uint64_t hash = gallatin::hashers::MurmurHash64A(&key, sizeof(Key), seed);
@@ -329,9 +387,9 @@ namespace data_structs {
 			
 
 				//maybe write!
-				if (typed_atomic_write(&ext_keys[0][slot], (Key)0, key)){
+				if (typed_atomic_write(&ext_keys[slot], (Key)0, key)){
 
-					ext_vals[0][slot] = val;
+					ext_vals[slot] = val;
 
 					return i;
 
@@ -374,11 +432,11 @@ namespace data_structs {
 
 				uint64_t * addr_of_keys = (uint64_t *) &keys;
 
-				key_arr_type * local_keys = (key_arr_type *) gallatin::utils::ldcg(addr_of_keys);
+				Key * local_keys = (Key *) gallatin::utils::ldcg(addr_of_keys);
 
 				uint64_t * addr_of_vals = (uint64_t *) &vals;
 
-				val_arr_type * local_vals = (val_arr_type *) gallatin::utils::ldcg(addr_of_vals);
+				Val * local_vals = (Val *) gallatin::utils::ldcg(addr_of_vals);
 
 				uint64_t local_nslots = typed_global_read(&nslots);
 
@@ -418,11 +476,12 @@ namespace data_structs {
 				uint64_t slot = (hash + i*i) % nslots;
 
 
-				if (keys[0][slot] == key){
-					val = vals[0][slot];
+				if (keys[slot] == key){
+					val = vals[slot];
+					return true;
 				}
 
-				return true;
+				
 
 			}
 

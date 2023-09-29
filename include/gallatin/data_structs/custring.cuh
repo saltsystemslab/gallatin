@@ -193,6 +193,8 @@ namespace data_structs {
 
 		__device__ custring(uint number): custring((uint64_t) number){}
 
+
+		//move constructor.
 		__device__ custring(custring&& other){
 
 			set_len(other.get_len());
@@ -420,15 +422,397 @@ namespace data_structs {
 		}
 
 
+		//helpers for parameter pack - efficiently deduce type
+		__device__ static uint64_t get_maximum_size(custring alt_string){
+
+			return alt_string.get_len();
+
+		}
+
+		//18446744073709551615 is the max uint size
+		__device__ static uint64_t get_maximum_size(uint64_t big_int){
+
+			uint64_t length = 0;
+
+
+		    if (big_int == 0) length++;
+
+			while(big_int != 0) {
+		      big_int = big_int / 10;
+		      length++;
+			}
+
+			return length;
+
+		}
+
+		__device__ static uint64_t get_maximum_size(double number){
+
+
+			uint64_t length = 0;
+
+
+			int precision=5;
+
+			//chars = (char *) global_malloc(MAX_FLOAT_TRUNCATE);
+
+			int cutoff = 1;
+
+			while (precision > 0){
+
+				cutoff *=10;
+				precision--;
+
+			}
+
+		    uint decimals;  // variable to store the decimals
+		    uint units;  // variable to store the units (part to left of decimal place)
+
+
+		    if (number < 0) { // take care of negative numbers
+		        decimals = (uint)((number * -cutoff)+.5) % cutoff;  // make 1000 for 3 decimals etc.
+		        units = (uint)(-1 * number);
+		        length += 1;
+		    } else { // positive numbers
+		        decimals = (uint)((number * cutoff)+.5) % cutoff;
+		        units = (uint)number;
+		    }
+
+
+		    //clip end of decimals
+		    while (decimals > 0 && decimals % 10 == 0 && decimals != 0)
+			{
+			    decimals = decimals / 10;
+			}
+
+			return length + 1 + get_maximum_size(units) + get_maximum_size(decimals);
+
+		}
+
+		__device__ static uint64_t get_maximum_size(float big_double){
+
+			return get_maximum_size((double) big_double);
+
+		}
+
+		//4294967295	
+		__device__ static uint64_t get_maximum_size(uint my_int){
+
+			return get_maximum_size((uint64_t) my_int);
+
+		}
+
+		//-4294967295	
+		__device__ static uint64_t get_maximum_size(int my_int){
+
+			return get_maximum_size(int64_t (my_int));
+
+		}
+
+		//-18446744073709551615 is the negative of max uint size
+		__device__ static uint64_t get_maximum_size(int64_t big_int){
+
+
+			if (big_int < 0){
+				return 1 + get_maximum_size((uint64_t) (big_int*-1));
+			} else {
+				return get_maximum_size((uint64_t) big_int);
+			}
+			//return 21ULL;
+
+		}
+
+		__device__ static uint64_t get_maximum_size(const char * ext_string){
+
+			//calculate length
+			uint64_t length = 0;
+
+			if (ext_string == nullptr){
+				return 0;
+			}
+
+			while (ext_string[length] != '\000' && ext_string[length] != '\0'){
+
+				length+=1;
+
+			}
+
+			return length;
+
+		}
+
+		__device__ static uint64_t get_maximum_size(char * ext_string){
+
+			//calculate length
+			uint64_t length = 0;
+
+			if (ext_string == nullptr){
+				return 0;
+			}
+
+			while (ext_string[length] != '\000' && ext_string[length] != '\0'){
+
+				length+=1;
+
+			}
+
+			return length;
+
+		}
+
+
+		//and helper to construct one large empty string for make_string
+		__device__ static custring make_empty_string(uint64_t max_length){
+
+			custring empty_string;
+
+			if (max_length == 0) return;
+
+			//one extra byte for \0 endstr
+			char * data = (char *) global_malloc(max_length+1);
+
+			data[0] = '\0';
+			empty_string.set_str(data);
+			empty_string.set_len(max_length);
+
+			return empty_string;
+		}
+
+
+
+		// __device__ void add_to_string(char * ext_string){
+
+		// 	//calculate length
+
+		// 	//uint64_t string_length = custring::get_maximum_size(ext_string);
+
+		// 	uint64_t starting_length = length;
+
+		// 	uint64_t index = 0;
+
+		// 	while (ext_string[index] != '\0'){
+
+		// 		chars[starting_length+index] = ext_string[index];
+		// 		index++;
+
+		// 	}
+
+		// 	set_len(starting_length+index);
+
+		// 	chars[length] = '\0';
+
+		// 	return;
+
+
+		// }
+
+
+		__device__ uint64_t add_to_string (uint64_t starting_length, const char * ext_string){
+
+			//calculate length
+
+			//uint64_t string_length = custring::get_maximum_size(ext_string);
+
+
+			uint64_t index = 0;
+
+			while (ext_string[index] != '\0'){
+
+				chars[starting_length+index] = ext_string[index];
+				index++;
+
+			}
+
+			
+
+			//chars[length] = '\0';
+
+			return starting_length + index;
+
+
+		}
+
+
+		__device__ uint64_t add_to_string (uint64_t starting_length, uint64_t number){
+
+			//calculate length
+
+			//uint64_t string_length = custring::get_maximum_size(ext_string);
+
+
+		    length = 0;
+
+		    uint64_t num_copy = number;
+
+		    if (number == 0) length++;
+
+			while(num_copy != 0) {
+		      num_copy = num_copy / 10;
+		      length++;
+			}
+
+
+			//chars = (char *) global_malloc(length+1);
+
+			//chars[length] = '\0';
+
+			if (number == 0) chars[starting_length] = '0';
+
+			int index = starting_length+length-1;
+
+			while (number != 0){
+				int digit = number % 10;
+				number = number/10;
+
+				chars[index] = '0' + digit;
+
+				index--;
+
+			}
+
+
+			return starting_length+length;
+
+		}
+
+
+		__device__ uint64_t add_to_string(uint64_t starting_length, double number){
+
+
+			int precision=5;
+
+			//chars = (char *) global_malloc(MAX_FLOAT_TRUNCATE);
+
+
+			int cutoff = 1;
+
+			while (precision > 0){
+
+				cutoff *=10;
+				precision--;
+
+			}
+
+		    uint decimals;  // variable to store the decimals
+		    uint units;  // variable to store the units (part to left of decimal place)
+
+
+		    if (number < 0) { // take care of negative numbers
+		        decimals = (uint)((number * -cutoff)+.5) % cutoff;  // make 1000 for 3 decimals etc.
+		        units = (uint)(-1 * number);
+		    } else { // positive numbers
+		        decimals = (uint)((number * cutoff)+.5) % cutoff;
+		        units = (uint)number;
+		    }
+
+
+		    //clip end of decimals
+		    while (decimals > 0 && decimals % 10 == 0 && decimals != 0)
+			{
+			    decimals = decimals / 10;
+			}
+
+			uint64_t new_length = starting_length;
+
+			if (number < 0){
+
+				new_length = add_to_string(new_length, "-");
+
+			}
+
+		    new_length = add_to_string(new_length, (uint64_t) units);
+		    new_length = add_to_string(new_length, ".");
+		    new_length = add_to_string(new_length, (uint64_t) decimals);
+
+		    return new_length;
+
+		}
+
+
+		__device__ uint64_t add_to_string(uint64_t starting_length, float number){
+
+			return add_to_string(starting_length, (double) number);
+
+		}
+
+		__device__ uint64_t add_to_string(uint64_t starting_length, uint number){
+
+			return add_to_string(starting_length, (uint64_t) number);
+
+		}
+
+		__device__ uint64_t add_to_string(uint64_t starting_length, int number){
+
+			uint64_t new_len = starting_length;
+
+			uint clipped_number = (uint) number;
+
+			if (number < 0){
+
+				new_len = add_to_string(new_len, "-");
+				clipped_number = (uint) (number*-1);
+
+
+			}
+
+			return add_to_string(new_len, clipped_number);
+
+		}
+
+
+
 
 	};
 
 
+	template <typename Last>
+	__device__ uint64_t custring_est_size (Last last) {
+
+	    return custring::get_maximum_size(last);
+
+	}
+
+	template <typename First, typename Second, typename...Rest>
+	__device__ uint64_t custring_est_size(First first_item, Second second_item, Rest...remaining){
+
+		return custring_est_size(first_item) + custring_est_size<Second, Rest...>(second_item, remaining...);
+
+	}
+
+	template <typename Last>
+	__device__ uint64_t add_to_string_variadic(custring & target, uint64_t length, Last last){
+
+		return target.add_to_string(length, last);
+
+	}
+
+	template <typename First, typename Second, typename...Rest>
+	__device__ uint64_t add_to_string_variadic(custring & target, uint64_t length, First first_item, Second second_item, Rest...remaining){
+
+		uint64_t intermediate_length = add_to_string_variadic(target, length, first_item);
+		return add_to_string_variadic<Second, Rest...>(target, intermediate_length, second_item, remaining...);
+
+	}
+
 	//use parameter pack to efficiently add multiple strings together
 	//procedure - grok size of all 
-	template <class ... Args>
-	__device__ custring combine_all(custring){
+	template <typename ... Args>
+	__device__ custring make_string(Args...all_args){
 
+		uint64_t size = custring_est_size<Args...>(all_args...);
+
+		//printf("Size is bounded by %lu\n", size);
+
+
+		custring test_string = custring::make_empty_string(size);
+
+		uint64_t length = add_to_string_variadic(test_string, 0, all_args...);
+
+		test_string.set_len(length);
+
+		test_string.data()[length] = '\0';
+
+		return test_string;
 
 
 	}

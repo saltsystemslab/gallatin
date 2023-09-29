@@ -52,17 +52,61 @@ __device__ inline uint64_t ldca(const uint64_t *p) {
   // return atomicOr((unsigned long long int *)p, 0ULL);
 }
 
+__device__ inline uint ldcg(const uint *p) {
+  uint res;
+  asm volatile("ld.global.cg.u32 %0, [%1];" : "=r"(res) : "l"(p));
+  return res;
+}
+
+__device__ inline uint64_t ldcg(const uint64_t *p) {
+  uint64_t res;
+  asm volatile("ld.global.cg.u64 %0, [%1];" : "=l"(res) : "l"(p));
+  return res;
+
+  // return atomicOr((unsigned long long int *)p, 0ULL);
+}
+
 __device__ inline uint16_t global_read_uint16_t(const uint16_t *p) {
   uint16_t res;
   asm volatile("ld.global.ca.u16 %0, [%1];" : "=h"(res) : "l"(p));
   return res;
 }
 
+//this does not guarantee visibility to other threads.=
+__device__ inline void global_store_byte(const char *p, char byte) {
+ 
+  asm volatile("st.global.wb.u8 [%0], %1;" :: "l"(p), "h"((uint16_t) byte));
+  
+  return;
+}
+
+
 __device__ inline void *ldca(void *const *p) {
   void *res;
   asm volatile("ld.global.ca.u64 %0, [%1];" : "=l"(res) : "l"(p));
   return res;
 }
+
+
+//given a target and new pointer, make target point to new.
+template <typename T>
+__device__ void swap_to_new_array(T *& target, T *& new_ptr){
+
+  atomicExch((unsigned long long int *)&target, (unsigned long long int)new_ptr);
+
+}
+
+//this doesn't work. not sure why, something gets converted to local * space
+// and then the .global fails.
+// template <typename T>
+// __device__ inline T *global_load_array_ptr(T * p) {
+
+
+//   const uint64_t * p_addr_as_uint64_t  = (uint64_t *) &p;
+//   uint64_t res;
+//   asm volatile("ld.global.ca.u64 %0, [%1];" : "=l"(res) : "l"(p_addr_as_uint64_t));
+//   return (T *) res;
+// }
 
 /** prefetches into L1 cache */
 __device__ inline void prefetch_l1(const void *p) {
@@ -349,12 +393,18 @@ __global__ void clear_memory_kernel(void * memory, uint64_t num_bytes, uint64_t 
 }
 
 //use dynamic parallelism to clear memory
-__device__ void memclear(void * memory, uint64_t num_bytes, uint64_t num_threads){
+__device__ void memclear_generic(void * memory, uint64_t num_bytes, uint64_t num_threads){
 
   clear_memory_kernel<<<((num_threads-1)/512 +1), 512>>>(memory, num_bytes, num_threads);
 
 }
 
+
+template <typename T>
+__device__ void memclear(T * memory, uint64_t nitems, uint64_t nthreads){
+
+  memclear_generic((void *)memory, sizeof(T)*nitems, nthreads);
+}
 
 #endif
 

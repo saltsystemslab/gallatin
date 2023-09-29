@@ -246,7 +246,6 @@ __global__ void print_guided_fill_kernel(allocator * table, uint16_t id){
 }
 
 
-
 // main allocator structure
 // template arguments are
 //  - size of each segment in bytes
@@ -529,6 +528,8 @@ struct Gallatin {
     //calculate # of segments needed
     //uint64_t num_segments_required = (bytes_needed - 1)/ bytes_per_segment + 1;
 
+    while(!acquire_tree_lock(num_trees));
+
     uint64_t alloc_index = segment_tree->gather_multiple(num_segments_required);
 
     if (alloc_index != veb_tree::fail()){
@@ -546,7 +547,14 @@ struct Gallatin {
 
       }
 
+    } else {
+
+      release_tree_lock(num_trees);
+      return ~0ULL;
+
     }
+
+    release_tree_lock(num_trees);
 
     return alloc_index*table->blocks_per_segment*4096;
 
@@ -917,7 +925,6 @@ struct Gallatin {
            alloc = offset_to_allocation(offset, tree_id);
         }
 
-        printf("nullptr\n");
         return alloc;
       }
 

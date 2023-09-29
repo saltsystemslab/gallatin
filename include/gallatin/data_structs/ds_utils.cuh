@@ -150,7 +150,7 @@ __device__ __inline__ uint64_t typed_atomic_CAS<uint64_t>(uint64_t * backing, ui
 
 
 template<typename T>
-__device__ __inline__ T typed_atomic_exchange(T * backing, T item, T replace){
+__device__ __inline__ T typed_atomic_exchange(T * backing, T replace){
 
 
   //atomic CAS first bit
@@ -165,32 +165,22 @@ __device__ __inline__ T typed_atomic_exchange(T * backing, T item, T replace){
 
   static_assert(sizeof(T) > 8);
 
-  uint64_t uint_item = ((uint64_t *) &item)[0];
-
   uint64_t uint_replace = ((uint64_t *) &replace)[0];
 
-  uint64_t first_write = typed_atomic_exchange<uint64_t>((uint64_t *) backing, uint_item, uint_replace);
-
-  if (first_write == uint_item){
-
-    //succesful? - flush write
-    backing[0] = replace;
-    return first_write;
-
-  }
+  uint64_t first_write = typed_atomic_exchange<uint64_t>((uint64_t *) backing, uint_replace);
 
   return first_write;
 }
 
 
-template<>
-__device__ __inline__ uint16_t typed_atomic_exchange<uint16_t>(uint16_t * backing, uint16_t replace){
+// template<>
+// __device__ __inline__ uint16_t typed_atomic_exchange<uint16_t>(uint16_t * backing, uint16_t replace){
 
-  uint16_t result = atomicExch((unsigned short int *) backing, (unsigned short int) replace);
+//   uint16_t result = atomicExch((unsigned short int *) backing, (unsigned short int) replace);
 
-  return result;
+//   return result;
 
-}
+// }
 
 
 template<>
@@ -247,6 +237,14 @@ template<>
 __device__ __inline__ uint32_t typed_global_read<uint32_t>(uint32_t * backing){
 
   uint32_t result = gallatin::utils::ldca((uint *) backing);
+
+  return result;
+}
+
+template<>
+__device__ __inline__ int typed_global_read<int>(int * backing){
+
+  int result = (int) gallatin::utils::ldca((uint *) backing);
 
   return result;
 }
