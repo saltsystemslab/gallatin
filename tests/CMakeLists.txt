@@ -28,6 +28,7 @@ ConfigureExecutable(callocable_random_test "${CMAKE_CURRENT_SOURCE_DIR}/src/call
 
 ConfigureExecutable(chaining_test "${CMAKE_CURRENT_SOURCE_DIR}/src/chaining_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+ConfigureExecutable(block_queue_test "${CMAKE_CURRENT_SOURCE_DIR}/src/block_queue_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
 
 

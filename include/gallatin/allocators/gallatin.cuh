@@ -469,7 +469,7 @@ struct Gallatin {
       printf("ERR %d >= %llu\n", smid, local_shared_block_storage->num_blocks);
 
       #if GALLATIN_TRAP_ON_ERR
-      asm("trap;");
+      asm volatile ("trap;");
       #endif
 
       return;
@@ -483,7 +483,7 @@ struct Gallatin {
   		printf("Failed to initialize block %d from tree %u", smid, tree_id);
 
       #if GALLATIN_TRAP_ON_ERR
-      asm("trap;");
+      asm volatile ("trap;");
       #endif
 
   		return;
@@ -502,7 +502,7 @@ struct Gallatin {
         printf("Boot Block %llu: segment %llu not init for malloc: %u != %u\n", block_id, alt_block_segment, tree_id, alt_tree_id);
 
         #if GALLATIN_TRAP_ON_ERR
-        asm("trap;");
+        asm volatile ("trap;");
         #endif
 
       }
@@ -514,7 +514,7 @@ struct Gallatin {
     	printf("Error: Block in position %d for tree %d already initialized\n", smid, tree_id);
 
       #if GALLATIN_TRAP_ON_ERR
-      asm("trap;");
+      asm volatile ("trap;");
       #endif
 
     }
@@ -542,7 +542,7 @@ struct Gallatin {
 
         //catastropic - how could we fail to set tree id on bit grabbed from segment tree?
         #if GALLATIN_TRAP_ON_ERR
-        asm("trap;");
+        asm volatile ("trap;");
         #endif
 
       }
@@ -778,7 +778,7 @@ struct Gallatin {
         #endif
 
         // #if GALLATIN_TRAP_ON_ERR
-        // asm("trap;");
+        // asm volatile ("trap;");
         // #endif
 
         free_offset(allocation+global_block_id*4096);
@@ -831,7 +831,7 @@ struct Gallatin {
   			free_block(new_block);
 
         #if GALLATIN_TRAP_ON_ERR
-        asm("trap;");
+        asm volatile ("trap;");
         #endif
 
   			return false;
@@ -994,7 +994,7 @@ struct Gallatin {
 
 
       #if GALLATIN_TRAP_ON_ERR
-      asm("trap;");
+      asm volatile ("trap;");
       #endif
 
       return;
@@ -1049,7 +1049,7 @@ struct Gallatin {
       // this is fine.
 
       #if GALLATIN_TRAP_ON_ERR
-      asm("trap;");
+      asm volatile ("trap;");
       #endif
 
       return -1;
@@ -1198,6 +1198,9 @@ struct Gallatin {
   // this is called by a block once all allocations have been returned.
   __device__ void free_block(Block *block_to_free) {
 
+
+    //asm volatile ("trap;");
+
     uint64_t segment = table->get_segment_from_block_ptr(block_to_free);
 
     uint16_t tree = table->read_tree_id(segment);
@@ -1271,7 +1274,7 @@ struct Gallatin {
         #endif
 
         #if GALLATIN_TRAP_ON_ERR
-        asm("trap;");
+        asm volatile ("trap;");
         #endif
       }
       __threadfence();

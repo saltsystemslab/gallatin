@@ -6,10 +6,24 @@
 #include <cuda_runtime_api.h>
 
 //alloc utils needed for easy host_device transfer
-#include <poggers/allocators/alloc_utils.cuh>
+
+#include <gallatin/allocators/global_allocator.cuh>
+#include <gallatin/allocators/alloc_utils.cuh>
+#include <gallatin/data_structs/ds_utils.cuh>
 
 #define DIVISION_BIT 32
 
+
+//make sure to use CAS for ensuring linearizable output.
+
+//insertion - atomicAdd to set original slot
+//atomicExch to actually set
+//then need to signal availability
+//then signal availability - increment turn parameter
+//other threads can only enter when their count < turn_count
+//read both with one atomic.
+
+//could be improved if num_items < 32 by using a bitarray.
 
 namespace gallatin {
 
@@ -20,33 +34,51 @@ namespace data_structs {
 	//this data struct is a dynamic fusion of an array-based and linked-list-based queue.
 	//blocks contain multiple items and use a counter to separate them.	
 	//this amortizes the cost of enqueue and dequeue as most items proceed with 1 atomic op.
+
+	//this could be
 	template <typename T, int num_items>
 	struct block_queue_node {
 
-		T items[num_items];
-		block_queue_node<T> * next;
+		using my_type = block_queue_node<T,num_items>;
 
-		//fused counters for ops - block size is a maximum of 16 billion.
 		uint enqueue_counter;
-
-		int live;
-
 		uint dequeue_counter;
+
+		my_type * next;
+
+		//upper dequeue counter processes request - returns yes if valid
+		//this guarantees that every slot is unique
+		uint ordered_dequeue_counter;
+		uint want_enqueue_counter;
+
+		T items[num_items];
+		
+
+		//fused counters for ops - block size is a maximum of 8 billion.
+		
+	
 
 		__device__ void init(){
 			//items[0] = new_item;
-			next = nullptr;
-			enqueue_counter = 0;
-			live = 0;
-			dequeue_counter = 0;
+			//next = nullptr;
+
+			atomicExch((unsigned long long int *)&next, 0ULL);
+			atomicExch((unsigned int *)&want_enqueue_counter, 0U);
+			atomicExch((unsigned int *)&enqueue_counter, 0U);
+			atomicExch((unsigned int *)&dequeue_counter, 0U);
+			atomicExch((unsigned int *)&ordered_dequeue_counter, 0U);
 		}
 
-		__device__ void set_next(queue_node<T> * ext_next){
-			next = ext_next;
+		//attempt to set the address of the next node
+		//return true if true.
+		__device__ bool set_next(my_type * ext_next){
+
+
+			return (atomicCAS((unsigned long long int *)&next, 0ULL, (unsigned long long int)ext_next) == 0ULL);
 		}
 
 
-		static device int get_max(){
+		static __device__ int get_max(){
 			return num_items;
 		}
 
@@ -54,7 +86,7 @@ namespace data_structs {
 		//does not do boundary checking
 		__device__ uint enqueue_increment_next(){
 
-			return (atomicAdd((unsigned int *) &enqueue_counter, 1U));
+			return (atomicAdd((unsigned int *) &want_enqueue_counter, 1U));
 
 		}
 
@@ -69,11 +101,11 @@ namespace data_structs {
 			//else write!
 			place_item(item, enqueue_pos);
 
-			int num_active = signal_active();
+			signal_active(enqueue_pos);
 
-			if (enqueue_pos != num_active){
-				printf("Discrepancy: %u != %d\n", enqueue_pos, num_active);
-			}
+			// if (enqueue_pos != num_active){
+			// 	printf("Discrepancy: %u != %d\n", enqueue_pos, num_active);
+			// }
 
 			return true;
 
@@ -84,13 +116,13 @@ namespace data_structs {
 		// as we don't know what the ty
 		__device__ bool dequeue(T & item){
 
-			success = grab_active();
+			bool success = grab_active();
 
 			if (success){
 
 				uint read_addr = get_dequeue_position();
 
-				item = items[read_addr];
+				item = (T) typed_atomic_exchange(&items[read_addr], (T)0);
 
 
 			}
@@ -100,32 +132,52 @@ namespace data_structs {
 
 		__device__ bool grab_active(){
 
-			uint old = atomicSub((int *)&live, 1);
+			uint64_t old = atomicAdd((unsigned long long int *)&dequeue_counter, 1ULL);
 
-			if (old > 0) return true;
+			//split
 
-			atomicAdd((int *)&live, 1);
+			uint64_t n_enqueued = old >> 32;
+
+			uint64_t my_count = old & BITMASK(32);
+
+			if (my_count > num_items) return false;
+
+			if (n_enqueued > my_count) return true;
+
+
+			atomicSub((unsigned int *)&dequeue_counter, 1U);
 
 			return false;
 
 		}
 
 
-		//this may violate a precondition.
-		//if so, need to use looped CAS.
-		__device__ int signal_active(){
+		//use atomicCAS to only allow correct orderings to proceed.
+		__device__ void signal_active(uint previous){
 
-			return atomicAdd((int *) &live, 1);
+
+			uint old = atomicCAS((unsigned int *) &enqueue_counter, (unsigned int) previous, (unsigned int)previous+1);
+
+			while(old != previous){
+
+				printf("Stalling: %u != %u\n", old, previous);
+
+				old = atomicCAS((unsigned int *) &enqueue_counter, (unsigned int) previous, (unsigned int)previous+1);
+
+
+			}
+
+			printf("Success! %u == %u\n", old, previous);
 
 		}
 
 		//given the next node that should be in the chain and CAS
 		//returns nullptr on correct swap
 		//else returns new tail.
-		__device__ queue_node<T> * CAS_and_return(queue_node<T> * next_node){
+		__device__ my_type * CAS_and_return(my_type * next_node){
 
 
-			return (queue_node<T> *) atomicCAS((unsigned long long int *)&next, 0ULL, (unsigned long long int )next_node);
+			return (my_type *) atomicCAS((unsigned long long int *)&next, 0ULL, (unsigned long long int )next_node);
 
 		}
 
@@ -134,7 +186,7 @@ namespace data_structs {
 		//NOTE: This gives you an exclusive slot - does not guarantee
 		__device__ uint get_dequeue_position(){
 
-			return atomicAdd(((unsigned int *) &dequeue_counter, 1ULL));
+			return atomicAdd((unsigned int *) &ordered_dequeue_counter, 1U);
 
 
 		}
@@ -142,7 +194,8 @@ namespace data_structs {
 		//Insert items with non_atomic + threadfence?
 		__device__ void place_item(T item, uint write_pos){
 
-			items[write_pos] = item;
+			gallatin::utils::typed_atomic_exchange(&items[write_pos], item);
+			//items[write_pos] = item;
 			__threadfence();
 
 		}
@@ -151,11 +204,11 @@ namespace data_structs {
 		//use ldca to force a global read of T
 		//if bigger than 64_bits, use indirection
 		//no idea if this works LMAO
-		__device__ T global_read(uint pos){
+		// __device__ T global_read(uint pos){
 
-			return ((T *)  gallatin::utils::ldca((void *) (items + pos)))[0];
+		// 	return ((T *)  gallatin::utils::ldca((void *) (items + pos)))[0];
 
-		}
+		// }
 
 
 	};
@@ -172,14 +225,26 @@ namespace data_structs {
 	// - alloc new node
 	// - set next of node to current
 
+	template <typename queue>
+	__global__ void queue_init_dev_version(queue * my_queue){
+
+		uint64_t tid = gallatin::utils::get_tid();
+
+		if (tid != 0 )return;
+
+		my_queue->init();
+
+	}
+
+
 	template <typename T, int items_per_block>
 	struct block_queue {
 
 		using my_type = block_queue<T, items_per_block>;
 		using node_type = block_queue_node<T, items_per_block>;
 
-		queue_node<T> * head;
-		queue_node<T> * tail;
+		node_type * head;
+		node_type * tail;
 
 
 
@@ -187,150 +252,145 @@ namespace data_structs {
 		//currently does not pull from the allocator, but it totally should
 		static __host__ my_type * generate_on_device(){
 
-			my_type * host_version = poggers::utils::get_host_version<my_type>();
+			my_type * host_version = gallatin::utils::get_host_version<my_type>();
 
 			//host_version->my_backing_allocator = backing_allocator;
 
-			return poggers::utils::move_to_device<my_type>(host_version);
+			my_type * dev_version =  gallatin::utils::move_to_device<my_type>(host_version);
+
+			queue_init_dev_version<my_type><<<1,1>>>(dev_version);
+
+			cudaDeviceSynchronize();
+
+			return dev_version;
 
 
 		}
 
-		__device__ void init(allocator * backing_allocator){
-			head = nullptr;
-			tail = nullptr;
+		//can simplify the logic a tonnnn if we allow for there to always be
+		// at least one node, so head/tail never go to nullptr.
+		__device__ void init(){
+
+
+			node_type * head_node = (node_type *) gallatin::allocators::global_malloc(sizeof(node_type));
+
+			head_node->init();
+			head = head_node;
+			tail = head_node;
 		}
 
-		__device__ void enqueue(T new_item){
 
-			my_head = head;
+		//doesn't matter for the 
+		__device__ void try_swap_head(node_type * old_head, node_type * my_head){
 
+
+			atomicCAS((unsigned long long int *)&head, (unsigned long long int)old_head, (unsigned long long int)my_head);
+
+		}
+
+		__device__ bool add_to_tail(node_type ** current_tail, node_type *next_tail){
+
+
+			return (atomicCAS((unsigned long long int *)current_tail, 0ULL, (unsigned long long int)next_tail) == 0);
+
+		}
+
+		__device__ bool enqueue(T new_item){
+
+			node_type * my_tail = tail;
+
+			node_type * original_tail = tail;
+			
+
+			//enqueue will succeed - only fail if malloc fails.
 			while (true){
 
 
-				if (my_head == nullptr){
 
-					//create new_node
-					node_type * next_node = global_malloc(sizeof(next_node));
+				//always at least one node to look at
+				if (my_tail->enqueue(new_item)) return true;
 
-					next_node->init();
+				if (my_tail->next == nullptr){
 
-					__threadfence();
+					node_type * new_tail = (node_type *) gallatin::allocators::global_malloc(sizeof(node_type));
 
-					if (atomicCAS((unsigned long long int *)&head, 0ULL, (unsigned long long int)next_node) == 0ULL){
+					if (new_tail == nullptr) return false;
 
-						atomicCAS((unsigned long long int *)&tail, 0ULL, (unsigned long long int) next_node);
+					new_tail->init();
 
-						continue;
+					if (add_to_tail(&my_tail->next, new_tail)){
+						//update tail
+
+						//attempt to snap to most current node.
+						atomicCAS((unsigned long long int *)&tail, (unsigned long long int) original_tail, (unsigned long long int) new_tail);
+
+
+					} else {
+						gallatin::allocators::global_free(new_tail);
 					}
 
-					global_free(next_node);
-
-
-
+				} else {
+					my_tail = my_tail->next;
 				}
 
-			}
-
-			
-
-			queue_node<T> * new_node = (queue_node<T> *) my_backing_allocator->malloc(sizeof(queue_node<T>));
-
-			if (new_node == nullptr){
-				printf("Failed to enqueue - could not acquire node\n");
-				return;
-			}
-
-			new_node->init(new_item);
-
-			__threadfence();
-
-			//now that node is init + visible, add to system.
-			if (tail == nullptr){
-				if (atomicCAS((unsigned long long int *)&tail, 0ULL, (unsigned long long int)new_node) == 0ULL){
-
-					atomicExch((unsigned long long int *)&head, (unsigned long long int)new_node);
-
-					__threadfence();
-
-					return;
-
-				}
-			}
+				//tail may be stale, attempt insertion.
 
 
-			queue_node<T> * current_node = tail->CAS_and_return(new_node);
-
-
-			while (current_node != nullptr){
-
-				current_node = current_node->CAS_and_return(new_node);
 
 			}
-
-			//swap current node into tail so that future threads observe closer tail.
-			//this guarantees progress from start of this tail but may be marginal if schedule is weird
-			//test this.
-			//would it be faster to make this an atomicCAS? guarantees that tail is monotonic.
-			//atomicExch((unsigned long long int *)&tail, (unsigned long long int)current_node);
-
-
-			atomicCAS((unsigned long long int *)&tail, (unsigned long long int )current_node, (unsigned long long int) new_node);
-			
-			__threadfence();
 
 		}
 
 		//valid to make optional type?
 
-		__device__ bool dequeue(T & return_val){
+		// __device__ bool dequeue(T & return_val){
 
-			//do these reads need to be atomic? 
-			//I don't think so as these values don't change.
-			//as queue doesn't change ABA not possible.
+		// 	//do these reads need to be atomic? 
+		// 	//I don't think so as these values don't change.
+		// 	//as queue doesn't change ABA not possible.
 
-			__threadfence();
+		// 	__threadfence();
 
-			queue_node<T> * my_head = head;
+		// 	my_type * my_head = head;
 
-			if (head == nullptr){
-				return false;
-			}
+		// 	if (head == nullptr){
+		// 		return false;
+		// 	}
 
-			queue_node<T> * head_next = my_head->next;
+		// 	my_type * head_next = my_head->next;
 
-			queue_node<T> * swap = (queue_node<T> *) atomicCAS((unsigned long long int *)&head, (unsigned long long int)my_head, (unsigned long long int)head_next);
+		// 	my_type * swap = (my_type *) atomicCAS((unsigned long long int *)&head, (unsigned long long int)my_head, (unsigned long long int)head_next);
 			
-			while (swap != my_head){
-				__threadfence();
+		// 	while (swap != my_head){
+		// 		__threadfence();
 
-				my_head = swap;
+		// 		my_head = swap;
 
-				if (head == nullptr){
-					return false;
-				}
+		// 		if (head == nullptr){
+		// 			return false;
+		// 		}
 
 
-				head_next = my_head->next;
-				swap = (queue_node<T> *) atomicCAS((unsigned long long int *)&head, (unsigned long long int)my_head, (unsigned long long int)head_next);
+		// 		head_next = my_head->next;
+		// 		swap = (my_type *) atomicCAS((unsigned long long int *)&head, (unsigned long long int)my_head, (unsigned long long int)head_next);
 			
 
 
-			}
+		// 	}
 
-			//at the end my_head is valid
+		// 	//at the end my_head is valid
 
-			__threadfence();
+		// 	__threadfence();
 
-			return_val = my_head->item;
+		// 	return_val = my_head->item;
 
-			//would be nice to have a hazard pointer here.
+		// 	//would be nice to have a hazard pointer here.
 
-			my_backing_allocator->free(my_head);
+		// 	my_backing_allocator->free(my_head);
 
-			return true;
+		// 	return true;
 
-		}
+		// }
 
 
 

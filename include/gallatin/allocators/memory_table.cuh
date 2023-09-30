@@ -96,6 +96,7 @@ __global__ void count_block_live_kernel(table * alloc_table, uint64_t num_blocks
 __global__ void betta_init_counters_kernel(
                                            int * active_counts,
                                            uint * queue_counters, uint * queue_free_counters,
+                                           uint * final_queue_free_counters,
                                            Block *blocks, Block ** queues, uint64_t num_segments,
                                            uint64_t blocks_per_segment) {
   uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -106,6 +107,7 @@ __global__ void betta_init_counters_kernel(
 
   queue_counters[tid] = 0;
   queue_free_counters[tid] = 0;
+  final_queue_free_counters[tid] = 0;
 
   uint64_t base_offset = blocks_per_segment * tid;
 
@@ -141,6 +143,8 @@ struct alloc_table {
 
   //free counters holds which index newly freed blocks are emplaced.
   uint * queue_free_counters;
+
+  uint * final_queue_free_counters;
 
   //active counts make sure that the # of blocks in movement are acceptable.
   int * active_counts;
@@ -206,12 +210,14 @@ struct alloc_table {
 
     host_version->queue_counters = gallatin::utils::get_device_version<uint>(num_segments);
     host_version->queue_free_counters = gallatin::utils::get_device_version<uint>(num_segments);
+    host_version->final_queue_free_counters = gallatin::utils::get_device_version<uint>(num_segments);
 
 
 
     betta_init_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
         host_version->active_counts, 
         host_version->queue_counters, host_version->queue_free_counters,
+        host_version->final_queue_free_counters,
         host_version->blocks, host_version->queues, num_segments,
         blocks_per_segment);
 
@@ -292,11 +298,13 @@ struct alloc_table {
 
     host_version->queue_counters = gallatin::utils::get_device_version<uint>(num_segments);
     host_version->queue_free_counters = gallatin::utils::get_device_version<uint>(num_segments);
+    host_version->final_queue_free_counters = gallatin::utils::get_device_version<uint>(num_segments);
 
 
     betta_init_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
         host_version->active_counts, 
         host_version->queue_counters, host_version->queue_free_counters,
+        host_version->final_queue_free_counters,
         host_version->blocks, host_version->queues, num_segments,
         blocks_per_segment);
 
@@ -354,7 +362,7 @@ struct alloc_table {
       #endif
 
       #if BETA_TRAP_ON_ERR
-      asm("trap;");
+      asm volatile ("trap;");
       #endif
 
     }
@@ -371,7 +379,7 @@ struct alloc_table {
       #endif
 
       #if BETA_TRAP_ON_ERR
-      asm("trap;");
+      asm volatile ("trap;");
       #endif
 
     }
@@ -426,6 +434,7 @@ struct alloc_table {
     //init with blocks per segment so that mallocs always understand a true count
     atomicExch(&queue_counters[segment], 0);
     atomicExch(&queue_free_counters[segment], 0);
+    atomicExch(&final_queue_free_counters[segment], 0);
 
     int old_active_count = atomicExch(&active_counts[segment], num_blocks-1);
 
@@ -447,7 +456,7 @@ struct alloc_table {
 
     // if (old_malloc >= 0){
     //   #if BETA_TRAP_ON_ERR
-    //     asm("trap;");
+    //     asm volatile ("trap;");
     //   #endif
     // }
 
@@ -539,6 +548,15 @@ struct alloc_table {
 
   }
 
+  //given that we have already written to an address,
+  //atomicCAS loop to assert that write is finalized.
+  //this is necessary
+  __device__ void finalize_free_queue(uint64_t segment, uint position){
+
+    while (atomicCAS(&final_queue_free_counters[segment], position, position+1) != position);
+
+  }
+
   // request a segment from a block
   // this verifies that the segment is initialized correctly
   // and returns nullptr on failure.
@@ -601,6 +619,13 @@ struct alloc_table {
 
       //swap out the queue element for nullptr.
       my_block = (Block *) atomicExch((unsigned long long int *)&queues[segment_id*blocks_per_segment+queue_pos_wrapped], 0ULL);
+
+    }
+
+    if (my_block == nullptr){
+
+      printf("Bug\n");
+      asm volatile ("trap;");
 
     }
 
@@ -727,7 +752,7 @@ struct alloc_table {
         printf("Mismatch on segments in allocation to offset, %llu != %llu\n", segment_id, alt_segment);
 
         #if BETA_TRAP_ON_ERR
-        asm("trap;");
+        asm volatile ("trap;");
         #endif
       }
 
@@ -756,32 +781,55 @@ struct alloc_table {
   __device__ uint reserve_segment_slot(Block * block_ptr, uint64_t & segment, uint16_t & global_tree_id, uint64_t & num_blocks){
 
 
-    uint current_enqueue_position = read_free_queue_position(segment);
+    //system allows for multiple people to reserve simultaneously...
+    //claum 0 - malloc 0, reclaim 0.
 
 
-    while (true){
-
-      uint live_enqueue_position = current_enqueue_position % num_blocks;
-
-      uint64_t old_block = atomicCAS((unsigned long long int *)&queues[segment*blocks_per_segment+live_enqueue_position], 0ULL, (unsigned long long int) block_ptr);
-
-      if (old_block == 0ULL){
-        //success! swapped in successfully
-        //signal to other threads that swap is possible.
-
-        increment_free_queue_position(segment);
-
-        __threadfence();
-        return current_enqueue_position;
-
-      }
-
-      //drat, we failed!
-      //we know that slot is occupied, so lets try the next one!
-      current_enqueue_position++;
+    //new idea - 4 atomics :[
+    //get unique index via atomicAdd
+    //atomic Exch to set
+    //get unique setter via
+    //then atomicCAS loop on finale
+    //then unset index
 
 
-    }
+    uint current_enqueue_position = increment_free_queue_position(segment);
+
+    uint live_enqueue_position = current_enqueue_position % num_blocks;
+
+    uint64_t old_block = atomicExch((unsigned long long int *)&queues[segment*blocks_per_segment+live_enqueue_position], (unsigned long long int) block_ptr);
+
+    finalize_free_queue(segment, current_enqueue_position);
+
+    //TODO - make this actually calculate fill.
+    return live_enqueue_position;
+
+    // uint current_enqueue_position = read_free_queue_position(segment);
+
+
+    // while (true){
+
+    //   uint live_enqueue_position = current_enqueue_position % num_blocks;
+
+    //   uint64_t old_block = atomicCAS((unsigned long long int *)&queues[segment*blocks_per_segment+live_enqueue_position], 0ULL, (unsigned long long int) block_ptr);
+
+    //   if (old_block == 0ULL){
+    //     //success! swapped in successfully
+    //     //signal to other threads that swap is possible.
+
+    //     increment_free_queue_position(segment);
+
+    //     __threadfence();
+    //     return current_enqueue_position;
+
+    //   }
+
+    //   //drat, we failed!
+    //   //we know that slot is occupied, so lets try the next one!
+    //   current_enqueue_position++;
+
+
+    // }
     
     //get enqueue position.
     // uint enqueue_position = increment_free_queue_position(segment) % num_blocks;

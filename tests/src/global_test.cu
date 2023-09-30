@@ -38,7 +38,7 @@ __global__ void insert_one_size(uint64_t num_inserts, uint64_t size, uint64_t **
 
    uint64_t tid = gallatin::utils::get_tid();
 
-   if (tid >= num_allocs) return;
+   if (tid >= num_inserts) return;
 
 
    uint64_t * malloc = (uint64_t *) global_malloc(size);
@@ -174,7 +174,7 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
       printf("Starting Round %d/%d\n", i, num_rounds);
 
       gallatin::utils::timer kernel_timing;
-      alloc_one_size_pointer<<<(num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(.9*num_allocs, size, bits, misses);
+      insert_one_size<<<(num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(.9*num_allocs, size, bits, misses);
       kernel_timing.sync_end();
 
       gallatin::utils::timer free_timing;
