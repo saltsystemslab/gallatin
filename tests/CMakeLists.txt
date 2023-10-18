@@ -30,5 +30,5 @@ ConfigureExecutable(chaining_test "${CMAKE_CURRENT_SOURCE_DIR}/src/chaining_test
 
 ConfigureExecutable(block_queue_test "${CMAKE_CURRENT_SOURCE_DIR}/src/block_queue_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
-
+ConfigureExecutable(coop_chaining_test "${CMAKE_CURRENT_SOURCE_DIR}/src/coop_chaining_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 

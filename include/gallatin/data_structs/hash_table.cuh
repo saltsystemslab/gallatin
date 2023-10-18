@@ -109,7 +109,7 @@ namespace data_structs {
 
 				__threadfence();
 
-				//printf("Gathering new memory with size %lu->%lu\n", nslots, next_nslots);
+				printf("Gathering new memory with size %lu->%lu\n", nslots, next_nslots);
 
 				key_arr_type * temp_newkeys = key_arr_type::get_pointer(next_nslots); 
 

@@ -15,7 +15,7 @@
 
 #include <gallatin/allocators/timer.cuh>
 
-#include <gallatin/data_structs/quad_table_atomic.cuh>
+#include <gallatin/data_structs/callocable_ht.cuh>
 
 
 #include <stdio.h>
@@ -34,13 +34,13 @@ using namespace gallatin::allocators;
 
 
 template <typename ht_type>
-__global__ void init_ht_kernel(ht_type * table, uint64_t num_slots, uint64_t seed){
+__global__ void init_ht_kernel(ht_type * table, uint64_t num_slots, uint64_t seed, double resize_ratio){
 
    uint64_t tid = gallatin::utils::get_tid();
 
    if (tid != 0) return;
 
-   table->init(num_slots, seed);
+   table->init(num_slots, seed, resize_ratio);
 
 }
 
@@ -83,19 +83,22 @@ __global__ void query_kernel(ht_type * table, uint64_t ninserts){
 
       printf("%lu Failed to query %lu\n", tid, tid+1);
 
+
+      table->query(tid+1, temp_val);
+
    }
 
 }
 
-template <typename Key, typename Val>
-__host__ void gallatin_ht_noresize(uint64_t num_bytes, uint64_t num_inserts){
+template <typename Key, typename Val, int stride = 1>
+__host__ void gallatin_ht_noresize(uint64_t num_bytes, uint64_t num_inserts, double init_fill_ratio, double resize_ratio){
 
 
-   using ht_type = gallatin::data_structs::quad_table<Key, Val>;
+   using ht_type = gallatin::data_structs::quad_table<Key, Val, stride>;
 
    gallatin::utils::timer boot_timing;
 
-   init_global_allocator(num_bytes, 42);
+   init_global_allocator(num_bytes, 42, false);
 
 
    ht_type * table;
@@ -109,7 +112,7 @@ __host__ void gallatin_ht_noresize(uint64_t num_bytes, uint64_t num_inserts){
    }
 
 
-   init_ht_kernel<ht_type><<<1,1>>>(table, num_inserts*.5, 42);
+   init_ht_kernel<ht_type><<<1,1>>>(table, num_inserts*init_fill_ratio, 42, resize_ratio);
 
    cudaDeviceSynchronize();
 
@@ -177,7 +180,44 @@ int main(int argc, char** argv) {
       num_inserts = std::stoull(argv[2]);
    }
 
-   gallatin_ht_noresize<uint64_t, uint64_t>(num_segments*16*1024*1024, num_inserts);
+
+   // printf(".2 .77\n");
+   // gallatin_ht_noresize<uint64_t, uint64_t>(num_segments*16*1024*1024, num_inserts, .2, .77);
+
+
+   // printf(".4 .77\n");
+   // gallatin_ht_noresize<uint64_t, uint64_t>(num_segments*16*1024*1024, num_inserts, .4, .77);
+
+   // printf(".8 .77\n");
+   // gallatin_ht_noresize<uint64_t, uint64_t>(num_segments*16*1024*1024, num_inserts, .8, .77);
+
+
+   // printf(".2 .5\n");
+   // gallatin_ht_noresize<uint64_t, uint64_t>(num_segments*16*1024*1024, num_inserts, .2, .5);
+
+   // printf(".4 .5\n");
+   // gallatin_ht_noresize<uint64_t, uint64_t>(num_segments*16*1024*1024, num_inserts, .4, .5);
+
+   // printf(".8 .5\n");
+   // gallatin_ht_noresize<uint64_t, uint64_t>(num_segments*16*1024*1024, num_inserts, .8, .5);
+
+
+
+   // printf("Stride 1\n");
+   // gallatin_ht_noresize<uint64_t, uint64_t, 1>(num_segments*16*1024*1024, num_inserts, .4, .5);
+
+   // printf("Stride 2\n");
+   // gallatin_ht_noresize<uint64_t, uint64_t, 2>(num_segments*16*1024*1024, num_inserts, .4, .5);
+
+   // printf("Stride 4\n");
+   // gallatin_ht_noresize<uint64_t, uint64_t, 4>(num_segments*16*1024*1024, num_inserts, .4, .5);
+
+   // printf("Stride 8\n");
+   // gallatin_ht_noresize<uint64_t, uint64_t, 8>(num_segments*16*1024*1024, num_inserts, .4, .5);
+
+   gallatin_ht_noresize<uint64_t, uint64_t, 8>(num_segments*16*1024*1024, num_inserts, 2, .77);
+
+   gallatin_ht_noresize<uint32_t, uint32_t, 8>(num_segments*16*1024*1024, num_inserts, 2, .77);
 
    cudaDeviceSynchronize();
 

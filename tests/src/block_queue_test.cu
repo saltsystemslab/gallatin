@@ -33,6 +33,8 @@ __global__ void enqueue_test_kernel(queue * dev_queue, uint64_t nitems){
    if (tid >= nitems) return;
 
    dev_queue->enqueue(tid);
+
+   //printf("Done with %llu\n", tid);
    
 }
 
@@ -68,15 +70,16 @@ __global__ void enqueue_test_kernel(queue * dev_queue, uint64_t nitems){
 // }
 
 
+template <int nslots_per_block>
 __host__ void queue_test(uint64_t n_threads){
 
    
-   using queue_type = block_queue<uint64_t, 16>;
+   using queue_type = block_queue<uint64_t, nslots_per_block>;
 
    //boot with 20 Gigs
    //gallatin_allocator * alloc = gallatin_allocator::generate_on_device(20ULL*1024*1024*1024, 111);
 
-   init_global_allocator(20ULL*1024*1024*1024, 1245632ULL);
+   init_global_allocator(10ULL*1024*1024*1024, 1245632ULL);
 
    queue_type * dev_queue = queue_type::generate_on_device();
 
@@ -91,7 +94,7 @@ __host__ void queue_test(uint64_t n_threads){
 
    cudaDeviceSynchronize();
 
-   printf("Starting queue test\n");
+   printf("Starting queue test with size %d\n", nslots_per_block);
 
    gallatin::utils::timer enqueue_timing;
 
@@ -107,6 +110,7 @@ __host__ void queue_test(uint64_t n_threads){
 
    // dequeue_timing.sync_end();
 
+   free_global_allocator();
    
 
    //dequeue_timing.print_throughput("Dequeued", n_threads);
@@ -129,7 +133,16 @@ int main(int argc, char** argv) {
    }
 
 
-   queue_test(num_threads);
+   // queue_test<1>(num_threads);
+   // queue_test<2>(num_threads);
+   // queue_test<4>(num_threads);
+   // queue_test<8>(num_threads);
+   // queue_test<16>(num_threads);
+   // queue_test<32>(num_threads);
+   // queue_test<64>(num_threads);
+   // queue_test<128>(num_threads);
+   queue_test<256>(num_threads);
+
 
    cudaDeviceReset();
    return 0;

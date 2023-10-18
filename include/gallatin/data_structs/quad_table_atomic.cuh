@@ -26,6 +26,28 @@ namespace gallatin {
 namespace data_structs {
 
 
+
+	//helper kernel
+	//each resize triggers a new kernel to insert items. 
+	template <typename Key, typename Val, typename Table>
+	__global__ void reinsert_old_keys(Key * old_keys, Val * old_vals, uint64_t nslots, Table * ext_table){
+
+		uint64_t tid = gallatin::utils::get_tid();
+
+		if (tid >= nslots) return;
+
+		Key my_key = old_keys[tid];
+
+		if (my_key == 0) return;
+
+		Val my_val = old_vals[tid];
+
+		ext_table->insert(my_key, my_val);
+
+
+	}
+
+
 	#define GAL_QUAD_ASSIST_STRIDE 32
 	#define GAL_QUAD_PROBE_DEPTH 50
 
@@ -38,8 +60,15 @@ namespace data_structs {
 	struct quad_table {
 
 
+		//resize strategy
+		//one thread holds on to key/vals
+		//attempt insert
+		//if it fails, attempt resize
+		//if that fails, wait on resize.
+
 		int resizing;
 		uint64_t nslots;
+
 		uint64_t seed;
 
 		Key * keys;
@@ -57,6 +86,8 @@ namespace data_structs {
 		//new array values
 		uint64_t clear_nslots;
 		uint64_t finished_clear_nslots;
+
+		uint assisting_resize;
 
 
 		Key * new_keys;
@@ -83,11 +114,15 @@ namespace data_structs {
 
 			}
 
-			new_keys = keys;
-			new_vals = vals;
+			new_keys = nullptr;
+			new_vals = nullptr;
 
 			seed = ext_seed;
 			nslots = initial_nslots;
+
+			next_nslots = nslots;
+
+			assisting_resize = 0U;
 
 			__threadfence();
 
@@ -96,17 +131,44 @@ namespace data_structs {
 
 		//called by one thread - this triggers the resizing flag
 		//then mallocs the buffers needed for the resize.
-		__device__ void prep_upsize(){
+		__device__ int prep_upsize(uint64_t my_nslots){
+
+
+			//start with conversion of my_next_nslots
+			if (atomicCAS((unsigned long long int *)&next_nslots, my_nslots, my_nslots*2) == my_nslots){
+
+
+
+			} else {
+
+				//fail flag - tried to resize but it already happened
+				return 0;
+
+			}
+
+			int my_resize_val = atomicCAS((int *)&resizing, 0, 1);
 
 			//first thread to do this triggers
 			//then everyone waits on assert_key_vals_loaded
-			if (atomicCAS((int *)&resizing, 0, 1) == 0){
+			if (my_resize_val == 0){
 
 				//printf("Starting resize: %llu\n", nslots*2);
 
+				uint64_t old_next_nslots = atomicCAS((unsigned long long int *)&next_nslots, nslots, 2*nslots);
+
+				if (old_next_nslots != nslots){
+
+					atomicCAS((int *)&resizing, 1, 0);
+
+					//printf("Reading from old upsize: was %lu\n", old_next_nslots);
+
+					return 0;
+				}
+
+
 				typed_atomic_exchange(&finished_move_nslots, (uint64_t) 0ULL);
 				typed_atomic_exchange(&moved_nslots, (uint64_t) 0ULL);
-				typed_atomic_exchange(&next_nslots,  nslots*2);
+				
 
 				typed_atomic_exchange(&clear_nslots, (uint64_t) 0ULL);
 				typed_atomic_exchange(&finished_clear_nslots, (uint64_t) 0ULL);
@@ -144,6 +206,9 @@ namespace data_structs {
 			}
 
 
+			return my_resize_val;
+
+
 		}
 
 		//spin on resizing until final control thread signals done.
@@ -158,40 +223,60 @@ namespace data_structs {
 
 
 		//when called, waits until new arrays are visible.
-		__device__ void assert_keys_vals_loaded(){
+		__device__ void assert_keys_vals_loaded(Key * &my_new_keys, Val * &my_new_vals){
 
 			//printf("Checking key array\n");
 
-			uint64_t * addr_of_new_keys = (uint64_t *) &new_keys;
-			uint64_t * addr_of_new_vals = (uint64_t *) &new_vals;
+			//uint64_t * addr_of_new_keys = (uint64_t *) &new_keys;
+			//uint64_t * addr_of_new_vals = (uint64_t *) &new_vals;
 
-			while(((Key *) gallatin::utils::ldcg(addr_of_new_keys)) == keys){
+			my_new_keys = (Key *) atomicAdd((unsigned long long int *)&new_keys, 0ULL);
 
-				addr_of_new_keys = (uint64_t *) &new_keys;
+			while(my_new_keys == nullptr){
+
+				my_new_keys = (Key *) atomicAdd((unsigned long long int *)&new_keys, 0ULL);
+
+
+
 				//printf("Spinning\n");
 
+				//printf("Looping on keys load.\n");
+
 			}
 
-			while(((Key *) gallatin::utils::ldcg(addr_of_new_vals)) == vals){
-				addr_of_new_vals = (uint64_t *) &new_vals;
+
+			my_new_vals = (Val *) atomicAdd((unsigned long long int *)&new_vals, 0ULL);
+
+
+			while (my_new_vals == nullptr){
+
+				my_new_vals = (Val *) atomicAdd((unsigned long long int *)&new_vals, 0ULL);
+
 			}
+
+			// while(((Key *) gallatin::utils::ldcg(addr_of_new_vals)) == vals){
+			// 	addr_of_new_vals = (uint64_t *) &new_vals;
+
+			// 	printf("Looping on vals load.\n");
+			// }
 
 			//printf("New keys have been read\n");
 
 		}
 
 
-		__device__ void resize(){
+		__device__ void resize(Key * &my_new_keys, Val * &my_new_vals){
 
 			
 
-			prep_upsize();
+			if (!prep_upsize()) return;
 
-			assert_keys_vals_loaded();
+			assert_keys_vals_loaded(my_new_keys, my_new_vals);
 
-			assist_with_copy();
+			assist_with_copy(my_new_keys, my_new_vals);
 
 			finish_upsize();
+
 
 		}
 
@@ -247,7 +332,44 @@ namespace data_structs {
 
 				//printf("Copied so far: %lu + %lu out of %lu: %f\n", copied_so_far, items_to_move, my_nslots, 1.0*(copied_so_far+items_to_move)/my_nslots);
 
-				if ( (copied_so_far + items_to_move) == my_nslots) break;
+				if ( (copied_so_far + items_to_move  == my_nslots)){
+
+					if (items_to_move != 0){
+						//take control and move
+
+
+						//move control flag to 2 - signals that new threads cannot enter
+						atomicAdd(&resizing, 1);
+
+						atomicSub((&assisting_resize, 1));
+
+						//loop until all helpers have exited
+						while (atomicAdd((unsigned int *)&assisting_resize, 0) != 0);
+
+						//Key * old_keys = keys;
+						//Val * old_vals = vals;
+
+						swap_to_new_array(keys, my_new_keys);
+						swap_to_new_array(vals, my_new_keys);
+
+
+						swap_to_new_array(new_keys, nullptr);
+						swap_to_new_array(new_vals, nullptr);
+
+						//after this, reset is done - signal end by resetting to 0.
+						atomicSub(&resizing, 2);
+
+						
+
+						printf("Resize done\n");
+
+
+					}
+
+					break;
+
+				}
+
 
 					
 
@@ -256,118 +378,18 @@ namespace data_structs {
 			//printf("Done with clear\n");
 
 
+			int my_resizing = 1;
 
-			//start copy
-			while (true){
+			while (my_resizing){
+				my_resizing = gallatin::utils::ldcg(&resizing);
 
-				//printf("Starting copy iteration\n");
-
-				//cg::coalesced_group full_warp_team = cg::coalesced_threads();
-
-				
-
-				//read a new batch of numbers to assist with copy
-				uint64_t my_copy_start = atomicAdd((unsigned long long int *)&moved_nslots, GAL_QUAD_ASSIST_STRIDE);
-
-				uint64_t items_to_move;
-
-				if (my_copy_start >= my_nslots){
-					//all items already copied - end
-
-					items_to_move = 0;
-
-				} else {
-					uint64_t items_left = my_nslots - my_copy_start;
-
-					
-
-					if (items_left > GAL_QUAD_ASSIST_STRIDE){
-						items_to_move = GAL_QUAD_ASSIST_STRIDE;
-					} else {
-						items_to_move = items_left;
-					}
-
-				}
-
-				//printf("Moving %lu items from %lu->%lu\n", items_to_move, my_copy_start, my_copy_start+items_to_move);
-
-				for (uint64_t i = 0; i < items_to_move; i++){
-
-
-
-					uint64_t slot_index = (my_copy_start + i); // % my_nslots;
-
-					Key copy_key = typed_atomic_exchange(&keys[slot_index], (Key) 0);
-
-					//non-empty keys go to the new table.
-					if (copy_key != (Key)0){
-
-						//read and insert new val
-						Val copy_val = typed_global_read(&vals[slot_index]);
-
-						auto num_copy_write = internal_insert_key_val_pair(new_keys, new_vals, my_next_nslots, copy_key, copy_val);
-
-						//auto num_copy_write = 0;
-						if (num_copy_write == GAL_QUAD_PROBE_DEPTH){
-							printf("Failed to write!\n");
-						}
-
-					}
-
-					//printf("Done with %lu/%lu\n", i, items_to_move);
-
-				}
-
-				//printf("Done moving %lu items\n", items_to_move);
-
-				//register that items_to_move items have been copied
-
-				if (items_to_move != 0){
-
-					uint64_t copied_so_far = atomicAdd((unsigned long long int *)&finished_move_nslots, items_to_move);
-
-					//printf("Copied so far: %lu + %lu out of %lu: %f\n", copied_so_far, items_to_move, my_nslots, 1.0*(copied_so_far+items_to_move)/my_nslots);
-
-					if ( (copied_so_far + items_to_move) == my_nslots){
-
-						//thread responsible for ending!
-						//we know old array isn't needed, so copy!
-
-						//typed_atomic_exchange((uint64_t *) &keys, (uint64_t) new_keys);
-						//typed_atomic_exchange((uint64_t *) &vals, (uint64_t) new_vals);
-
-						//printf("Ending copy: %lu vs %lu\n", copied_so_far+items_to_move, my_nslots);
-
-						swap_to_new_array(keys, new_keys);
-						swap_to_new_array(vals, new_vals);
-
-
-						typed_atomic_exchange(&nslots, my_nslots*2);
-						__threadfence();
-
-						atomicCAS((int *)&resizing, 1, 0);
-
-					}
-				
-				}
-
-				//full_warp_team.sync();
-
-				if (items_to_move == 0){
-
-					//printf("Exiting copy: %lu > %lu\n", my_copy_start, my_nslots);
-
-					return;
-
-				}
-
-
-
-
+				//printf("Looping on resize check.\n");
 			}
 
-			
 
+			//printf("Resize done visible\n");
+
+			return;
 
 		}
 
@@ -409,23 +431,44 @@ namespace data_structs {
 
 			while (true){
 
-				//steps
 
-				cg::coalesced_group full_warp_team = cg::coalesced_threads();
+				//start with load of all 3 variables
 
-				//1) if resize is visibly triggered, assist with load!
-				if (typed_global_read(&resizing)){
+				Key * my_new_keys = nullptr;
+				Val * my_new_vals = nullptr;
 
-					//load new key_val_pair arrays
-					assert_keys_vals_loaded();
+				
+				uint64_t my_nslots = atomicAdd((unsigned long long int *)&nslots, 0ULL);
+				Key * my_keys = (Key *) atomicAdd((unsigned long long int *)&keys, 0ULL);
+				Val * my_vals = (Val *) atomicAdd((unsigned long long int *)&vals, 0ULL);
+				int my_resizing = atomicAdd(&resizing, 0);
 
-					//start copy
-					assist_with_copy();
+				//flags
+				//resizing == 0 - nothing going on
+				//resizing == 1 - resizing started but not done
+				//resizing == 2 - resizing finished.
+				if (my_resizing == 1){
 
-					//copy is done!
+
+					atomicAdd((unsigned int *)&assisting_resize, 1U);
+
+					//overwrite keys 
+					assert_keys_vals_loaded(my_new_keys, my_new_vals);
+
+					assist_with_copy(my_new_keys, my_new_vals);
+
+					//signal # threads waiting on resource
+
 					finish_upsize();
 
+					atomicSub((unsigned int *)&assisting_resize, 1U);
+
+
+					continue;
+
 				}
+
+	
 
 
 				//resizing set to false now - try insert on new keys/vals
@@ -453,10 +496,13 @@ namespace data_structs {
 				}
 
 
-				full_warp_team.sync();
+				//full_warp_team.sync();
 				//potential error - resize could trigger while I was working.
 				//meaning that my table was written before I could fail?
-				//deal with this later - get test live
+				//deal with this later - get test liv
+
+
+				//printf("Looping main loop\n");
 
 
 			}

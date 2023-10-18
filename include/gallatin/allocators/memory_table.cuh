@@ -624,7 +624,7 @@ struct alloc_table {
 
     if (my_block == nullptr){
 
-      printf("Bug\n");
+      //printf("Bug\n");
       asm volatile ("trap;");
 
     }

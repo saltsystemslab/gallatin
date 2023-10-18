@@ -1,5 +1,5 @@
-#ifndef GALLATIN_CALLOCABLE
-#define GALLATIN_CALLOCABLE
+#ifndef GALLATIN_FORMATTABLE_V2
+#define GALLATIN_FORMATTABLE_V2
 
 
 #include <cuda.h>
@@ -12,7 +12,7 @@
 //murmurhash
 // #include <gallatin/allocators/murmurhash.cuh>
 
-// #include <gallatin/data_structs/ds_utils.cuh>
+#include <gallatin/data_structs/ds_utils.cuh>
 
 
 
@@ -21,16 +21,14 @@ namespace gallatin {
 
 namespace data_structs {
 
-	#define CALLOCABLE_USE_CG_FIX 0
-
-	//de-amortized calloced array
+	//de-amortized formatted array
 	//forces that the first time memory is observed it must be 0.
 	//delayed global read allows for faster cached check on fast path.
 	//stride sets granularity of calloc check.
-	template <typename T, uint stride=1>
-	struct callocable {
+	template <typename T, T format_code=0U>
+	struct formattable_alt {
 
-		using my_type = callocable<T, stride>;
+		using my_type = formattable_alt<T, format_code>;
 
 		T * data;
 
@@ -40,11 +38,11 @@ namespace data_structs {
 		//if resizing, 
 		//perform global reads until new keys, vals are available.
 
-		__device__ callocable(uint64_t nitems){
+		__device__ formattable_alt(uint64_t nitems){
 
 			uint64_t total_bytes = nitems*sizeof(T);
 
-			uint64_t total_flush_bits = (nitems-1)/stride+1;
+			uint64_t total_flush_bits = nitems;
 
 			uint64_t total_flush_uint64_t = (total_flush_bits-1)/64+1;
 
@@ -57,6 +55,8 @@ namespace data_structs {
 
 			if (data == nullptr || needs_flushed == nullptr || is_flushed == nullptr){
 				//printf("Failed to malloc\n");
+
+				asm volatile ("trap;");
 			}
 
 			//printf("Allocated: %lu items\n", nitems);
@@ -85,7 +85,7 @@ namespace data_structs {
 
 		__device__ void print_calloc_status(uint64_t index){
 
-			uint64_t bit = index/stride;
+			uint64_t bit = index;
 
 			uint64_t high = bit/64;
 
@@ -121,7 +121,7 @@ namespace data_structs {
 
 		__device__ bool check_if_need_calloc(uint64_t index){
 
-			uint64_t bit = index/stride;
+			uint64_t bit = index;
 
 			uint64_t high = bit/64;
 
@@ -147,7 +147,7 @@ namespace data_structs {
 			if (!(calloced_bits & SET_BIT_MASK(low))){
 				//previously flushed
 				__threadfence();
-				return true;
+				return false;
 			}
 
 			//if we are here - need to see if we can acquire
@@ -155,11 +155,6 @@ namespace data_structs {
 			//local read vs atomic priority
 
 			//it breaks without this...
-			#if CALLOCABLE_USE_CG_FIX
-
-			cg::coalesced_group full_warp_team = cg::coalesced_threads();
-
-			#endif
 
     		//cg::coalesced_group coalesced_team = labeled_partition(full_warp_team, tree_id);
 
@@ -167,21 +162,25 @@ namespace data_structs {
 
 				//printf("Starting region %lu calloc\n", bit);
 				//I am responsible for updating!
-				calloc_region(bit);
 
-				//printf("Calloc %lu done\n", bit);
 
-				//and write so that future threads observe calloc
-				//this stalls when multiple threads in same warp want it.
 
-				if(!(atomicAnd((unsigned long long int *)&is_flushed[high], ~SET_BIT_MASK(low)) & SET_BIT_MASK(low))){
-					//this is bizarre behavior, implies that the region was previously calloced.
+				return true;
+				// calloc_region(bit);
 
-					//printf("Failed to set %lu bit %lu\n", high, low);
-					asm("trap;");
-				}
+				// //printf("Calloc %lu done\n", bit);
 
-				__threadfence();
+				// //and write so that future threads observe calloc
+				// //this stalls when multiple threads in same warp want it.
+
+				// if(!(atomicAnd((unsigned long long int *)&is_flushed[high], ~SET_BIT_MASK(low)) & SET_BIT_MASK(low))){
+				// 	//this is bizarre behavior, implies that the region was previously calloced.
+
+				// 	//printf("Failed to set %lu bit %lu\n", high, low);
+				// 	asm("trap;");
+				// }
+
+				// __threadfence();
 
 				//this doesn't trigger...
 				//printf("Atomic write to %lu done\n", bit);
@@ -189,10 +188,6 @@ namespace data_structs {
 			}
 
 			//calloc of region is either live or I finished
-
-			#if CALLOCABLE_USE_CG_FIX
-			full_warp_team.sync();
-			#endif
 
 
 			while (calloced_bits & SET_BIT_MASK(low)){
@@ -207,11 +202,29 @@ namespace data_structs {
 
 			__threadfence();
 
-			#if CALLOCABLE_USE_CG_FIX
-			full_warp_team.sync();
-			#endif
 
-			return true;
+			return false;
+
+		}
+
+
+		__device__ void mark_index_calloced(uint64_t index){
+
+			uint64_t high = index / 64;
+
+			uint64_t low = index % 64;
+
+
+			if(!(atomicAnd((unsigned long long int *)&is_flushed[high], (unsigned long long int) ~SET_BIT_MASK(low) ) & SET_BIT_MASK(low))){
+				//this is bizarre behavior, implies that the region was previously calloced.
+
+				//printf("Failed to set %lu bit %lu\n", high, low);
+				asm volatile("trap;");
+			}
+
+
+			__threadfence();
+
 
 		}
 
@@ -232,17 +245,17 @@ namespace data_structs {
 			// __threadfence();
 
 
-			uint * byte_start = (uint *) &data[region_bit*stride];
+			uint * byte_start = (uint *) &data[region_bit];
 
 			//attempt to accelearate this via unroll
 			#pragma unroll
-			for (uint64_t i = 0; i < (stride*sizeof(T))/4; i++){
+			for (uint64_t i = 0; i < (sizeof(T))/4; i++){
 
 				//byte_start[i] = (char) 0;
 				//use atomic to set...
 				//gallatin::utils::global_store_byte(&byte_start[i], (char) 0);
 
-				atomicExch(&byte_start[i], 0U);
+				atomicExch(&byte_start[i], format_code);
 
 			}
 
@@ -256,15 +269,136 @@ namespace data_structs {
 		{
 		    bool check_if_need_load = check_if_need_calloc(index);
 
-		    //if (check_if_need_load){
+		    if (check_if_need_load){
 
-		   	//gallatin::utils::ldcg(&data[index]);
+		    	typed_atomic_exchange(&data[index], format_code);
 
-		  	// } 
+
+				mark_index_calloced(index);
+
+
+		  	} 
 
 		   return data[index];
 		   
 		}
+
+
+		__device__ T wrappedAtomicExch(uint64_t index, T exchange){
+
+			bool check_if_need_load = check_if_need_calloc(index);
+
+			if (check_if_need_load){
+
+				typed_atomic_exchange(&data[index], exchange);
+
+				mark_index_calloced(index);
+
+				return format_code;
+
+			} else {
+
+				return typed_atomic_exchange(&data[index], exchange);
+
+			}
+
+		}
+
+		//set of helper atomic functions 
+		__device__ T wrappedAtomicAnd(uint64_t index, T bits){
+
+
+			bool check_if_need_load = check_if_need_calloc(index);
+
+			if (check_if_need_load){
+
+				typed_atomic_exchange(&data[index], format_code & bits);
+
+				mark_index_calloced(index);
+
+				return format_code;
+
+			} else {
+
+				return typed_atomic_and(&data[index], bits);
+
+			}
+
+
+		}
+
+
+		__device__ T wrappedAtomicOr(uint64_t index, T bits){
+
+			bool check_if_need_load = check_if_need_calloc(index);
+
+			if (check_if_need_load){
+
+				typed_atomic_exchange(&data[index], format_code | bits);
+
+				mark_index_calloced(index);
+
+				return format_code;
+
+			} else {
+
+				return typed_atomic_or(&data[index], bits);
+
+			}
+
+		}
+
+		__device__ T wrappedAtomicAdd(uint64_t index, T value_to_add){
+
+			bool check_if_need_load = check_if_need_calloc(index);
+
+			if (check_if_need_load){
+
+				typed_atomic_exchange(&data[index], value_to_add + format_code);
+
+				mark_index_calloced(index);
+
+				return format_code;
+
+			} else {
+
+				return typed_atomic_add(&data[index], value_to_add);
+
+			}
+
+		}
+
+		__device__ T wrappedAtomicCAS(uint64_t index, T expected, T replace){
+
+			bool check_if_need_load = check_if_need_calloc(index);
+
+			if (check_if_need_load){
+
+				if (expected == format_code){
+
+					//this CAS succeeds
+					typed_atomic_exchange(&data[index], replace);
+
+
+				} else {
+
+					//CAS auto fails
+					typed_atomic_exchange(&data[index], format_code);
+
+
+				}
+
+				mark_index_calloced(index);
+
+				return format_code;
+
+			}
+
+			return typed_atomic_CAS(&data[index], expected, replace);
+
+		}
+
+
 
 		//set memory just to assert that calloc works.
 		//this may be messing things up by touching the memory early?
@@ -282,7 +416,7 @@ namespace data_structs {
 
 
 		//move constructor
-		__device__ callocable(callocable&& other){
+		__device__ formattable_alt(formattable_alt&& other){
 
 			//move pointers
 			data = other.data;
@@ -296,7 +430,7 @@ namespace data_structs {
 
 		}
 
-		__device__ callocable operator=(const callocable & first){
+		__device__ formattable_alt operator=(const formattable_alt & first){
 
 			data = first.data;
 

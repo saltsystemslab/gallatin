@@ -160,14 +160,14 @@ namespace data_structs {
 
 			while(old != previous){
 
-				printf("Stalling: %u != %u\n", old, previous);
+				//printf("Stalling: %u != %u\n", old, previous);
 
 				old = atomicCAS((unsigned int *) &enqueue_counter, (unsigned int) previous, (unsigned int)previous+1);
 
 
 			}
 
-			printf("Success! %u == %u\n", old, previous);
+			//printf("Success! %u == %u\n", old, previous);
 
 		}
 
@@ -288,16 +288,63 @@ namespace data_structs {
 
 		}
 
-		__device__ bool add_to_tail(node_type ** current_tail, node_type *next_tail){
+		__device__ node_type * add_to_tail(node_type ** current_tail, node_type *next_tail){
 
 
-			return (atomicCAS((unsigned long long int *)current_tail, 0ULL, (unsigned long long int)next_tail) == 0);
+			return (node_type *) atomicCAS((unsigned long long int *)current_tail, 0ULL, (unsigned long long int)next_tail);
+
+		}
+
+
+		__device__ void detect_loop(){
+
+
+			node_type * loop_one = tail;
+
+			node_type * loop_two = tail->next;
+
+			while(loop_two != nullptr && loop_one != nullptr){
+
+				if (loop_one == loop_two){
+					printf("Loop detected\n");
+				}
+
+
+				loop_one = tail->next;
+
+				node_type * loop_two_next = loop_two->next;
+
+				if (loop_two_next == nullptr) return;
+
+				loop_two = loop_two_next->next;
+
+			}
+
+
+			printf("No loop detected\n");
+
+		}
+
+		__device__ node_type * trace_tail(node_type * my_tail){
+
+			//node_type * my_tail = tail;
+
+			while (my_tail->next != nullptr){
+
+
+				my_tail = my_tail->next;
+
+
+			}
+
+			return my_tail;
+
 
 		}
 
 		__device__ bool enqueue(T new_item){
 
-			node_type * my_tail = tail;
+			node_type * my_tail = trace_tail(tail);
 
 			node_type * original_tail = tail;
 			
@@ -306,40 +353,58 @@ namespace data_structs {
 			while (true){
 
 
+				detect_loop();
+
+				__threadfence();
+
+				my_tail = trace_tail(my_tail);
+
+				//printf("Looping tail %lx\n", my_tail);
 
 				//always at least one node to look at
 				if (my_tail->enqueue(new_item)) return true;
 
 				if (my_tail->next == nullptr){
 
+					//printf("Mallocing new node\n");
+
 					node_type * new_tail = (node_type *) gallatin::allocators::global_malloc(sizeof(node_type));
+
+					printf("Exiting malloc\n");
 
 					if (new_tail == nullptr) return false;
 
 					new_tail->init();
 
-					if (add_to_tail(&my_tail->next, new_tail)){
-						//update tail
 
-						//attempt to snap to most current node.
-						atomicCAS((unsigned long long int *)&tail, (unsigned long long int) original_tail, (unsigned long long int) new_tail);
+					node_type * next = add_to_tail(&my_tail->next, new_tail);
 
+					if (next == nullptr){
+
+						my_tail = new_tail;
+						
+						//atomicCAS((unsigned long long int *)&tail, (unsigned long long int) original_tail, (unsigned long long int) new_tail);
+						__threadfence();
 
 					} else {
-						gallatin::allocators::global_free(new_tail);
+						my_tail = next;
+						//printf("Freeing node\n");
+						//gallatin::allocators::global_free(new_tail);
+						__threadfence();
 					}
 
-				} else {
-					my_tail = my_tail->next;
+					continue;
+						
+					}
+
+				my_tail = my_tail->next;
+
 				}
 
-				//tail may be stale, attempt insertion.
 
-
-
-			}
 
 		}
+
 
 		//valid to make optional type?
 

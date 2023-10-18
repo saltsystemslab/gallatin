@@ -1,5 +1,5 @@
-#ifndef GALLATIN_CALLOCABLE
-#define GALLATIN_CALLOCABLE
+#ifndef GALLATIN_FORMATTABLE
+#define GALLATIN_FORMATTABLE
 
 
 #include <cuda.h>
@@ -21,16 +21,14 @@ namespace gallatin {
 
 namespace data_structs {
 
-	#define CALLOCABLE_USE_CG_FIX 0
-
-	//de-amortized calloced array
+	//de-amortized formatted array
 	//forces that the first time memory is observed it must be 0.
 	//delayed global read allows for faster cached check on fast path.
 	//stride sets granularity of calloc check.
-	template <typename T, uint stride=1>
-	struct callocable {
+	template <typename T, uint format_code=0U, uint stride=1>
+	struct formattable {
 
-		using my_type = callocable<T, stride>;
+		using my_type = formattable<T, format_code, stride>;
 
 		T * data;
 
@@ -40,7 +38,7 @@ namespace data_structs {
 		//if resizing, 
 		//perform global reads until new keys, vals are available.
 
-		__device__ callocable(uint64_t nitems){
+		__device__ formattable(uint64_t nitems){
 
 			uint64_t total_bytes = nitems*sizeof(T);
 
@@ -57,6 +55,8 @@ namespace data_structs {
 
 			if (data == nullptr || needs_flushed == nullptr || is_flushed == nullptr){
 				//printf("Failed to malloc\n");
+
+				asm volatile ("trap;");
 			}
 
 			//printf("Allocated: %lu items\n", nitems);
@@ -155,11 +155,6 @@ namespace data_structs {
 			//local read vs atomic priority
 
 			//it breaks without this...
-			#if CALLOCABLE_USE_CG_FIX
-
-			cg::coalesced_group full_warp_team = cg::coalesced_threads();
-
-			#endif
 
     		//cg::coalesced_group coalesced_team = labeled_partition(full_warp_team, tree_id);
 
@@ -190,10 +185,6 @@ namespace data_structs {
 
 			//calloc of region is either live or I finished
 
-			#if CALLOCABLE_USE_CG_FIX
-			full_warp_team.sync();
-			#endif
-
 
 			while (calloced_bits & SET_BIT_MASK(low)){
 
@@ -207,9 +198,6 @@ namespace data_structs {
 
 			__threadfence();
 
-			#if CALLOCABLE_USE_CG_FIX
-			full_warp_team.sync();
-			#endif
 
 			return true;
 
@@ -242,7 +230,7 @@ namespace data_structs {
 				//use atomic to set...
 				//gallatin::utils::global_store_byte(&byte_start[i], (char) 0);
 
-				atomicExch(&byte_start[i], 0U);
+				atomicExch(&byte_start[i], format_code);
 
 			}
 
@@ -282,7 +270,7 @@ namespace data_structs {
 
 
 		//move constructor
-		__device__ callocable(callocable&& other){
+		__device__ formattable(formattable&& other){
 
 			//move pointers
 			data = other.data;
@@ -296,7 +284,7 @@ namespace data_structs {
 
 		}
 
-		__device__ callocable operator=(const callocable & first){
+		__device__ formattable operator=(const formattable & first){
 
 			data = first.data;
 

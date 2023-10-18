@@ -58,6 +58,12 @@ __device__ inline uint ldcg(const uint *p) {
   return res;
 }
 
+__device__ inline int ldcg(const int *p) {
+  uint res;
+  asm volatile("ld.global.cg.s32 %0, [%1];" : "=r"(res) : "l"(p));
+  return res;
+}
+
 __device__ inline uint64_t ldcg(const uint64_t *p) {
   uint64_t res;
   asm volatile("ld.global.cg.u64 %0, [%1];" : "=l"(res) : "l"(p));
@@ -340,6 +346,19 @@ static __host__ __device__ int get_first_bit_bigger(uint64_t counter) {
 
 __device__ uint64_t get_tid() {
   return ((uint64_t)threadIdx.x) + ((uint64_t)blockIdx.x) * ((uint64_t) blockDim.x);
+}
+
+template <uint team_size>
+__device__ uint64_t get_team_tid(cg::thread_block_tile<team_size> team) {
+
+  uint64_t block_id = blockIdx.x;
+
+  uint64_t team_id = team.meta_group_rank();
+
+  uint64_t team_meta_size = team.meta_group_size();
+
+  return team_id + team_meta_size*block_id;
+
 }
 
 __device__ void cooperative_copy(char *dst, char *src, uint64_t num_bytes) {

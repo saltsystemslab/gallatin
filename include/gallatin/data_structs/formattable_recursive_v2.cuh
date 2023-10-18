@@ -1,5 +1,5 @@
-#ifndef GALLATIN_CALLOCABLE
-#define GALLATIN_CALLOCABLE
+#ifndef GALLATIN_FORMATTABLE_RECURSIVE_V2
+#define GALLATIN_FORMATTABLE_RECURSIVE_V2
 
 
 #include <cuda.h>
@@ -15,32 +15,34 @@
 // #include <gallatin/data_structs/ds_utils.cuh>
 
 
+#include <gallatin/data_structs/formattable_v2.cuh>
+
+
 
 
 namespace gallatin {
 
 namespace data_structs {
 
-	#define CALLOCABLE_USE_CG_FIX 0
-
-	//de-amortized calloced array
+	//de-amortized formatted array
 	//forces that the first time memory is observed it must be 0.
 	//delayed global read allows for faster cached check on fast path.
 	//stride sets granularity of calloc check.
-	template <typename T, uint stride=1>
-	struct callocable {
+	template <typename T, uint format_code=0U>
+	struct formattable_recursive_alt {
 
-		using my_type = callocable<T, stride>;
+		using my_type = formattable_recursive_alt<T, format_code>;
 
 		T * data;
 
-		uint64_t * needs_flushed;
-		uint64_t * is_flushed;
+		formattable<uint64_t, ~0U> needs_flushed;
+		formattable<uint64_t, ~0U> is_flushed;
+
 		//how to perform swap
 		//if resizing, 
 		//perform global reads until new keys, vals are available.
 
-		__device__ callocable(uint64_t nitems){
+		__device__ formattable_recursive_alt(uint64_t nitems): needs_flushed( (((nitems-1)/stride)/64)+1), is_flushed ((((nitems-1)/stride)/64)+1) {
 
 			uint64_t total_bytes = nitems*sizeof(T);
 
@@ -51,30 +53,36 @@ namespace data_structs {
 
 			data = (T* ) gallatin::allocators::global_malloc(total_bytes);
 
-			needs_flushed = (uint64_t *) gallatin::allocators::global_malloc(total_flush_uint64_t*sizeof(uint64_t));
-			is_flushed = (uint64_t *) gallatin::allocators::global_malloc(total_flush_uint64_t*sizeof(uint64_t));
+			//needs_flushed = formattable<uint64_t, ~0U>(total_flush_uint64_t);
+
+			//is_flushed = formattable<uint64_t, ~0U>(total_flush_uint64_t);
+
+			// = (uint64_t *) gallatin::allocators::global_malloc(total_flush_uint64_t*sizeof(uint64_t));
+			//is_flushed = (uint64_t *) gallatin::allocators::global_malloc(total_flush_uint64_t*sizeof(uint64_t));
 
 
-			if (data == nullptr || needs_flushed == nullptr || is_flushed == nullptr){
+			if (data == nullptr){
 				//printf("Failed to malloc\n");
+
+				asm volatile ("trap;");
 			}
 
 			//printf("Allocated: %lu items\n", nitems);
 
 			//stride sets granularity of work.
-			for (uint64_t i = 0; i < total_flush_uint64_t; i++){
+			// for (uint64_t i = 0; i < total_flush_uint64_t; i++){
 
-				atomicExch((unsigned long long int *)&is_flushed[i], ~0ULL);
-				//is_flushed[i] = ~0ULL;
-			}
+			// 	atomicExch((unsigned long long int *)&is_flushed[i], ~0ULL);
+			// 	//is_flushed[i] = ~0ULL;
+			// }
 
 			//printf("Is flushed done, writing needs_flushed\n");
 
-			for (uint64_t i = 0; i < total_flush_uint64_t; i++){
+			// for (uint64_t i = 0; i < total_flush_uint64_t; i++){
 
-				atomicExch((unsigned long long int *)&needs_flushed[i], ~0ULL);
-				//needs_flushed[i] = ~0ULL;
-			}
+			// 	atomicExch((unsigned long long int *)&needs_flushed[i], ~0ULL);
+			// 	//needs_flushed[i] = ~0ULL;
+			// }
 
 			__threadfence();
 
@@ -155,11 +163,6 @@ namespace data_structs {
 			//local read vs atomic priority
 
 			//it breaks without this...
-			#if CALLOCABLE_USE_CG_FIX
-
-			cg::coalesced_group full_warp_team = cg::coalesced_threads();
-
-			#endif
 
     		//cg::coalesced_group coalesced_team = labeled_partition(full_warp_team, tree_id);
 
@@ -190,10 +193,6 @@ namespace data_structs {
 
 			//calloc of region is either live or I finished
 
-			#if CALLOCABLE_USE_CG_FIX
-			full_warp_team.sync();
-			#endif
-
 
 			while (calloced_bits & SET_BIT_MASK(low)){
 
@@ -207,9 +206,6 @@ namespace data_structs {
 
 			__threadfence();
 
-			#if CALLOCABLE_USE_CG_FIX
-			full_warp_team.sync();
-			#endif
 
 			return true;
 
@@ -242,7 +238,7 @@ namespace data_structs {
 				//use atomic to set...
 				//gallatin::utils::global_store_byte(&byte_start[i], (char) 0);
 
-				atomicExch(&byte_start[i], 0U);
+				atomicExch(&byte_start[i], format_code);
 
 			}
 
@@ -282,7 +278,7 @@ namespace data_structs {
 
 
 		//move constructor
-		__device__ callocable(callocable&& other){
+		__device__ formattable_recursive_alt(formattable_recursive_alt&& other){
 
 			//move pointers
 			data = other.data;
@@ -296,7 +292,7 @@ namespace data_structs {
 
 		}
 
-		__device__ callocable operator=(const callocable & first){
+		__device__ formattable_recursive_alt operator=(const formattable_recursive_alt & first){
 
 			data = first.data;
 
@@ -309,8 +305,11 @@ namespace data_structs {
 		__device__ void free_memory(){
 
 			gallatin::allocators::global_free(data);
-			gallatin::allocators::global_free(is_flushed);
-			gallatin::allocators::global_free(needs_flushed);
+
+			is_flushed.free_memory();
+			needs_flushed.free_memory();
+			//gallatin::allocators::global_free(is_flushed);
+			//gallatin::allocators::global_free(needs_flushed);
 
 		}
 

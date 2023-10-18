@@ -200,6 +200,199 @@ __device__ __inline__ uint64_t typed_atomic_exchange<uint64_t>(uint64_t * backin
 
 }
 
+template<>
+__device__ __inline__ float typed_atomic_exchange<float>(float * backing, float replace){
+
+  //printf("Uint64_t call being accessed\n");
+
+  return atomicExch(backing, replace);
+
+}
+
+template<>
+__device__ __inline__ int typed_atomic_exchange<int>(int * backing, int replace){
+
+  //printf("Uint64_t call being accessed\n");
+
+  return atomicExch(backing, replace);
+
+}
+
+
+//start of atomicAnd
+
+template<typename T>
+__device__ __inline__ T typed_atomic_and(T * backing, T replace){
+
+
+  //atomic CAS first bit
+
+  //this should break, like you'd expect it to
+  //TODO come back and make this convert to uint64_t for CAS
+  //you can't CAS anything smaller than 16 bits so I'm not going to attempt that
+
+  //printf("I am being accessed\n");
+
+  abort();
+
+  static_assert(sizeof(T) > 8);
+
+  uint64_t uint_replace = ((uint64_t *) &replace)[0];
+
+  uint64_t first_write = typed_atomic_and<uint64_t>((uint64_t *) backing, uint_replace);
+
+  return first_write;
+}
+
+
+// template<>
+// __device__ __inline__ uint16_t typed_atomic_exchange<uint16_t>(uint16_t * backing, uint16_t replace){
+
+//   uint16_t result = atomicExch((unsigned short int *) backing, (unsigned short int) replace);
+
+//   return result;
+
+// }
+
+
+template<>
+__device__ __inline__ uint32_t typed_atomic_and<uint32_t>(uint32_t * backing, uint32_t replace){
+
+
+  return atomicAnd((unsigned int *) backing, (unsigned int) replace);
+
+}
+
+template<>
+__device__ __inline__ uint64_t typed_atomic_and<uint64_t>(uint64_t * backing, uint64_t replace){
+
+  //printf("Uint64_t call being accessed\n");
+
+  return atomicAnd((unsigned long long int *) backing, (unsigned long long int) replace);
+
+}
+
+//end of atomicAnd
+
+
+//start of atomicOr
+
+template<typename T>
+__device__ __inline__ T typed_atomic_or(T * backing, T replace){
+
+
+  //atomic CAS first bit
+
+  //this should break, like you'd expect it to
+  //TODO come back and make this convert to uint64_t for CAS
+  //you can't CAS anything smaller than 16 bits so I'm not going to attempt that
+
+  //printf("I am being accessed\n");
+
+  abort();
+
+  static_assert(sizeof(T) > 8);
+
+  uint64_t uint_replace = ((uint64_t *) &replace)[0];
+
+  uint64_t first_write = typed_atomic_or<uint64_t>((uint64_t *) backing, uint_replace);
+
+  return first_write;
+}
+
+
+// template<>
+// __device__ __inline__ uint16_t typed_atomic_exchange<uint16_t>(uint16_t * backing, uint16_t replace){
+
+//   uint16_t result = atomicExch((unsigned short int *) backing, (unsigned short int) replace);
+
+//   return result;
+
+// }
+
+
+template<>
+__device__ __inline__ uint32_t typed_atomic_or<uint32_t>(uint32_t * backing, uint32_t replace){
+
+
+  return atomicOr((unsigned int *) backing, (unsigned int) replace);
+
+}
+
+template<>
+__device__ __inline__ uint64_t typed_atomic_or<uint64_t>(uint64_t * backing, uint64_t replace){
+
+  //printf("Uint64_t call being accessed\n");
+
+  return atomicOr((unsigned long long int *) backing, (unsigned long long int) replace);
+
+}
+
+//end of atomicOr
+
+//start of atomicAdd
+
+template<typename T>
+__device__ __inline__ T typed_atomic_add(T * backing, T replace){
+
+
+  //atomic CAS first bit
+
+  //this should break, like you'd expect it to
+  //TODO come back and make this convert to uint64_t for CAS
+  //you can't CAS anything smaller than 16 bits so I'm not going to attempt that
+
+  //printf("I am being accessed\n");
+
+  abort();
+
+  static_assert(sizeof(T) > 8);
+
+  uint64_t uint_replace = ((uint64_t *) &replace)[0];
+
+  uint64_t first_write = typed_atomic_add<uint64_t>((uint64_t *) backing, uint_replace);
+
+  return first_write;
+}
+
+
+// template<>
+// __device__ __inline__ uint16_t typed_atomic_exchange<uint16_t>(uint16_t * backing, uint16_t replace){
+
+//   uint16_t result = atomicExch((unsigned short int *) backing, (unsigned short int) replace);
+
+//   return result;
+
+// }
+
+
+template<>
+__device__ __inline__ uint32_t typed_atomic_add<uint32_t>(uint32_t * backing, uint32_t replace){
+
+
+  return atomicAdd((unsigned int *) backing, (unsigned int) replace);
+
+}
+
+template<>
+__device__ __inline__ uint64_t typed_atomic_add<uint64_t>(uint64_t * backing, uint64_t replace){
+
+  //printf("Uint64_t call being accessed\n");
+
+  return atomicAdd((unsigned long long int *) backing, (unsigned long long int) replace);
+
+}
+
+template<>
+__device__ __inline__ int typed_atomic_add<int>(int * backing, int replace){
+
+
+  return atomicAdd((int *) backing, (int) replace);
+
+}
+
+//end of atomicAdd
+
 
 template<typename T>
 __device__ __inline__ T typed_global_read(T * backing){
