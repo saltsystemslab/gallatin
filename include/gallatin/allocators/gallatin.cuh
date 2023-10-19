@@ -106,10 +106,10 @@ namespace allocators {
 //Consequently, these are left as modifiable values
 //Correctness is only guaranteed at the set values, change at your own risk.
 #define REQUEST_BLOCK_MAX_ATTEMPTS 10
-#define GALLATIN_MAX_ATTEMPTS 300
-#define GALLATIN_MALLOC_LOOP_ATTEMPTS 5
-#define GALLATIN_MALLOC_BLOCK_ATTEMPTS 300
-#define GALLATIN_MALLOC_SEGMENT_ATTEMPTS 300
+#define GALLATIN_MAX_ATTEMPTS 500
+#define GALLATIN_MALLOC_LOOP_ATTEMPTS 10
+#define GALLATIN_MALLOC_BLOCK_ATTEMPTS 500
+#define GALLATIN_MALLOC_SEGMENT_ATTEMPTS 500
 
 #define GALLATIN_BLOCK_CHECK 0
 
