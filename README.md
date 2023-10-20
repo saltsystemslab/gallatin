@@ -15,12 +15,12 @@ To get started with Gallatin, we recommend using the global version of the alloc
 
 To use the global variant, `#include <gallatin/allocators/global_allocator.cuh>` after including Gallatin in your project via CMAKE (details below). This will expose the following types and functions in the global namespace `gallatin::allocators`:
 
-- `__device__ global_allocator_type * global_gallatin`: The pointer to the allocator in device memory.
-- `init_global_allocator(uint64_t num_bytes, uint64_t seed)`: Initialize the global allocator `global_gallatin` to control `num_bytes` of memory - random seed sets randomness for the vEB trees used internally.
-- `free_global_allocator()`: Release the memory held by the allocator. This release all memory that has been allocated from the allocator as well[^1]. 
+- `__device__ global_allocator_type * global_gallatin`: The pointer to the allocator in device memory. This is a global value that exists whenever `global_allocator.cuh` is included.
+- `init_global_allocator(uint64_t num_bytes, uint64_t seed)`: Initialize the global allocator `global_gallatin` to control `num_bytes` of memory - `seed` sets randomness for the vEB trees used internally.
+- `free_global_allocator()`: Release the memory held by the allocator. This will release all memory that has been allocated from the allocator as well[^1]. 
 - `__device__ void * global_malloc(uint64_t num_bytes)`: Request an allocation of size at least `num_bytes` from the allocator. returns `nullptr` if the request can't be satisfied.
--`__device__ void global_free(void * ptr)`: free a pointer that has been previously allocated by Gallatin back to the global allocator[^2].
--`__host__ void print_global_stats()`: Print stats about the current allocator usage.
+- `__device__ void global_free(void * ptr)`: free a pointer that has been previously allocated by Gallatin back to the global allocator[^2].
+- `__host__ void print_global_stats()`: Print information about the current allocator status.
 
 
 # Advanced tuning
@@ -41,11 +41,11 @@ To free device memory at the end of execution, call `Gallatin<template_args>::fr
 This will free the associated device memory, including all memory that has been handed out.[^1].
 
 Inside of a kernel, you must pass a pointer to the allocator.
-You can then allocate new memory with the malloc method: `void * alloc_ptr->malloc(uint64_t num_bytes)`
+You can then allocate new memory with the malloc method: `void * allocator->malloc(uint64_t num_bytes)`
 
 This returns a `void *` type of at least `num_bytes`, or `nullptr` if no allocation is available.
 
-Once the memory is no longer needed, it can be returned via `void alloc_ptr->free(void * memory_ptr);`
+Once the memory is no longer needed, it can be returned via `void allocator->free(void * memory_ptr);`
 
 
 # Including Gallatin
