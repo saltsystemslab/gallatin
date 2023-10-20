@@ -16,8 +16,8 @@ To get started with Gallatin, we recommend using the global version of the alloc
 To use the global variant, `#include <gallatin/allocators/global_allocator.cuh>` after including Gallatin in your project via CMAKE (details below). This will expose the following types and functions in the global namespace `gallatin::allocators`:
 
 - `__device__ global_allocator_type * global_gallatin`: The pointer to the allocator in device memory. This is a global value that exists whenever `global_allocator.cuh` is included.
-- `init_global_allocator(uint64_t num_bytes, uint64_t seed)`: Initialize the global allocator `global_gallatin` to control `num_bytes` of memory - `seed` sets randomness for the vEB trees used internally.
-- `free_global_allocator()`: Release the memory held by the allocator. This will release all memory that has been allocated from the allocator as well[^1]. 
+- `__host__ void init_global_allocator(uint64_t num_bytes, uint64_t seed)`: Initialize the global allocator `global_gallatin` to control `num_bytes` of memory - `seed` sets randomness for the vEB trees used internally.
+- `__host__ void free_global_allocator()`: Release the memory held by the allocator. This will release all memory that has been allocated from the allocator as well[^1]. 
 - `__device__ void * global_malloc(uint64_t num_bytes)`: Request an allocation of size at least `num_bytes` from the allocator. returns `nullptr` if the request can't be satisfied.
 - `__device__ void global_free(void * ptr)`: free a pointer that has been previously allocated by Gallatin back to the global allocator[^2].
 - `__host__ void print_global_stats()`: Print information about the current allocator status.
