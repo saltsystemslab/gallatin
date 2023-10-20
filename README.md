@@ -1,5 +1,5 @@
 ## Gallatin
-Gallatin is a generic GPU allocator that allows for threads to dynamically malloc and free device-side allocations without relying on calls or synchronization with host. The system scales efficiently to GPUs of any size and supports allocations of any size, up to the entire GPU DRAM.
+Gallatin is a generic GPU allocator that allows for threads to dynamically malloc and free device-side allocations without relying on host calls or synchronization with host. The system scales efficiently to GPUs of any size and supports allocations of any size, up to the entire GPU DRAM.
 
 
 Gallatin is built around the use of [van Emde Boas (vEB) trees](https://ieeexplore.ieee.org/abstract/document/4567861) to control a small universe of memory regions. GPU memory is paritioned into memory regions called **segments**. These segments can be formatted into smaller allocations called **blocks**, which are further subdivided into small allocations called **slices**. They can also be combined into larger allocations, with one or more contigous segments being treated as a single allocation. vEB trees provide fast successor search over the space, allowing us to always pick the segment with the smallest ID. This helps to minimize fragmentation and maximize memory reuse.
