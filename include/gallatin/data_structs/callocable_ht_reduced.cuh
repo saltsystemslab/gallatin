@@ -1,5 +1,5 @@
-#ifndef GALLATIN_RESIZING_HASH
-#define GALLATIN_RESIZING_HASH
+#ifndef GALLATIN_RESIZING_REDUCED_HASH
+#define GALLATIN_RESIZING_REDUCED_HASH
 
 
 #include <cuda.h>
@@ -18,7 +18,7 @@
 
 //#include <gallatin/data_structs/formattable.cuh>
 
-#include <gallatin/data_structs/formattable_atomics_recursive.cuh>
+#include <gallatin/data_structs/formattable_v2.cuh>
 
 
 #define USE_ATOMICS 1
@@ -60,6 +60,16 @@ namespace data_structs {
 	using namespace gallatin::allocators;
 	using namespace gallatin::utils;
 
+	template <typename Key_data_type, typename Val_data_type>
+	struct combined_data_pointers {
+
+		Key_data_type * keys;
+		Val_data_type * vals;
+		uint64_t merged_counter;
+
+
+	};
+
 	//resizable quadratic probing table
 	//This allows threads to progress on insertions, and redo work on resize
 	template <typename Key, typename Val, int stride = 1>
@@ -82,14 +92,18 @@ namespace data_structs {
 
 		uint64_t seed;
 
-		using key_arr_type = formattable_atomic_recursive<Key, (Key) 0, stride>;
-		using val_arr_type = formattable_atomic_recursive<Val, (Key) 0, stride>;
+		using key_arr_type = formattable_alt<Key, (Key) 0>;
+		using val_arr_type = formattable_alt<Val, (Key) 0>;
+
+		using combined_type = combined_data_pointers<key_arr_type, val_arr_type>;
+
+		combined_type * combined_data;
 
 		// using key_arr_type = callocable<Key>;
 		// using val_arr_type = callocable<Val>;
 
-		key_arr_type * keys;
-		val_arr_type * vals;
+		//key_arr_type * keys;
+		//val_arr_type * vals;
 
 
 		//counters control intro/exit of data movement.
@@ -131,8 +145,23 @@ namespace data_structs {
 			//gallatin::utils::memclear(keys, initial_nslots, initial_nslots/32);
 			//gallatin::utils::memclear(vals, initial_nslots, initial_nslots/32);
 
-			keys = key_arr_type::get_pointer(initial_nslots);
-			vals = val_arr_type::get_pointer(initial_nslots);
+			auto keys = key_arr_type::get_pointer(initial_nslots);
+			auto vals = val_arr_type::get_pointer(initial_nslots);
+
+
+
+					//build new stuff
+			combined_type * new_data_pointers = (combined_type *) gallatin::allocators::global_malloc(sizeof(combined_type));
+
+			uint64_t new_counter = ((uint64_t) init_bits) << 50;
+
+			new_data_pointers->keys = keys;
+			new_data_pointers->vals = vals;
+			new_data_pointers->merged_counter = new_counter;
+
+			__threadfence();
+
+			combined_data = new_data_pointers;
 
 			//non global init.
 			// for (uint64_t i = 0; i < initial_nslots; i++){
@@ -146,7 +175,7 @@ namespace data_structs {
 
 			resize_ratio = ext_resize_ratio;
 
-			insert_size_counters = ((uint64_t) init_bits) << 50;
+			
 
 			finished_counter = 0;
 
@@ -220,15 +249,16 @@ namespace data_structs {
 			while (true){
 
 				
-				#if USE_ATOMICS
+				combined_type * atomic_read_address = (combined_type *) atomicAdd((unsigned long long int *)&combined_data, 0ULL);
 
-				uint64_t merged_counter = atomicAdd((unsigned long long int *)&insert_size_counters, 1ULL);
+				if (atomic_read_address == nullptr){
 
-				#else
+					asm volatile("trap;");
+					return;
+				}
 
-				uint64_t merged_counter = insert_size_counters;
-
-				#endif
+				uint64_t merged_counter = atomicAdd((unsigned long long int *)&atomic_read_address->merged_counter, 1ULL);
+					
 
 				uint bits = get_bits(merged_counter);
 				uint64_t my_nslots = get_nslots(bits);
@@ -250,8 +280,9 @@ namespace data_structs {
 
 					while (atomicAdd((unsigned long long int* )&finished_counter, 0ULL) < resize_threshold);
 
-						
-					atomicExch((unsigned long long int*)&finished_counter, 0ULL);
+					
+					//reset to 0.
+					atomicExch((unsigned long long int* )&finished_counter, 0ULL);
 
 
 					uint64_t next_nslots = (1ULL << (bits+1));
@@ -260,19 +291,33 @@ namespace data_structs {
 					key_arr_type * new_keys = key_arr_type::get_pointer(next_nslots);
 					val_arr_type * new_vals = val_arr_type::get_pointer(next_nslots);
 
+					my_keys = atomic_read_address->keys;
+					my_vals = atomic_read_address->vals;
+
+					// my_keys = (key_arr_type *) atomicAdd((unsigned long long int *)&keys, 0ULL);
+					// my_vals = (val_arr_type *) atomicAdd((unsigned long long int *)&vals, 0ULL);
 
 
-					my_keys = (key_arr_type *) atomicAdd((unsigned long long int *)&keys, 0ULL);
-					my_vals = (val_arr_type *) atomicAdd((unsigned long long int *)&vals, 0ULL);
+					//swap_to_new_array(keys, new_keys);
+					//swap_to_new_array(vals, new_vals);
 
-
-					swap_to_new_array(keys, new_keys);
-					swap_to_new_array(vals, new_vals);
-
+					//build new stuff
+					combined_type * new_data_pointers = (combined_type *) gallatin::allocators::global_malloc(sizeof(combined_type));
 
 					uint64_t new_counter = ((uint64_t) (bits+1)) << 50;
 
-					atomicExch((unsigned long long int *)&insert_size_counters, (unsigned long long int)new_counter);
+					new_data_pointers->keys = new_keys;
+					new_data_pointers->vals = new_vals;
+					new_data_pointers->merged_counter = new_counter;
+
+					__threadfence();
+
+
+					atomicExch((unsigned long long int *)&combined_data, (unsigned long long int)new_data_pointers);
+
+
+					__threadfence();
+					//atomicExch((unsigned long long int *)&insert_size_counters, (unsigned long long int)new_counter);
 
 					//printf("Resize done, new size: %lu\n", 1ULL << (bits+1));
 
@@ -286,14 +331,16 @@ namespace data_structs {
 
 					//wait on resize
 
-					uint new_bits;
+					combined_type * new_bits;
 
 
 					do {
 
-						new_bits = get_bits(atomicAdd((unsigned long long int *)&insert_size_counters, 0ULL));
+						new_bits = (combined_type *) atomicAdd((unsigned long long int *)&combined_data, 0ULL);
 
-					} while (new_bits == bits);
+
+
+					} while (new_bits == atomic_read_address);
 
 					//resize done! exit loop
 					continue;
@@ -302,21 +349,11 @@ namespace data_structs {
 
 				} else {
 
-					//guarantee that pointers do not change for lifetime.
+					//precondition that pointers do not change for lifetime.
+					//this lazy read is ok.
 
-					//do work blah blah blah.
-
-					#if USE_ATOMICS
-
-					my_keys = (key_arr_type *) atomicAdd((unsigned long long int *)&keys, 0ULL);
-					my_vals = (val_arr_type *) atomicAdd((unsigned long long int *)&vals, 0ULL);
-
-					#else
-
-					my_keys = keys;
-					my_vals = vals;
-
-					#endif
+					my_keys = atomic_read_address->keys;
+					my_vals = atomic_read_address->vals;
 
 
 					int result = internal_insert_key_val_pair(my_keys, my_vals, my_nslots, key, val);
@@ -386,6 +423,13 @@ namespace data_structs {
 
 
 			//uint64_t merged_counter = atomicAdd((unsigned long long int *)&insert_size_counters, 1ULL);
+
+
+			//combined_type * atomic_read_address = (combined_type *) atomicAdd((unsigned long long int *)&combined_data, 0ULL);
+
+			auto keys = combined_data->keys;
+			auto vals = combined_data->vals;
+
 
 			uint64_t merged_counter = insert_size_counters;
 

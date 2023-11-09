@@ -72,6 +72,32 @@ __device__ inline uint64_t ldcg(const uint64_t *p) {
   // return atomicOr((unsigned long long int *)p, 0ULL);
 }
 
+__device__ inline uint ldcv(const uint *p) {
+  uint res;
+  asm volatile("ld.global.cv.u32 %0, [%1];" : "=r"(res) : "l"(p));
+  return res;
+}
+
+__device__ inline int ldcv(const int *p) {
+  uint res;
+  asm volatile("ld.global.cv.s32 %0, [%1];" : "=r"(res) : "l"(p));
+  return res;
+}
+
+__device__ inline uint64_t ldcv(const uint64_t *p) {
+  uint64_t res;
+  asm volatile("ld.global.cv.u64 %0, [%1];" : "=l"(res) : "l"(p));
+  return res;
+
+  // return atomicOr((unsigned long long int *)p, 0ULL);
+}
+
+__device__ inline uint16_t ldcv(const uint16_t *p) {
+  uint16_t res;
+  asm volatile("ld.global.cv.u16 %0, [%1];" : "=h"(res) : "l"(p));
+  return res;
+}
+
 __device__ inline uint16_t global_read_uint16_t(const uint16_t *p) {
   uint16_t res;
   asm volatile("ld.global.ca.u16 %0, [%1];" : "=h"(res) : "l"(p));
@@ -426,6 +452,13 @@ __device__ void memclear(T * memory, uint64_t nitems, uint64_t nthreads){
 }
 
 #endif
+
+
+constexpr unsigned numberOfBits(unsigned x)
+{
+    return x < 2 ? x : 1+numberOfBits(x >> 1);
+}
+
 
 
 

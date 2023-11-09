@@ -54,6 +54,9 @@ namespace gallatin {
 namespace allocators {
 
 
+enum Gallatin_memory_type {device_only, host_only, managed};
+
+
 //get the total # of allocs freed in the system.
 //max # blocks - this says something about the current state
 template <typename table>
@@ -157,8 +160,10 @@ struct alloc_table {
 
   uint64_t blocks_per_segment;
 
+  Gallatin_memory_type memory_control;
+
   // generate structure on device and return pointer.
-  static __host__ my_type *generate_on_device(uint64_t max_bytes) {
+  static __host__ my_type *generate_on_device(uint64_t max_bytes,  Gallatin_memory_type ext_memory_control=device_only) {
     my_type *host_version;
 
     cudaMallocHost((void **)&host_version, sizeof(my_type));
@@ -246,7 +251,7 @@ struct alloc_table {
 
 
     // generate structure on device and return pointer.
-  static __host__ my_type *generate_on_device_nowait(uint64_t max_bytes) {
+  static __host__ my_type *generate_on_device_nowait(uint64_t max_bytes, Gallatin_memory_type ext_memory_control=device_only) {
     my_type *host_version;
 
     cudaMallocHost((void **)&host_version, sizeof(my_type));
@@ -288,8 +293,29 @@ struct alloc_table {
 
     host_version->queues = ext_queues;
 
-    host_version->memory = gallatin::utils::get_device_version<char>(
-        bytes_per_segment * num_segments);
+    if (ext_memory_control == host_only){
+
+      //using host memory, cudaAllocHost and pin.
+      cudaDeviceProp prop;
+      CHECK_CUDA_ERROR(cudaGetDeviceProperties(&prop, 0));
+      if (!prop.canMapHostMemory)
+      {
+          throw std::runtime_error{"Device does not supported mapped memory."};
+      }
+
+      char * device_memory_pointer;
+      char * host_memory_pointer;
+
+      cudaHostAlloc(&host_memory_pointer, bytes_per_segment*num_segments, cudaHostAllocMapped);
+
+      cudaHostGetDevicePointer(&device_memory_pointer, host_memory_pointer, 0);
+
+      host_version->memory = device_memory_pointer;
+
+    } else {
+      host_version->memory = gallatin::utils::get_device_version<char>(
+          bytes_per_segment * num_segments);
+    }
 
     cudaMemset(host_version->memory, 0, bytes_per_segment*num_segments);
 

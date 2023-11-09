@@ -186,7 +186,7 @@ int main(int argc, char** argv) {
 
 
    // printf(".4 .77\n");
-   // gallatin_ht_noresize<uint64_t, uint64_t>(num_segments*16*1024*1024, num_inserts, .4, .77);
+   // //gallatin_ht_noresize<uint64_t, uint64_t>(num_segments*16*1024*1024, num_inserts, .4, .77);
 
    // printf(".8 .77\n");
    // gallatin_ht_noresize<uint64_t, uint64_t>(num_segments*16*1024*1024, num_inserts, .8, .77);
@@ -203,21 +203,21 @@ int main(int argc, char** argv) {
 
 
 
-   // printf("Stride 1\n");
-   // gallatin_ht_noresize<uint64_t, uint64_t, 1>(num_segments*16*1024*1024, num_inserts, .4, .5);
+   printf("Stride 0\n");
+   gallatin_ht_noresize<uint64_t, uint64_t, 0>(num_segments*16*1024*1024, num_inserts, .4, .5);
 
-   // printf("Stride 2\n");
-   // gallatin_ht_noresize<uint64_t, uint64_t, 2>(num_segments*16*1024*1024, num_inserts, .4, .5);
+   printf("Stride 1\n");
+   gallatin_ht_noresize<uint64_t, uint64_t, 1>(num_segments*16*1024*1024, num_inserts, .4, .5);
 
-   // printf("Stride 4\n");
-   // gallatin_ht_noresize<uint64_t, uint64_t, 4>(num_segments*16*1024*1024, num_inserts, .4, .5);
+   printf("Stride 2\n");
+   gallatin_ht_noresize<uint64_t, uint64_t, 2>(num_segments*16*1024*1024, num_inserts, .4, .5);
 
    // printf("Stride 8\n");
    // gallatin_ht_noresize<uint64_t, uint64_t, 8>(num_segments*16*1024*1024, num_inserts, .4, .5);
 
-   gallatin_ht_noresize<uint64_t, uint64_t, 8>(num_segments*16*1024*1024, num_inserts, 2, .77);
+   //gallatin_ht_noresize<uint64_t, uint64_t, 3>(num_segments*16*1024*1024, num_inserts, 2, .77);
 
-   gallatin_ht_noresize<uint32_t, uint32_t, 8>(num_segments*16*1024*1024, num_inserts, 2, .77);
+   //gallatin_ht_noresize<uint32_t, uint32_t, 4>(num_segments*16*1024*1024, num_inserts, 2, .77);
 
    cudaDeviceSynchronize();
 

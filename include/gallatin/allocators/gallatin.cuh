@@ -364,6 +364,93 @@ struct Gallatin {
 
   }
 
+
+    static __host__ my_type *generate_on_device_host(uint64_t max_bytes,
+                                              uint64_t seed, bool print_info=true) {
+    my_type *host_version = get_host_version<my_type>();
+
+    // plug in to get max chunks
+    uint64_t max_chunks = get_max_chunks<bytes_per_segment>(max_bytes);
+
+    uint64_t total_mem = max_bytes;
+
+    host_version->segment_tree = veb_tree::generate_on_device_nowait(max_chunks, seed);
+
+    // estimate the max_bits
+    uint64_t blocks_per_pinned_block = 128;
+    uint64_t num_bits = bytes_per_segment / (4096 * smallest);
+
+    host_version->local_blocks =
+        pinned_block_type::generate_on_device_nowait(blocks_per_pinned_block, MIN_PINNED_CUTOFF);
+
+    uint64_t num_bytes = 0;
+
+    do {
+      //printf("Bits is %llu, bytes is %llu\n", num_bits, num_bytes);
+
+      num_bytes += ((num_bits - 1) / 64 + 1) * 8;
+
+      num_bits = num_bits / 64;
+    } while (num_bits > 64);
+
+    num_bytes += 8 + num_bits * sizeof(Block);
+
+    uint64_t num_trees =
+        get_first_bit_bigger(biggest) - get_first_bit_bigger(smallest) + 1;
+    host_version->smallest_bits = get_first_bit_bigger(smallest);
+    host_version->num_trees = num_trees;
+
+    // init sub trees
+    sub_tree_type **ext_sub_trees =
+        get_host_version<sub_tree_type *>(num_trees);
+
+    for (int i = 0; i < num_trees; i++) {
+      sub_tree_type *temp_tree =
+          sub_tree_type::generate_on_device_nowait(max_chunks, i + seed);
+      ext_sub_trees[i] = temp_tree;
+    }
+
+    host_version->sub_trees =
+        move_to_device<sub_tree_type *>(ext_sub_trees, num_trees);
+
+    boot_segment_trees<<<(max_chunks - 1) / 512 + 1, 512>>>(
+        host_version->sub_trees, max_chunks, num_trees);
+
+   
+
+    #if GALLATIN_DEBUG_PRINTS
+
+    cudaDeviceSynchronize();
+
+
+    assert_empty<<<1,1>>>(host_version->sub_trees, num_trees);
+
+    cudaDeviceSynchronize();
+
+    #endif
+
+    host_version->locks = 0;
+
+    host_version
+        ->table = alloc_table<bytes_per_segment, smallest>::generate_on_device_nowait(
+        max_bytes);
+
+    if (print_info){
+      printf("Booted Gallatin with %lu trees in range %lu-%lu and %f GB of memory %lu segments\n", num_trees, smallest, biggest, 1.0*total_mem/1024/1024/1024, max_chunks);
+    }
+    
+
+
+    auto device_version = move_to_device_nowait(host_version);
+
+    boot_shared_block_container<my_type><<<(blocks_per_pinned_block-1)/128+1, 128>>>(device_version,num_trees, blocks_per_pinned_block, MIN_PINNED_CUTOFF);
+
+    GPUErrorCheck(cudaDeviceSynchronize());
+
+    return device_version;
+
+  }
+
   // return the index of the largest bit set
   static __host__ __device__ int get_first_bit_bigger(uint64_t counter) {
     return gallatin::utils::get_first_bit_bigger(counter);
@@ -853,6 +940,42 @@ struct Gallatin {
 
   }
 
+  // used for poison - return bytes to be allocated
+  // for a requested # of bytes needed
+  // just adjusts the size and then promotes to next p2
+  __device__ uint64_t get_allocated_size(uint64_t bytes_needed){
+
+
+    if (bytes_needed < 16) bytes_needed = 16;
+
+    //then, determine byte size
+
+    //if moving to segments, determine that.
+
+    int smallest_tree_bits = get_first_bit_bigger(smallest*4096);
+
+    uint16_t bit_size = get_first_bit_bigger(bytes_needed);
+    uint16_t tree_size = get_tree_id_from_size(bytes_needed);
+
+    if (tree_size > num_trees){
+
+      int block_tree = (int) bit_size - smallest_tree_bits;
+
+      if (block_tree > num_trees){
+
+        //segment details
+        uint64_t alloc_count = (bytes_needed - 1)/ bytes_per_segment + 1;
+
+        return alloc_count*bytes_per_segment;
+
+      }
+
+    }
+
+    return (1ULL << bit_size);
+
+  }
+
   //v2 of malloc - handle tree_id externally.
   __device__ void * malloc(uint64_t size){
 
@@ -965,6 +1088,8 @@ struct Gallatin {
 
       uint16_t size = tree_id - num_trees - 1;
       //freeing large block.
+
+
       
       segment_tree->return_multiple(segment, size);
 
@@ -1291,6 +1416,8 @@ struct Gallatin {
     }
   }
 
+
+
   // return a uint64_t to the system
   __device__ void free_offset(uint64_t malloc) {
 
@@ -1532,6 +1659,7 @@ struct Gallatin {
     print_guided_fill_kernel<my_type><<<1,1>>>(this, id);
 
   }
+
 
 
 };
