@@ -40,3 +40,4 @@ ConfigureExecutable(formattable_test "${CMAKE_CURRENT_SOURCE_DIR}/src/formattabl
 
 ConfigureExecutable(extendible_ht_test "${CMAKE_CURRENT_SOURCE_DIR}/src/extendible_ht_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+ConfigureExecutable(calloc_multiple "${CMAKE_CURRENT_SOURCE_DIR}/src/calloc_multiple.cu" "${GALLATIN_TESTS_BINARY_DIR}")

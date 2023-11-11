@@ -41,7 +41,7 @@ __global__ void insert_one_size(uint64_t num_inserts, uint64_t size, uint64_t **
    if (tid >= num_inserts) return;
 
 
-   uint64_t * malloc = (uint64_t *) global_calloc(size);
+   uint64_t * malloc = (uint64_t *) global_malloc(size);
 
    if (malloc == nullptr){
       atomicAdd((unsigned long long int *)misses, 1ULL);
@@ -143,7 +143,7 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
    printf("Starting test with %lu segments, %lu allocs per segment\n", num_segments, max_allocs_per_segment);
    printf("Actual allocs per segment %lu total allocs %lu\n", allocs_per_segment_size, num_allocs);
 
-   init_global_allocator(num_bytes, 42);
+   init_global_allocator(num_bytes, 42, true, true);
 
 
    //generate bitarry

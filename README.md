@@ -1,3 +1,6 @@
+
+![Gallatin Header](log_bit.png)
+
 ## Gallatin
 Gallatin is a generic GPU allocator that allows for threads to dynamically malloc and free device-side allocations without relying on host calls or synchronization with host. The system scales efficiently to GPUs of any size and supports allocations of any size, up to the entire GPU DRAM.
 

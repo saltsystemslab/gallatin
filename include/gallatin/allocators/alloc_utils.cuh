@@ -420,23 +420,144 @@ __device__ int __cfcll(uint64_t bits){
 
 #if GALLATIN_USING_DYNAMIC_PARALLELISM
 
+__device__ void clear_memory_per_thread(void * memory, uint64_t num_bytes, uint64_t n_threads, uint64_t tid){
 
-__global__ void clear_memory_kernel(void * memory, uint64_t num_bytes, uint64_t n_threads){
+  uint64_t bytes_per_thread = (num_bytes-1)/n_threads+1;
+
+  uint64_t my_start = bytes_per_thread*tid;
+
+  uint64_t my_length = num_bytes;
+
+  //this thread responsible for weird offset at end.
+  if ((my_start + my_length) >= num_bytes) my_length = num_bytes-my_start;
+
+  if (my_length == 0 || my_start >= num_bytes) return;
+
+  memset(memory+my_start, 0, my_length);
+
+  __threadfence();
+
+  return;
+
+
+}
+
+
+__global__ void clear_memory_kernel(void * memory, uint64_t num_bytes, uint64_t num_threads){
 
   uint64_t tid = gallatin::utils::get_tid();
 
-  char * char_memory = (char *) memory;
+  clear_memory_per_thread(memory, num_bytes, num_threads, tid);
 
-  for (uint64_t i = tid; i < num_bytes; i+= n_threads){
+}
 
-    char_memory[i] = (char) 0;
 
-  }
+
+// template <typename gallatin_template_type>
+// __global__ void calloc_return_block 
+
+
+// //two templates for dynamic parallelism - these are launched by an internal func in Gallatin
+// // and sidestep the regular free for callocs.
+// template <typename gallatin_template_type>
+// __global__ void gallatin_clear_block(void * memory, uint64_t num_bytes, uint64_t n_threads, gallatin_template_type * allocator){
+
+//   uint64_t tid = gallatin::utils::get_tid();
+
+//   clear_memory_per_thread(memory, num_bytes, num_threads, tid);
+  
+
+
+// }
+
+template <typename gallatin_template_type, typename block_type>
+__global__ void calloc_return_block(gallatin_template_type * allocator, block_type * block_to_free, uint64_t segment, uint16_t tree){
+
+  uint64_t tid = gallatin::utils::get_tid();
+
+  if (tid != 0) return;
+
+  allocator->return_block(block_to_free, segment, tree);
+
+
+}
+
+
+//template <typename gallatin_template_type>
+__global__ void test_kernel (int test_value) {
+
+  uint64_t tid = gallatin::utils::get_tid();
+
+  if (tid == 0) printf("Test kernel launch\n");
 
   return;
 
 }
 
+
+//two templates for dynamic parallelism - these are launched by an internal func in Gallatin
+// and sidestep the regular free for callocs.
+template <typename gallatin_template_type, typename block_type>
+__global__ void gallatin_clear_block(block_type * block, void * memory, uint64_t num_bytes, uint64_t num_threads, gallatin_template_type * allocator, uint64_t segment, uint16_t tree){
+
+
+
+  return; 
+
+
+  uint64_t tid = gallatin::utils::get_tid();
+
+  if (tid >= num_threads) return;
+
+  clear_memory_per_thread(memory, num_bytes, num_threads, tid);
+  
+
+  if (tid == 0){
+
+    calloc_return_block<gallatin_template_type, block_type><<<1,1, 0, cudaStreamTailLaunch>>>(allocator, block, segment, tree);
+
+  }
+
+
+}
+
+
+template <typename gallatin_template_type>
+__global__ void calloc_return_segment(gallatin_template_type * allocator, uint64_t segment, uint16_t size, uint16_t tree_id){
+
+  uint64_t tid = gallatin::utils::get_tid();
+
+  if (tid != 0) return;
+
+  allocator->submit_segment_for_free(segment, size, tree_id);
+
+
+}
+
+
+//two templates for dynamic parallelism - these are launched by an internal func in Gallatin
+// and sidestep the regular free for callocs.
+template <typename gallatin_template_type>
+__global__ void gallatin_clear_segment(void * memory, uint64_t num_bytes, uint64_t num_threads, gallatin_template_type * allocator, uint64_t segment, uint16_t size, uint16_t tree_id){
+
+  uint64_t tid = gallatin::utils::get_tid();
+
+  if (tid >= num_threads) return;
+
+  clear_memory_per_thread(memory, num_bytes, num_threads, tid);
+  
+
+  if (tid == 0){
+
+    calloc_return_segment<gallatin_template_type><<<1,1,0,cudaStreamTailLaunch>>>(allocator, segment, size, tree_id);
+
+  }
+
+
+}
+
+
+  
 //use dynamic parallelism to clear memory
 __device__ void memclear_generic(void * memory, uint64_t num_bytes, uint64_t num_threads){
 

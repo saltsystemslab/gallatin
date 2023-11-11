@@ -43,9 +43,9 @@ using global_allocator_type = gallatin::allocators::Gallatin<16ULL*1024*1024, 16
 __device__ global_allocator_type * global_gallatin;
 
 
-__host__ void init_global_allocator(uint64_t num_bytes, uint64_t seed, bool print_info=true){
+__host__ void init_global_allocator(uint64_t num_bytes, uint64_t seed, bool print_info=true, bool running_calloc=false){
 
-  global_allocator_type * local_copy = global_allocator_type::generate_on_device(num_bytes, seed, print_info);
+  global_allocator_type * local_copy = global_allocator_type::generate_on_device(num_bytes, seed, print_info, running_calloc);
 
   cudaMemcpyToSymbol(global_gallatin, &local_copy, sizeof(global_allocator_type *));
 
@@ -121,14 +121,6 @@ __global__ void global_free_kernel(void * allocation, uint64_t num_bytes, uint64
   if (tid >= max_threads) return;
 
   memset(allocation + tid*bytes_per_thread, 0, bytes_per_thread);
-
-
-}
-
-__device__ void global_free_clear(void * ptr){
-
-
-  //need to determine size
 
 
 }
