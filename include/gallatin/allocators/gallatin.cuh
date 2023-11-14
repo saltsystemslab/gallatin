@@ -1471,7 +1471,7 @@ struct Gallatin {
       // don't need to reset anything, just pull from table and threadfence
       //uint16_t tree = table->read_tree_id(segment);
 
-      printf("Returning segment %llu\n", segment);
+      //printf("Returning segment %llu\n", segment);
       // pull from tree
       // should be fine, no one can update till this point
       //this should have happened earlier
