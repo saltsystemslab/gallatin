@@ -92,14 +92,29 @@ __global__ void count_block_live_kernel(table * alloc_table, uint64_t num_blocks
 
 }
 
+
+//given kernel, one thread determines # of blocks to handle
+//then launch child kernel
+template <typename table>
+__global__ void clear_error(uint64_t segment, uint64_t size){
+
+
+  int num_live_blocks = atomicExch(&table->calloc_counters[segment]);
+
+  //then add to my counter
+
+
+}
+
 // alloc table associates chunks of memory with trees
 // using uint16_t as there shouldn't be that many trees.
 // register atomically insert tree num, or registers memory from chunk_tree.
 
-__global__ void betta_init_counters_kernel(
+__global__ void gallatin_init_counters_kernel(
                                            int * active_counts,
                                            uint * queue_counters, uint * queue_free_counters,
                                            uint * final_queue_free_counters,
+                                           uint * calloc_clear_counters,
                                            Block *blocks, Block ** queues, uint64_t num_segments,
                                            uint64_t blocks_per_segment) {
   uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -124,6 +139,30 @@ __global__ void betta_init_counters_kernel(
   }
 
   __threadfence();
+}
+
+
+__global__ void init_calloc_counters_kernel(int * calloc_active_counters, uint * calloc_enqueue_counters, uint * calloc_finished_counters, Block ** calloc_queues, uint * calloc_clear_counters, uint64_t num_segments, uint64_t blocks_per_segment){
+
+  uint64_t tid = gallatin::utils::get_tid();
+
+  if (tid >= num_segments) return;
+
+
+  calloc_active_counters[tid] = 0;
+  calloc_enqueue_counters[tid] = 0;
+  calloc_finished_counters[tid] = 0;
+
+  calloc_clear_counters[tid] = 0;
+
+  uint64_t base_offset = blocks_per_segment * tid;
+
+  for (uint64_t i = 0; i < blocks_per_segment; i++){
+
+    calloc_queues[base_offset + i] = nullptr;
+
+  }
+
 }
 
 // The alloc table owns all blocks live in the system
@@ -162,8 +201,27 @@ struct alloc_table {
 
   Gallatin_memory_type memory_control;
 
+  //additional controls for calloc
+
+  bool calloc_mode;
+
+  int * calloc_counters;
+
+  uint * calloc_enqueue_position;
+
+  uint * calloc_clear_counters,
+
+  //CAS is necessary for correctness.
+  uint * calloc_enqueue_finished;
+
+  Block ** calloc_queues;
+
+  //optional helper kernels.
+  //cudaStream_t * free_streams;
+
+
   // generate structure on device and return pointer.
-  static __host__ my_type *generate_on_device(uint64_t max_bytes,  Gallatin_memory_type ext_memory_control=device_only) {
+  static __host__ my_type *generate_on_device(uint64_t max_bytes,  Gallatin_memory_type ext_memory_control=device_only, bool calloc=false) {
     my_type *host_version;
 
     cudaMallocHost((void **)&host_version, sizeof(my_type));
@@ -219,18 +277,46 @@ struct alloc_table {
 
 
 
-    betta_init_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
+    gallatin_init_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
         host_version->active_counts, 
         host_version->queue_counters, host_version->queue_free_counters,
         host_version->final_queue_free_counters,
         host_version->blocks, host_version->queues, num_segments,
         blocks_per_segment);
 
+
+    if (calloc){
+
+
+      host_version->calloc_mode = true;
+      host_version->calloc_counters = gallatin::utils::get_device_version<int>(num_segments);
+      host_version->calloc_enqueue_position = gallatin::utils::get_device_version<uint>(num_segments);
+      host_version->calloc_enqueue_finished = gallatin::utils::get_device_version<uint>(num_segments);
+      host_version->calloc_clear_counters = gallatin::utils::get_device_version<uint>(num_segments);
+
+
+      Block ** ext_calloc_queues;
+      cudaMalloc((void **)&ext_calloc_queues, sizeof(Block *)*blocks_per_segment*num_segments);
+
+      host_version->calloc_queues = ext_calloc_queues;
+
+      init_calloc_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
+        host_version->calloc_counters,
+        host_version->calloc_enqueue_position,
+        host_version->calloc_enqueue_finished,
+        host_version->calloc_queues,
+        host_version->calloc_clear_counters,
+        num_segments, blocks_per_segment
+      );
+
+
+    }
+
+
     GPUErrorCheck(cudaDeviceSynchronize());
 
 
    
-
 
 
 
@@ -251,7 +337,7 @@ struct alloc_table {
 
 
     // generate structure on device and return pointer.
-  static __host__ my_type *generate_on_device_nowait(uint64_t max_bytes, Gallatin_memory_type ext_memory_control=device_only) {
+  static __host__ my_type *generate_on_device_nowait(uint64_t max_bytes, Gallatin_memory_type ext_memory_control=device_only, bool calloc=false) {
     my_type *host_version;
 
     cudaMallocHost((void **)&host_version, sizeof(my_type));
@@ -326,8 +412,7 @@ struct alloc_table {
     host_version->queue_free_counters = gallatin::utils::get_device_version<uint>(num_segments);
     host_version->final_queue_free_counters = gallatin::utils::get_device_version<uint>(num_segments);
 
-
-    betta_init_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
+    gallatin_init_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
         host_version->active_counts, 
         host_version->queue_counters, host_version->queue_free_counters,
         host_version->final_queue_free_counters,
@@ -338,7 +423,40 @@ struct alloc_table {
 
 
    
+    if (calloc){
 
+      uint * calloc_counters;
+
+      uint * enqueue_position;
+
+      Block ** calloc_queues;
+
+
+      host_version->calloc_mode = true;
+      host_version->calloc_counters = gallatin::utils::get_device_version<int>(num_segments);
+      host_version->calloc_enqueue_position = gallatin::utils::get_device_version<uint>(num_segments);
+      host_version->calloc_enqueue_finished = gallatin::utils::get_device_version<uint>(num_segments);
+      host_version->calloc_clear_counters = gallatin::utils::get_device_version<uint>(num_segments);
+
+
+
+
+      Block ** ext_calloc_queues;
+      cudaMalloc((void **)&ext_calloc_queues, sizeof(Block *)*blocks_per_segment*num_segments);
+
+      host_version->calloc_queues = ext_calloc_queues;
+
+      init_calloc_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
+        host_version->calloc_counters,
+        host_version->calloc_enqueue_position,
+        host_version->calloc_enqueue_finished,
+        host_version->calloc_queues,
+        host_version->calloc_clear_counters,
+        num_segments, blocks_per_segment
+      );
+
+
+    }
 
 
 
@@ -367,6 +485,14 @@ struct alloc_table {
                cudaMemcpyDeviceToHost);
 
     cudaDeviceSynchronize();
+
+    if (host_version->calloc_mode){
+
+      cudaFree(host_version->calloc_counters);
+      cudaFree(host_version->calloc_enqueue_position);
+      cudaFree(host_version->calloc_enqueue_finished);
+
+    }
 
     cudaFree(host_version->blocks);
 
@@ -454,6 +580,14 @@ struct alloc_table {
     }
 
     __threadfence();
+
+    if (calloc_mode){
+
+      atomicExch(&calloc_counters[segment], 0);
+      atomicExch(&calloc_enqueue_position[segment], 0);
+      atomicExch(&calloc_enqueue_finished[segment], 0);
+
+    }
 
     //modification, boot queue elements
     //as items can always interact with this, we simply reset.
@@ -797,6 +931,31 @@ struct alloc_table {
       return segment_byte_offset/get_tree_alloc_size(tree_id) + segment_id*get_max_allocations_per_segment();
 
 
+
+  }
+
+  //enqueues a block into the calloc storage 
+  __device__ bool calloc_free_block(Block * block_ptr, uint64_t & segment, uint16_t & global_tree_id, uint64_t & num_blocks){
+
+
+    uint current_enqueue_position = atomicAdd(&calloc_enqueue_position[segment],1);
+
+    uint live_enqueue_position = current_enqueue_position % num_blocks;
+
+    uint64_t old_block = atomicExch((unsigned long long int *)&queues[segment*blocks_per_segment+live_enqueue_position], (unsigned long long int) block_ptr);
+
+
+    while (atomicCAS(&calloc_enqueue_finished[segment], current_enqueue_position, current_enqueue_position+1) != current_enqueue_position);
+    
+    //TODO - make this actually calculate fill.
+    
+    int return_id = atomicAdd(&calloc_counters[segment], 1);
+
+    if (return_id == 0){
+      return true;
+    }
+
+    return false;
 
   }
 

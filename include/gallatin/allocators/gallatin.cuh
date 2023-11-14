@@ -362,7 +362,7 @@ struct Gallatin {
 
     host_version
         ->table = alloc_table<bytes_per_segment, smallest>::generate_on_device_nowait(
-        max_bytes);
+        max_bytes, device_only, running_calloc);
 
     if (print_info){
       printf("Booted Gallatin with %lu trees in range %lu-%lu and %f GB of memory %lu segments\n", num_trees, smallest, biggest, 1.0*total_mem/1024/1024/1024, max_chunks);
@@ -1139,22 +1139,31 @@ struct Gallatin {
 
   }
 
-
+  //rework of the concept
+  //when submitting a block you call the function in the table, and maybe call a kernel on the table.
   __device__ void submit_block_for_memclear(Block * block_ptr, void * block_memory, uint64_t bytes_in_block, uint64_t segment, uint16_t tree){
 
 
       #if GALLATIN_USING_DYNAMIC_PARALLELISM
 
-      //submit future task to clear and return
 
-      //uint64_t num_bytes = bytes_per_segment*size;
+      //submit to table
+
+      uint64_t num_blocks = table->get_blocks_per_segment(tree);
 
 
-      uint64_t num_threads = (bytes_in_block-1)/GALLATIN_MEMCLEAR_SIZE+1;
+      bool start_new_free_kernel = table->calloc_free_block(block_ptr, segment, tree, num_blocks);
 
-      //gallatin_clear_block<my_type, Block><<<(num_threads-1)/256+1, 256, 0, cudaStreamFireAndForget>>>(block_ptr, block_memory, bytes_in_block, num_threads, this, segment, tree);
 
-      test_kernel<<<1,256, 0, cudaStreamFireAndForget>>>(gallatin::utils::get_tid());
+      if (start_new_free_kernel){
+
+        //num_threads 
+        uint64_t num_threads = 4096;
+
+        //calloc_free_kernel<<<(num_threads-1)/256+1, 256>>>()
+
+      }
+
       #else
 
       //crash - you can't calloc efficiently without dynamic parallelism.
@@ -1471,7 +1480,7 @@ struct Gallatin {
       // don't need to reset anything, just pull from table and threadfence
       //uint16_t tree = table->read_tree_id(segment);
 
-      printf("Returning segment %llu\n", segment);
+
       // pull from tree
       // should be fine, no one can update till this point
       //this should have happened earlier
@@ -1515,6 +1524,8 @@ struct Gallatin {
 
 
   }
+
+
 
   // return a block to the system
   // this is called by a block once all allocations have been returned.
