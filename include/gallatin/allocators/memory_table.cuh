@@ -49,6 +49,10 @@
 
 #define GALLATIN_TABLE_GLOBAL_READ 1
 
+
+//how many bytes per thread a memclear needs to operate on
+#define GALLATIN_MEMCLEAR_SIZE 1
+
 namespace gallatin {
 
 namespace allocators {
@@ -92,19 +96,75 @@ __global__ void count_block_live_kernel(table * alloc_table, uint64_t num_blocks
 
 }
 
+#if GALLATIN_USING_DYNAMIC_PARALLELISM
 
-//given kernel, one thread determines # of blocks to handle
-//then launch child kernel
-template <typename table>
-__global__ void clear_error(uint64_t segment, uint64_t size){
+//kernel called to actually clear memory.
+template <typename allocator_type, typename block_type>
+__global__ void clear_block_memory_kernel(allocator_type * allocator, uint64_t segment, uint64_t size, uint64_t num_blocks, uint queue_start, int live_blocks, uint16_t tree_id){
 
 
-  int num_live_blocks = atomicExch(&table->calloc_counters[segment]);
+  uint64_t tid = gallatin::utils::get_tid();
 
-  //then add to my counter
+  //if (tid == 0) printf("Clearing segment %llu\n", segment);
+
+  uint64_t threads_per_block = (size*4096-1)/GALLATIN_MEMCLEAR_SIZE+1;
+
+  uint64_t threads_needed = threads_per_block*live_blocks;
+
+  if (tid >= threads_needed) return;
+
+
+  uint64_t my_block = tid/threads_per_block;
+
+  uint64_t my_offset = tid % threads_per_block;
+
+  if (my_block >= live_blocks) return;
+
+  //read my block and determine my memory
+
+  uint64_t my_address = (my_block + queue_start) % num_blocks;
+
+  uint64_t base_offset = allocator->table->blocks_per_segment * segment;
+
+  block_type * my_block_ptr = (block_type *) atomicCAS((unsigned long long int *)&allocator->table->calloc_queues[base_offset + my_address], 0ULL, 0ULL);
+
+  uint64_t block_id = allocator->table->get_global_block_offset(my_block_ptr);
+
+  if (my_offset == 0){
+
+    //printf("Thread %llu returning block %llu (%llx) to segment %llu\n", tid, block_id, my_block_ptr, segment);
+    allocator->return_block(my_block_ptr, segment, tree_id);
+  }
 
 
 }
+
+//given kernel, one thread determines # of blocks to handle
+//then launch child kernel
+template <typename allocator_type, typename block_type>
+__global__ void setup_clear_blocks_kernel(allocator_type * allocator, uint64_t segment, uint64_t size, uint64_t num_blocks, uint16_t tree_id){
+
+  uint64_t tid = gallatin::utils::get_tid();
+
+  if (tid != 0) return;
+
+  //printf("kernel for stream %llu\n", segment);
+
+  int num_live_blocks = atomicExch(&allocator->table->calloc_counters[segment], 0);
+
+  //then add to my counter
+  uint my_start = atomicAdd(&allocator->table->calloc_clear_counters[segment], num_live_blocks);
+
+  uint64_t threads_per_block = (size*4096-1)/GALLATIN_MEMCLEAR_SIZE+1;
+
+  uint64_t threads_needed = threads_per_block*num_live_blocks;
+
+  clear_block_memory_kernel<allocator_type, block_type><<<(threads_needed-1)/256+1, 256, 0, cudaStreamFireAndForget>>>(allocator, segment, size, num_blocks, my_start, num_live_blocks, tree_id);
+
+
+}
+
+#endif
 
 // alloc table associates chunks of memory with trees
 // using uint16_t as there shouldn't be that many trees.
@@ -114,7 +174,6 @@ __global__ void gallatin_init_counters_kernel(
                                            int * active_counts,
                                            uint * queue_counters, uint * queue_free_counters,
                                            uint * final_queue_free_counters,
-                                           uint * calloc_clear_counters,
                                            Block *blocks, Block ** queues, uint64_t num_segments,
                                            uint64_t blocks_per_segment) {
   uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -209,12 +268,18 @@ struct alloc_table {
 
   uint * calloc_enqueue_position;
 
-  uint * calloc_clear_counters,
+  uint * calloc_clear_counters;
 
   //CAS is necessary for correctness.
   uint * calloc_enqueue_finished;
 
   Block ** calloc_queues;
+
+  #if GALLATIN_USING_DYNAMIC_PARALLELISM
+
+  cudaStream_t * streams;
+
+  #endif
 
   //optional helper kernels.
   //cudaStream_t * free_streams;
@@ -308,6 +373,25 @@ struct alloc_table {
         host_version->calloc_clear_counters,
         num_segments, blocks_per_segment
       );
+
+
+      #if GALLATIN_USING_DYNAMIC_PARALLELISM
+
+      cudaStream_t * ext_streams = gallatin::utils::get_host_version<cudaStream_t>(num_segments);
+
+      for (uint64_t i = 0; i < num_segments; i++){
+
+        GPUErrorCheck(cudaStreamCreateWithFlags(&ext_streams[i], cudaStreamNonBlocking));
+
+      }
+
+      cudaDeviceSynchronize();
+
+      host_version->streams = gallatin::utils::move_to_device<cudaStream_t>(ext_streams, num_segments);
+
+
+
+      #endif
 
 
     }
@@ -455,6 +539,24 @@ struct alloc_table {
         num_segments, blocks_per_segment
       );
 
+       #if GALLATIN_USING_DYNAMIC_PARALLELISM
+
+      cudaStream_t * ext_streams = gallatin::utils::get_host_version<cudaStream_t>(num_segments);
+
+      for (uint64_t i = 0; i < num_segments; i++){
+
+        GPUErrorCheck(cudaStreamCreateWithFlags(&ext_streams[i], cudaStreamNonBlocking));
+
+      }
+
+      cudaDeviceSynchronize();
+
+      host_version->streams = gallatin::utils::move_to_device<cudaStream_t>(ext_streams, num_segments);
+
+
+
+      #endif
+
 
     }
 
@@ -475,7 +577,7 @@ struct alloc_table {
     return dev_version;
   }
 
-  // return memory to GPU
+  // return memory/resources to GPU
   static __host__ void free_on_device(my_type *dev_version) {
     my_type *host_version;
 
@@ -486,13 +588,27 @@ struct alloc_table {
 
     cudaDeviceSynchronize();
 
+    #if GALLATIN_USING_DYNAMIC_PARALLELISM
+
     if (host_version->calloc_mode){
 
       cudaFree(host_version->calloc_counters);
       cudaFree(host_version->calloc_enqueue_position);
       cudaFree(host_version->calloc_enqueue_finished);
 
+      //free cudastreams
+
+      cudaStream_t * host_streams = gallatin::utils::move_to_host<cudaStream_t>(host_version->streams, host_version->num_segments);
+      
+      for (uint64_t i = 0; i < host_version->num_segments; i++){
+        cudaStreamDestroy (host_streams[i]);
+      }
+        
+      cudaFreeHost(host_streams);
+
     }
+
+    #endif
 
     cudaFree(host_version->blocks);
 
@@ -503,6 +619,7 @@ struct alloc_table {
     cudaFree(dev_version);
 
     cudaFreeHost(host_version);
+
   }
 
   // register a tree component
@@ -942,7 +1059,7 @@ struct alloc_table {
 
     uint live_enqueue_position = current_enqueue_position % num_blocks;
 
-    uint64_t old_block = atomicExch((unsigned long long int *)&queues[segment*blocks_per_segment+live_enqueue_position], (unsigned long long int) block_ptr);
+    uint64_t old_block = atomicExch((unsigned long long int *)&calloc_queues[segment*blocks_per_segment+live_enqueue_position], (unsigned long long int) block_ptr);
 
 
     while (atomicCAS(&calloc_enqueue_finished[segment], current_enqueue_position, current_enqueue_position+1) != current_enqueue_position);

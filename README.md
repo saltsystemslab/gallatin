@@ -92,3 +92,10 @@ Gallatin comes with some tests that showcase basic usage and performance of the 
 
 [^1]: This does not release associated pointers. Memory distributed by Gallatin should not be accessed once the allocator has been destroyed.
 [^2]: Freeing a pointer that was not allocated by Gallatin or double freeing a pointer will result in undefined behavior.
+
+
+
+# Benchmarking
+----------------
+
+To see how gallatin compares to other State-of-the-art allocators, you can run the benchmarking suite available at https://github.com/saltsystemslab/memmansurvey.

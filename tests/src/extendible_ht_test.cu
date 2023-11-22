@@ -160,6 +160,18 @@ using namespace gallatin::allocators;
 // }
 
 
+template <typename ht>
+__global__ void insert_ht_kernel(ht * table, uint64_t nitems){
+
+   uint64_t tid = gallatin::utils::get_tid();
+
+   if (tid >= nitems) return;
+
+   table->insert(tid, tid);
+
+}
+
+
 template <typename Key, Key defaultKey, typename Val, int num_slots, uint64_t min_size, uint64_t max_size>
 __host__ void extendible_ht_test(uint64_t num_bytes, double init_fill_ratio, double resize_ratio){
 
@@ -186,6 +198,19 @@ __host__ void extendible_ht_test(uint64_t num_bytes, double init_fill_ratio, dou
 
    // }
 
+   uint64_t nitems = max_size*.9;
+
+   cudaDeviceSynchronize();
+
+
+   gallatin::utils::timer insert_timing;
+
+
+   insert_ht_kernel<<<(nitems-1)/256+1, 256>>>(my_table, nitems);
+
+   insert_timing.sync_end();
+
+   insert_timing.print_throughput("Inserted", max_size);
 
    // init_ht_kernel<ht_type><<<1,1>>>(table, num_inserts*init_fill_ratio, 42, resize_ratio);
 
@@ -281,7 +306,7 @@ int main(int argc, char** argv) {
 
 
    //printf("Stride 0\n");
-   extendible_ht_test<uint64_t, 0ULL, uint64_t, 15, 256, 1048576>(num_segments*16*1024*1024, .4, .5);
+   extendible_ht_test<uint64_t, 0ULL, uint64_t, 15, 256, 256>(num_segments*16*1024*1024, .4, .5);
 
    // printf("Stride 1\n");
    // gallatin_ht_noresize<uint64_t, 0ULL, uint64_t, 1>(num_segments*16*1024*1024, .4, .5);
