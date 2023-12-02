@@ -238,7 +238,7 @@ namespace data_structs {
 
 		}
 
-		static __host__ my_type * copy_to_device(T * external_array, uint64_t size){
+		static __host__ my_type * copy_to_device(const T * external_array, uint64_t size){
 
 			my_type * host_version = gallatin::utils::get_host_version<my_type>();
 
