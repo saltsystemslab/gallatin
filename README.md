@@ -90,12 +90,15 @@ Gallatin comes with some tests that showcase basic usage and performance of the 
 - `global_test`: Same test suite as `gallatin_test`, but implemented with the global allocator.
 - `global_churn`: Perform a series of random allocations/frees of varying sizes.
 
+
+# Benchmarking
+----------------
+
+To see how gallatin compares to other state-of-the-art allocators, you can run the benchmarking suite available at https://github.com/saltsystemslab/memmansurvey.
+
+
 [^1]: This does not release associated pointers. Memory distributed by Gallatin should not be accessed once the allocator has been destroyed.
 [^2]: Freeing a pointer that was not allocated by Gallatin or double freeing a pointer will result in undefined behavior.
 
 
 
-# Benchmarking
-----------------
-
-To see how gallatin compares to other State-of-the-art allocators, you can run the benchmarking suite available at https://github.com/saltsystemslab/memmansurvey.

@@ -56,7 +56,7 @@ namespace data_structs {
 		
 		static const uint n_directory = (gallatin::utils::numberOfBits(max_items)-gallatin::utils::numberOfBits(min_items)+1);
 
-		static const uint min_bits = gallatin::utils::numberOfBits(min_items);
+		static const uint min_bits = gallatin::utils::numberOfBits(min_items-1);
 
 		static const uint64_t nbits = 2*max_items; 
 
@@ -128,11 +128,15 @@ namespace data_structs {
 
 		__device__ bool is_bucket_live(uint64_t bucket){
 
-			uint64_t high = bucket/64;
+			// uint64_t high = bucket/64;
 
-			uint64_t low = bucket % 64;
+			// uint64_t low = bucket % 64;
 
-			return get_bucket_address(bucket)[0] == nullptr;
+			auto address = get_bucket_address(bucket)[0];
+
+			//printf("Address: %llx\n", (uint64_t) address);
+
+			return (address != nullptr);
 
 		}
 
@@ -147,7 +151,7 @@ namespace data_structs {
 
 
 			printf("Input is %llu, output is %llu\n", hash, output);
-			return (hash & (1ULL << (level+min_bits) -1));
+			return output;
 
 		}
 
@@ -201,7 +205,7 @@ namespace data_structs {
 
 					determine_intermediate_slot(global_level, index);
 
-					return &directory[global_level][index];
+					return &directory[global_level-1][index];
 				}
 
 
@@ -225,7 +229,7 @@ namespace data_structs {
 
 			printf("Output of intermediate - level %llu, index %llu\n", global_level, index);
 
-			return &directory[global_level][index];
+			return &directory[global_level-1][index];
 
 
 		}
@@ -320,7 +324,7 @@ namespace data_structs {
 
 					//attempt update!
 
-					if (typed_atomic_write(&slots[i].key, defaultKey, ext_key) == defaultKey){
+					if (typed_atomic_write(&slots[i].key, defaultKey, ext_key)){
 
 						typed_atomic_exchange(&slots[i].val, ext_val);
 
@@ -479,11 +483,11 @@ namespace data_structs {
 
 				uint64_t bucket_hash = get_full_hash(insert_key);
 
-				uint64_t clipped_hash = directory.mask_to_level(bucket_hash, global_level);
+				uint64_t clipped_hash = directory.mask_to_level(bucket_hash, global_level-1);
 				node_type * my_bucket = directory.get_bucket_pointer(clipped_hash);
 				uint16_t read_level;
 
-				if (my_bucket->insert(insert_key, insert_val, global_level, read_level)){
+				if (my_bucket->insert(insert_key, insert_val, global_level-1, read_level)){
 					return true;
 				}
 

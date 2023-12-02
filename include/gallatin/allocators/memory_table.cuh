@@ -508,12 +508,14 @@ struct alloc_table {
 
    
     if (calloc){
+      
+      printf("\033[1;31mWarning: Calloc is experimental. Performance and correctness are not guaranteed\033[0m\n");
 
-      uint * calloc_counters;
+      //uint * calloc_counters;
 
-      uint * enqueue_position;
+      //uint * enqueue_position;
 
-      Block ** calloc_queues;
+      //Block ** calloc_queues;
 
 
       host_version->calloc_mode = true;

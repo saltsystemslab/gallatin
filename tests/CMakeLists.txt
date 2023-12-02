@@ -41,3 +41,10 @@ ConfigureExecutable(formattable_test "${CMAKE_CURRENT_SOURCE_DIR}/src/formattabl
 ConfigureExecutable(extendible_ht_test "${CMAKE_CURRENT_SOURCE_DIR}/src/extendible_ht_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
 ConfigureExecutable(calloc_multiple "${CMAKE_CURRENT_SOURCE_DIR}/src/calloc_multiple.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
+ConfigureExecutable(ring_queue_test "${CMAKE_CURRENT_SOURCE_DIR}/src/ring_queue_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
+
+ConfigureExecutable(lambda_enqueue_test "${CMAKE_CURRENT_SOURCE_DIR}/src/lambda_enqueue_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
+ConfigureExecutable(svector_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/svector_tests.cu" "${GALLATIN_TESTS_BINARY_DIR}")
