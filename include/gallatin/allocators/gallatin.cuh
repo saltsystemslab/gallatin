@@ -125,9 +125,6 @@ namespace allocators {
 #define GALLATIN_TEAM_FREE 1
 
 
-//how many bytes per thread a memclear needs to operate on
-#define GALLATIN_MEMCLEAR_SIZE 1
-
 // alloc table associates chunks of memory with trees
 
 // using uint16_t as there shouldn't be that many trees.
@@ -281,6 +278,9 @@ struct Gallatin {
 
   bool is_calloc;
 
+
+
+
   // generate the allocator on device.
   // this takes in the number of bytes owned by the allocator (does not include
   // the space of the allocator itself.)
@@ -288,15 +288,18 @@ struct Gallatin {
                                               uint64_t seed, bool print_info=true, bool running_calloc=false) {
     
 
+    uint64_t max_chunks = get_max_chunks<bytes_per_segment>(max_bytes);
+
     if (running_calloc){
-      cudaDeviceSetLimit(cudaLimitDevRuntimePendingLaunchCount, 1048576);
+      cudaDeviceSetLimit(cudaLimitDevRuntimePendingLaunchCount, 60000);
+
     }
 
 
     my_type *host_version = get_host_version<my_type>();
 
     // plug in to get max chunks
-    uint64_t max_chunks = get_max_chunks<bytes_per_segment>(max_bytes);
+
 
     uint64_t total_mem = max_bytes;
 
@@ -362,7 +365,7 @@ struct Gallatin {
 
     host_version
         ->table = alloc_table<bytes_per_segment, smallest>::generate_on_device_nowait(
-        max_bytes);
+        max_bytes, device_only, running_calloc);
 
     if (print_info){
       printf("Booted Gallatin with %lu trees in range %lu-%lu and %f GB of memory %lu segments\n", num_trees, smallest, biggest, 1.0*total_mem/1024/1024/1024, max_chunks);
@@ -1139,22 +1142,33 @@ struct Gallatin {
 
   }
 
-
-  __device__ void submit_block_for_memclear(Block * block_ptr, void * block_memory, uint64_t bytes_in_block, uint64_t segment, uint16_t tree){
+  //rework of the concept
+  //when submitting a block you call the function in the table, and maybe call a kernel on the table.
+  __device__ void submit_block_for_memclear(Block * block_ptr, uint64_t slice_size, uint64_t segment, uint64_t num_blocks, uint16_t tree_id){
 
 
       #if GALLATIN_USING_DYNAMIC_PARALLELISM
 
-      //submit future task to clear and return
 
-      //uint64_t num_bytes = bytes_per_segment*size;
+      //submit to table
+
+      bool start_new_free_kernel = table->calloc_free_block(block_ptr, segment, tree_id, num_blocks);
 
 
-      uint64_t num_threads = (bytes_in_block-1)/GALLATIN_MEMCLEAR_SIZE+1;
+      if (start_new_free_kernel){
 
-      //gallatin_clear_block<my_type, Block><<<(num_threads-1)/256+1, 256, 0, cudaStreamFireAndForget>>>(block_ptr, block_memory, bytes_in_block, num_threads, this, segment, tree);
+        //num_threads 
 
-      test_kernel<<<1,256, 0, cudaStreamFireAndForget>>>(gallatin::utils::get_tid());
+        //printf("Submitting kernel to stream %llu\n", segment);
+        
+        setup_clear_blocks_kernel<my_type, Block><<<1,1,0, cudaStreamFireAndForget>>>(this, segment, slice_size, num_blocks, tree_id);
+
+        //setup_clear_blocks_kernel<my_type, Block><<<1,1,0, table->streams[segment]>>>(this, segment, slice_size, num_blocks, tree_id);
+
+        //calloc_free_kernel<<<(num_threads-1)/256+1, 256>>>()
+
+      }
+
       #else
 
       //crash - you can't calloc efficiently without dynamic parallelism.
@@ -1470,8 +1484,6 @@ struct Gallatin {
       // returning segment
       // don't need to reset anything, just pull from table and threadfence
       //uint16_t tree = table->read_tree_id(segment);
-
-      //printf("Returning segment %llu\n", segment);
       // pull from tree
       // should be fine, no one can update till this point
       //this should have happened earlier
@@ -1516,6 +1528,8 @@ struct Gallatin {
 
   }
 
+
+
   // return a block to the system
   // this is called by a block once all allocations have been returned.
   __device__ void free_block(Block *block_to_free) {
@@ -1527,15 +1541,18 @@ struct Gallatin {
 
     uint16_t tree = table->read_tree_id(segment);
 
+    uint64_t num_blocks = table->get_blocks_per_segment(tree);
+
+
     if (is_calloc){
 
       uint64_t block_offset = table->get_global_block_offset(block_to_free);
 
-      uint64_t size_of_block = (smallest << tree)*4096;
+      uint64_t slice_size = (smallest << tree);
 
-      void * block_memory = offset_to_allocation(block_offset*4096, tree);
+      //void * block_memory = offset_to_allocation(block_offset*4096, tree);
 
-      submit_block_for_memclear(block_to_free, block_memory, size_of_block, segment, tree);
+      submit_block_for_memclear(block_to_free, slice_size, segment, num_blocks, tree);
 
       //return block works - why don't all free
       //return_block(block_to_free, segment, tree);

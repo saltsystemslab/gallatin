@@ -68,6 +68,8 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, uint64_t num_allo
 
    cudaDeviceSynchronize();
 
+   GPUErrorCheck(cudaGetLastError());
+
    printf("Done\n");
   
    free_global_allocator();

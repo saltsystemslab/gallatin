@@ -110,21 +110,6 @@ __device__ void global_free(void * ptr){
 }
 
 
-__global__ void global_free_kernel(void * allocation, uint64_t num_bytes, uint64_t bytes_per_thread){
-
-
-  uint64_t max_threads = (num_bytes-1)/bytes_per_thread+1;
-
-  uint64_t tid = gallatin::utils::get_tid();
-
-
-  if (tid >= max_threads) return;
-
-  memset(allocation + tid*bytes_per_thread, 0, bytes_per_thread);
-
-
-}
-
 
 __host__ void print_global_stats(){
 

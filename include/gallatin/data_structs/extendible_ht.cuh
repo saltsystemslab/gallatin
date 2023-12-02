@@ -56,11 +56,13 @@ namespace data_structs {
 		
 		static const uint n_directory = (gallatin::utils::numberOfBits(max_items)-gallatin::utils::numberOfBits(min_items)+1);
 
+		static const uint min_bits = gallatin::utils::numberOfBits(min_items-1);
+
 		static const uint64_t nbits = 2*max_items; 
 
 		uint64_t level;
 		T ** directory[(gallatin::utils::numberOfBits(max_items)-gallatin::utils::numberOfBits(min_items)+1)];
-		uint64_t * live_bits;
+		//uint64_t * live_bits;
 
 
 		__device__ bool add_new_backing(uint64_t expected_backing){
@@ -104,14 +106,14 @@ namespace data_structs {
 
 			//host_version[0] = default_host_version;
 
-			host_version->live_bits = gallatin::utils::get_device_version<uint64_t>(host_version->nbits);
+			//host_version->live_bits = gallatin::utils::get_device_version<uint64_t>(host_version->nbits);
 
 			host_version->level = 0;
 
 
 			//printf("Live bits %llu, max items: %llu\n", host_version->nbits, max_items);
 
-			cudaMemset(host_version->live_bits, 0ULL, sizeof(uint64_t)*max_items*2);
+			//cudaMemset(host_version->live_bits, 0ULL, sizeof(uint64_t)*max_items*2);
 
 
 			my_type * device_version = gallatin::utils::move_to_device(host_version);
@@ -126,11 +128,15 @@ namespace data_structs {
 
 		__device__ bool is_bucket_live(uint64_t bucket){
 
-			uint64_t high = bucket/64;
+			// uint64_t high = bucket/64;
 
-			uint64_t low = bucket % 64;
+			// uint64_t low = bucket % 64;
 
-			return gallatin::utils::ldcv(&live_bits[high]) & SET_BIT_MASK(low); 
+			auto address = get_bucket_address(bucket)[0];
+
+			//printf("Address: %llx\n", (uint64_t) address);
+
+			return (address != nullptr);
 
 		}
 
@@ -138,7 +144,14 @@ namespace data_structs {
 		//can be applied iteratively as long as level is monotonically decreasing.
 		__device__ uint64_t mask_to_level(uint64_t hash, uint level){
 		
-			return (hash & (1ULL << (level) -1));
+
+			//printf("Min bits: %d\n", min_bits);
+
+			uint64_t output = (hash & ((1ULL << (level+min_bits)) -1));
+
+
+			printf("Input is %llu, output is %llu\n", hash, output);
+			return output;
 
 		}
 
@@ -151,10 +164,12 @@ namespace data_structs {
 
 			while (true){
 
-				if (level == 0) return; 
+				if (level == 1) return; 
 
 				uint64_t size_of_level_below = min_items << (level-1);
 
+
+				printf("Level %llu, index %llu, size_of_level_below %llu\n", level, size_of_level_below, index);
 
 				if (index >= size_of_level_below){
 
@@ -168,6 +183,8 @@ namespace data_structs {
 
 
 			}
+
+			printf("Level is %llu, index is %llu\n", level, index);
 
 
 
@@ -188,7 +205,7 @@ namespace data_structs {
 
 					determine_intermediate_slot(global_level, index);
 
-					return &directory[global_level][index];
+					return &directory[global_level-1][index];
 				}
 
 
@@ -205,12 +222,14 @@ namespace data_structs {
 			uint64_t global_level = gallatin::utils::ldcv(&level);
 
 
-			index = mask_to_level(index, global_level);
+			index = mask_to_level(index, global_level-1);
 
 
 			determine_intermediate_slot(global_level, index);
 
-			return &directory[global_level][index];
+			printf("Output of intermediate - level %llu, index %llu\n", global_level, index);
+
+			return &directory[global_level-1][index];
 
 
 		}
@@ -234,12 +253,17 @@ namespace data_structs {
 
 			T ** address = get_bucket_address(index);
 
-			atomicExch((unsigned long long int *)address, (unsigned long long int) new_bucket);
+
+			uint64_t result = atomicCAS((unsigned long long int *)address, 0ULL, (unsigned long long int) new_bucket);
+
+			if (result != 0ULL){
+				printf("Failed to attach %llu: result is %llx\n", index, result);
+			}
 
 			uint64_t high = index/64;
 			uint64_t low = index % 64;
 
-			atomicOr((unsigned long long int *)&live_bits[high], SET_BIT_MASK(low));
+			//atomicOr((unsigned long long int *)&live_bits[high], SET_BIT_MASK(low));
 
 
 		}
@@ -300,7 +324,7 @@ namespace data_structs {
 
 					//attempt update!
 
-					if (typed_atomic_write(&slots[i].key, defaultKey, ext_key) == defaultKey){
+					if (typed_atomic_write(&slots[i].key, defaultKey, ext_key)){
 
 						typed_atomic_exchange(&slots[i].val, ext_val);
 
@@ -361,6 +385,8 @@ namespace data_structs {
 
 		if (tid >= min_size) return;
 
+		printf("Attaching %llu\n", tid);
+
 		dev_table->attach_new_bucket(tid);
 
 
@@ -404,12 +430,20 @@ namespace data_structs {
 
 			init_exp_hash_table<<<(min_size-1)/256+1,256>>>(device_version, min_size);
 
-			return device_version;
+			cudaDeviceSynchronize();
 
+			return device_version;
 
 
 		}
 
+
+		__device__ uint64_t get_full_hash(Key key){
+
+			//todo seed
+			return gallatin::hashers::MurmurHash64A(&key, sizeof(Key), 42);
+
+		}
 
 		__device__ node_type * get_new_node(){
 
@@ -441,28 +475,41 @@ namespace data_structs {
 		}
 
 
-		__device__ bool insert(Key insert_key, val insert_val){
+		__device__ bool insert(Key insert_key, Val insert_val){
 
-			auto global_level = __ldcv(&directory.level);
+			while (true){
 
-			node_type * my_bucket = directory.get_bucket_pointer();
+				auto global_level = __ldcv(&directory.level);
 
-			uint16_t read_level;
+				uint64_t bucket_hash = get_full_hash(insert_key);
 
-			if (my_bucket->insert(insert_key, insert_val, global_level, read_level)){
-				return true;
-			}
+				uint64_t clipped_hash = directory.mask_to_level(bucket_hash, global_level-1);
+				node_type * my_bucket = directory.get_bucket_pointer(clipped_hash);
+				uint16_t read_level;
 
-			//otherwise maybe resize?
+				if (my_bucket->insert(insert_key, insert_val, global_level-1, read_level)){
+					return true;
+				}
 
-			if (read_level == global_level){
+				//otherwise maybe resize?
 
-				if (directory.add_new_backing(global_level)){
+				if (read_level == global_level){
 
-					//resize was a success.
-					//attempt to update si
+					if (directory.add_new_backing(global_level)){
+
+						//resize was a success.
+						//attempt to update s
+
+					}
+
+				} else {
+
+					//split bucket!
+
+					auto my_bucket_address = directory.get_bucket_address(directory.mask_to_level(bucket_hash, read_level-1));
 
 				}
+
 
 			}
 

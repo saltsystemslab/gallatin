@@ -433,7 +433,7 @@ __device__ void clear_memory_per_thread(void * memory, uint64_t num_bytes, uint6
 
   if (my_length == 0 || my_start >= num_bytes) return;
 
-  memset(memory+my_start, 0, my_length);
+  memset( ((char *) memory)+my_start, 0, my_length);
 
   __threadfence();
 

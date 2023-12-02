@@ -1,5 +1,5 @@
-#ifndef GALLATIN_RING_QUEUE
-#define GALLATIN_RING_QUEUE
+#ifndef GALLATIN_PER_SMID_RING_QUEUE
+#define GALLATIN_PER_SMID_RING_QUEUE
 
 
 #include <cuda.h>
@@ -15,27 +15,65 @@ namespace gallatin {
 namespace data_structs {
 
 
+	//per-smid form of ring queue
+	//constructor builds one ring queue per SM
 	//basic form of queue using allocator
 	//on instantiation on host or device, must be plugged into allocator.
 	//This allows the queue to process memory dynamically.
 
 
-
+	#define QUEUE_STEAL_ATTEMPTS 10
+	#define QUEUE_ENQUEUE_ATTEMPTS 10
 	//Pipeline
 
 	//insert op
 	
 
-	template <typename T>
-	__global__ void init_ring_kernel(T * buffer, T default_value, uint64_t num_slots){
+	template <typename T, T default_value>
+	struct smid_ring_queue{
 
-		uint64_t tid = gallatin::utils::get_tid();
+		using my_type = smid_ring_queue<T, default_value>;
+		using ring_queue_type = ring_queue<T, default_value>;
 
-		if (tid >= num_slots) return;
+		ring_queue_type * queues;
+		uint64_t max_n_queues;
 
-		buffer[tid] = default_value;
 
-	}
+		//ext_num_slots is slots per queue;
+		static __host__ my_type * generate_on_device(uint64_t ext_num_slots){
+
+			uint64_t num_smids = gallatin::utils::get_num_streaming_multiprocessors(0);
+
+			my_type * host_version = gallatin::utils::get_host_version<my_type>();
+
+			ring_queue_type * ext_queues = gallatin::utils::get_host_version<ring_queue_type>(num_smids);
+
+			for (uint64_t i = 0; i < num_smids; i++){
+
+				ext_queues[i] = ring_queue::generate_on_device(ext_num_slots);
+
+			}
+
+			host_version->queues = gallatin::utils::move_to_device<ring_queue_type>(ext_queues, num_smids);
+
+			host_version->max_n_queues = num_smids;
+
+			return gallatin::utils::move_to_device<my_type>(host_version);
+
+		}
+
+		static __host__ free_on_device(my_type * dev_version){
+
+			my_type * host_version = gallatin::utils::move_to_host(dev_version);
+
+			ring_queue_type * host_queues = gallatin::utils::move_to_host<ring_queue_type>(host_version->queues, host_version->max_n_queues);
+
+			
+
+		}
+
+	};
+
 
 	template <typename T, T default_value>
 	struct ring_queue {
