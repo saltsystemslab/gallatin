@@ -30,7 +30,7 @@ namespace data_structs {
 
 		//auto allocator = first.get_alloc();
 
-		char * new_string = (char *) global_malloc(combined_length+1);
+		char * new_string = (char *) global_malloc_combined(combined_length+1, custring::is_host_malloc());
 
 		char * first_str = first.data();
 		char * second_str = second.data();
@@ -48,8 +48,8 @@ namespace data_structs {
 		new_string[combined_length] = '\0';
 
 		//free old strings
-		global_free(first_str);
-		global_free(second_str);
+		global_free_combined(first_str,custring::is_host_malloc());
+		global_free_combined(second_str, custring::is_host_malloc());
 
 		first.set_len(combined_length);
 		first.set_str(new_string);
@@ -66,6 +66,7 @@ namespace data_structs {
 	}
 
 
+	template<bool on_host=false>
 	struct custring {
 
 
@@ -99,7 +100,7 @@ namespace data_structs {
 			//length+=1;
 
 
-			chars = (char *) global_malloc(length+1);
+			chars = (char *) global_malloc_combined(length+1, on_host);
 
 			for (int i = 0; i < length; i++){
 
@@ -134,7 +135,7 @@ namespace data_structs {
 			//length+=1;
 
 
-			chars = (char *) global_malloc(length+1);
+			chars = (char *) global_malloc_combined(length+1, on_host);
 
 			for (int i = 0; i < length; i++){
 
@@ -159,13 +160,14 @@ namespace data_structs {
 
 		    if (number == 0) length++;
 
+
 			while(num_copy != 0) {
 		      num_copy = num_copy / 10;
 		      length++;
 			}
 
 
-			chars = (char *) global_malloc(length+1);
+			chars = (char *) global_malloc_combined(length+1, on_host);
 
 			chars[length] = '\0';
 
@@ -195,7 +197,7 @@ namespace data_structs {
 
 
 		//move constructor.
-		__device__ custring(custring&& other){
+		__host__ __device__ custring(custring&& other){
 
 			set_len(other.get_len());
 			set_str(other.data());
@@ -206,7 +208,10 @@ namespace data_structs {
 		}
 
 		//copy constructor
-		__device__ custring(custring & other){
+		__host__ __device__ custring(custring & other){
+
+
+			#ifdef  __CUDA_ARCH__
 
 			auto copy_len = other.get_len();
 
@@ -214,7 +219,7 @@ namespace data_structs {
 
 			char * other_data = other.data();
 
-			chars = (char *) global_malloc(copy_len);
+			chars = (char *) global_malloc_combined(copy_len+1, on_host);
 
 			for (int i = 0; i < copy_len; i++){
 				chars[i] = other_data[i];
@@ -223,10 +228,27 @@ namespace data_structs {
 			chars[length] = '\0';
 
 
+			#else
+
+
+			//printf("Calling host copy constructor.\n");
+			
+			length = other.get_len();
+
+			chars = other.data();
+
+
+
+			#endif
+
+
 		}
 
-				//copy constructor
-		__device__ custring(const custring & other){
+		//copy constructor
+		__host__ __device__ custring(const custring & other){
+
+
+			#ifdef __CUDA_ARCH__
 
 			auto copy_len = other.length;
 
@@ -234,7 +256,7 @@ namespace data_structs {
 
 			char * other_data = other.chars;
 
-			chars = (char *) global_malloc(copy_len);
+			chars = (char *) global_malloc_combined(copy_len+1, on_host);
 
 			for (int i = 0; i < copy_len; i++){
 				chars[i] = other_data[i];
@@ -243,12 +265,22 @@ namespace data_structs {
 			chars[length] = '\0';
 
 
+			#else 
+
+			//printf("Calling const host copy constructor.\n");
+
+			chars = other.chars;
+			length = other.length;
+
+			#endif
+
+
 		}
 
 
 		__device__ custring(float number, int precision=5){
 
-			chars = (char *) global_malloc(MAX_FLOAT_TRUNCATE);
+			chars = (char *) global_malloc_combined(MAX_FLOAT_TRUNCATE, on_host);
 
 
 			int cutoff = 1;
@@ -298,7 +330,7 @@ namespace data_structs {
 
 		__device__ custring(double number, int precision=5){
 
-			chars = (char *) global_malloc(MAX_FLOAT_TRUNCATE);
+			chars = (char *) global_malloc_combined(MAX_FLOAT_TRUNCATE, on_host);
 
 
 			int cutoff = 1;
@@ -374,19 +406,19 @@ namespace data_structs {
 		}
 
 
-		__device__ uint get_len(){
+		__host__ __device__ uint get_len(){
 			return length;
 		}
 
-		__device__ void set_len(uint new_length){
+		__host__ __device__ void set_len(uint new_length){
 			length = new_length;
 		}
 
-		__device__ char * data(){
+		__host__ __device__ char * data(){
 			return chars;
 		}
 
-		__device__ void set_str(char * ext_chars){
+		__host__ __device__ void set_str(char * ext_chars){
 			chars = ext_chars;
 		}
 
@@ -402,7 +434,7 @@ namespace data_structs {
 
 		}
 
-		__device__ custring operator=(const custring & first){
+		__host__ __device__ custring operator=(const custring & first){
 
 			length = first.length;
 
@@ -413,12 +445,21 @@ namespace data_structs {
 
 		__device__ ~custring(){
 
+			// if (chars != nullptr){
+			// 	global_free_combined(chars, on_host);
+			// }
+
+			chars = nullptr;
+			
+		}
+
+		__device__ void release_string(){
+
 			if (chars != nullptr){
-				global_free(chars);
+				global_free_combined(chars, on_host);
 			}
 
-			
-			
+			chars = nullptr;
 		}
 
 
@@ -479,13 +520,29 @@ namespace data_structs {
 		    }
 
 
+		    //add_num_zeros
+		   	uint64_t leading_zeros = 0;
+
+		    uint64_t clone = decimals*10;
+
+		    if (clone != 0){
+
+			    while (clone < cutoff){
+			    	leading_zeros++;
+			    	clone = clone*10;
+
+			    }
+
+			}
+
+
 		    //clip end of decimals
 		    while (decimals > 0 && decimals % 10 == 0 && decimals != 0)
 			{
 			    decimals = decimals / 10;
 			}
 
-			return length + 1 + get_maximum_size(units) + get_maximum_size(decimals);
+			return length + 1 + get_maximum_size(units) + leading_zeros + get_maximum_size(decimals);
 
 		}
 
@@ -569,7 +626,7 @@ namespace data_structs {
 			if (max_length == 0) return;
 
 			//one extra byte for \0 endstr
-			char * data = (char *) global_malloc(max_length+1);
+			char * data = (char *) global_malloc_combined(max_length+1, on_host);
 
 			data[0] = '\0';
 			empty_string.set_str(data);
@@ -695,18 +752,37 @@ namespace data_structs {
 
 		    uint decimals;  // variable to store the decimals
 		    uint units;  // variable to store the units (part to left of decimal place)
-
+		   
 
 		    if (number < 0) { // take care of negative numbers
 		        decimals = (uint)((number * -cutoff)+.5) % cutoff;  // make 1000 for 3 decimals etc.
 		        units = (uint)(-1 * number);
+
 		    } else { // positive numbers
 		        decimals = (uint)((number * cutoff)+.5) % cutoff;
 		        units = (uint)number;
+		    
 		    }
 
 
+		    //count zeros at start of decimal.
+
+		    uint64_t leading_zeros = 0;
+
+		    uint64_t clone = decimals*10;
+
+		    if (clone != 0){
+
+			    while (clone < cutoff){
+			    	leading_zeros++;
+			    	clone = clone*10;
+
+			    }
+
+			}
+
 		    //clip end of decimals
+
 		    while (decimals > 0 && decimals % 10 == 0 && decimals != 0)
 			{
 			    decimals = decimals / 10;
@@ -722,6 +798,12 @@ namespace data_structs {
 
 		    new_length = add_to_string(new_length, (uint64_t) units);
 		    new_length = add_to_string(new_length, ".");
+
+		    //printf("Adding %llu leading_zeros\n", leading_zeros);
+		    for (uint64_t i = 0; i < leading_zeros; i++){
+		    	new_length = add_to_string(new_length, "0");
+		    }
+
 		    new_length = add_to_string(new_length, (uint64_t) decimals);
 
 		    return new_length;
@@ -760,51 +842,54 @@ namespace data_structs {
 		}
 
 
+		static __device__ bool is_host_malloc(){
+			return on_host;
+		}
+
 
 
 	};
 
-
-	template <typename Last>
+	template <bool on_host, typename Last>
 	__device__ uint64_t custring_est_size (Last last) {
 
-	    return custring::get_maximum_size(last);
+	    return custring<on_host>::get_maximum_size(last);
 
 	}
 
-	template <typename First, typename Second, typename...Rest>
+	template <bool on_host, typename First, typename Second, typename...Rest>
 	__device__ uint64_t custring_est_size(First first_item, Second second_item, Rest...remaining){
 
-		return custring_est_size(first_item) + custring_est_size<Second, Rest...>(second_item, remaining...);
+		return custring_est_size<on_host, First>(first_item) + custring_est_size<on_host, Second, Rest...>(second_item, remaining...);
 
 	}
 
-	template <typename Last>
-	__device__ uint64_t add_to_string_variadic(custring & target, uint64_t length, Last last){
+	template <bool on_host, typename Last>
+	__device__ uint64_t add_to_string_variadic(custring<on_host> & target, uint64_t length, Last last){
 
 		return target.add_to_string(length, last);
 
 	}
 
-	template <typename First, typename Second, typename...Rest>
-	__device__ uint64_t add_to_string_variadic(custring & target, uint64_t length, First first_item, Second second_item, Rest...remaining){
+	template <bool on_host, typename First, typename Second, typename...Rest>
+	__device__ uint64_t add_to_string_variadic(custring<on_host> & target, uint64_t length, First first_item, Second second_item, Rest...remaining){
 
 		uint64_t intermediate_length = add_to_string_variadic(target, length, first_item);
-		return add_to_string_variadic<Second, Rest...>(target, intermediate_length, second_item, remaining...);
+		return add_to_string_variadic<on_host, Second, Rest...>(target, intermediate_length, second_item, remaining...);
 
 	}
 
 	//use parameter pack to efficiently add multiple strings together
 	//procedure - grok size of all 
-	template <typename ... Args>
-	__device__ custring make_string(Args...all_args){
+	template <bool on_host, typename ... Args>
+	__device__ custring<on_host> make_string(Args...all_args){
 
-		uint64_t size = custring_est_size<Args...>(all_args...);
+		uint64_t size = custring_est_size<on_host, Args...>(all_args...);
 
 		//printf("Size is bounded by %lu\n", size);
 
 
-		custring test_string = custring::make_empty_string(size);
+		custring<on_host> test_string = custring<on_host>::make_empty_string(size);
 
 		uint64_t length = add_to_string_variadic(test_string, 0, all_args...);
 
@@ -816,6 +901,21 @@ namespace data_structs {
 
 
 	}
+
+	template <typename ... Args>
+	__device__ custring<false> make_string_device(Args...all_args){
+
+
+		return make_string<false, Args...>(all_args...);
+	}
+
+	template <typename ... Args>
+	__device__ custring<true> make_string_host(Args...all_args){
+
+
+		return make_string<true, Args...>(all_args...);
+	}
+
 
 
 }

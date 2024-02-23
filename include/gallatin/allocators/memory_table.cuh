@@ -313,7 +313,7 @@ struct alloc_table {
     Block *ext_blocks;
 
     cudaMalloc((void **)&ext_blocks,
-               sizeof(Block) * blocks_per_segment * num_segments);
+             sizeof(Block) * blocks_per_segment * num_segments);
 
     cudaMemset(ext_blocks, 0U,
                sizeof(Block) * (num_segments * blocks_per_segment));
@@ -328,10 +328,57 @@ struct alloc_table {
 
     host_version->queues = ext_queues;
 
-    host_version->memory = gallatin::utils::get_device_version<char>(
+
+    if (ext_memory_control == device_only){
+
+      host_version->memory = gallatin::utils::get_device_version<char>(
         bytes_per_segment * num_segments);
 
-    cudaMemset(host_version->memory, 0, bytes_per_segment*num_segments);
+      cudaMemset(host_version->memory, 0, bytes_per_segment*num_segments);
+
+
+    } else if (ext_memory_control == host_only){
+
+      char * host_memory;
+      char * dev_ptr_host_memory;
+
+      cudaDeviceProp prop;
+      GPUErrorCheck(cudaGetDeviceProperties(&prop, 0));
+      if (!prop.canMapHostMemory)
+      {
+          throw std::runtime_error{"Device does not supported mapped memory."};
+      }
+
+      GPUErrorCheck(cudaHostAlloc((void **)&host_memory, bytes_per_segment*num_segments, cudaHostAllocMapped));
+
+
+      //GPUErrorCheck(cudaHostAlloc((void **)&host_memory, bytes_per_segment*num_segments, cudaHostAllocDefault));
+
+      //memset(host_memory, 0, bytes_per_segment*num_segments);
+
+      CHECK_CUDA_ERROR(cudaHostGetDevicePointer(&dev_ptr_host_memory, host_memory, 0));
+
+      //cudaMemset(dev_ptr_host_memory, 0, bytes_per_segment*num_segments);
+
+      gallatin::utils::clear_device_host_memory(dev_ptr_host_memory, bytes_per_segment*num_segments);
+
+      host_version->memory = dev_ptr_host_memory;
+
+    } else if (ext_memory_control == managed) {
+
+
+      char * host_memory;
+
+      cudaMallocManaged((void **)&host_memory, bytes_per_segment*num_segments);
+
+      cudaMemset(host_memory, 0, bytes_per_segment*num_segments);
+
+      host_version->memory = host_memory;
+
+
+    }
+
+
 
     // generate counters and set them to 0.
     host_version->active_counts = gallatin::utils::get_device_version<int>(num_segments);
@@ -463,31 +510,51 @@ struct alloc_table {
 
     host_version->queues = ext_queues;
 
-    if (ext_memory_control == host_only){
+    if (ext_memory_control == device_only){
 
-      //using host memory, cudaAllocHost and pin.
+      host_version->memory = gallatin::utils::get_device_version<char>(
+        bytes_per_segment * num_segments);
+
+      cudaMemset(host_version->memory, 0, bytes_per_segment*num_segments);
+
+
+    } else if (ext_memory_control == host_only){
+
+      char * host_memory;
+      char * dev_ptr_host_memory;
+
       cudaDeviceProp prop;
-      CHECK_CUDA_ERROR(cudaGetDeviceProperties(&prop, 0));
+      GPUErrorCheck(cudaGetDeviceProperties(&prop, 0));
       if (!prop.canMapHostMemory)
       {
           throw std::runtime_error{"Device does not supported mapped memory."};
       }
 
-      char * device_memory_pointer;
-      char * host_memory_pointer;
+      //GPUErrorCheck(cudaHostAlloc((void **)&host_memory, bytes_per_segment*num_segments, cudaHostAllocDefault));
 
-      cudaHostAlloc(&host_memory_pointer, bytes_per_segment*num_segments, cudaHostAllocMapped);
+      GPUErrorCheck(cudaHostAlloc((void **)&host_memory, bytes_per_segment*num_segments, cudaHostAllocMapped));
 
-      cudaHostGetDevicePointer(&device_memory_pointer, host_memory_pointer, 0);
+      memset(host_memory, 0, bytes_per_segment*num_segments);
 
-      host_version->memory = device_memory_pointer;
+      CHECK_CUDA_ERROR(cudaHostGetDevicePointer(&dev_ptr_host_memory, host_memory, 0));
 
-    } else {
-      host_version->memory = gallatin::utils::get_device_version<char>(
-          bytes_per_segment * num_segments);
+      host_version->memory = dev_ptr_host_memory;
+
+    } else if (ext_memory_control == managed) {
+
+
+      char * host_memory;
+
+      cudaMallocManaged((void **)&host_memory, bytes_per_segment*num_segments);
+
+      cudaMemset(host_memory, 0, bytes_per_segment*num_segments);
+
+      host_version->memory = host_memory;
+
+
     }
 
-    cudaMemset(host_version->memory, 0, bytes_per_segment*num_segments);
+    host_version->memory_control = ext_memory_control;
 
     // generate counters and set them to 0.
     host_version->active_counts = gallatin::utils::get_device_version<int>(num_segments);
@@ -616,7 +683,13 @@ struct alloc_table {
 
     cudaFree(host_version->chunk_ids);
 
-    cudaFree(host_version->memory);
+
+    if (host_version->memory_control == device_only || host_version->memory_control == managed){
+      cudaFree(host_version->memory);
+    } else {
+      cudaFreeHost(host_version->memory);
+    }
+    
 
     cudaFree(dev_version);
 
@@ -1171,51 +1244,9 @@ struct alloc_table {
     return gallatin::utils::ldca(&queue_free_counters[segment]);
   }
 
-  // free block, returns true if this block was the last section needed.
-  //split this into two sections
-  //section one reserves free index
-  //  returns index and flag if segment should be reinserted
-  //Section two adds the item back.
-  //this guarantees that the system is visible *before* being returned.
-//   __device__ bool free_block(Block *block_ptr) {
-
-
-//     uint64_t segment = get_segment_from_block_ptr(block_ptr);
-
-//     uint16_t global_tree_id = read_tree_id(segment);
-
-//     uint64_t num_blocks = get_blocks_per_segment(global_tree_id);
-
-//     //read segment position
-
-//     //read segment 
-
-
-//     //get enqueue position.
-//     uint enqueue_position = increment_free_queue_position(segment) % num_blocks;
-
-//     //swap into queue
-//     atomicExch((unsigned long long int *)&queues[segment*blocks_per_segment+enqueue_position], (unsigned long long int) block_ptr);
-
-
-//     __threadfence();
-
-//     //determines how many other blocks are live, and signals to the system that re-use is possible
-//     int return_id = return_slot_to_segment(segment);
-
-//     if (all_blocks_free(return_id, num_blocks)){
-
-//       if (atomicCAS(&active_counts[segment], num_blocks-1, -1) == num_blocks-1){
-
-//         //exclusive owner
-//         return true;
-//       }
-//     }
-
-//     return false;
-
-// }
-
+  __device__ uint64_t get_bytes_per_segment(){
+    return bytes_per_segment;
+  }
 
 
   __host__ uint64_t report_free(){
@@ -1309,6 +1340,15 @@ struct alloc_table {
 
 
     return sizeof(my_type) + num_segments*(14 + blocks_per_segment*(sizeof(Block)+sizeof(Block *)));
+
+  }
+
+  __device__ bool owns_allocation(void * alloc){
+
+
+    uint64_t byte_difference = ( (char *) alloc - (char *) memory);
+
+    return (byte_difference < num_segments*bytes_per_segment);
 
   }
 

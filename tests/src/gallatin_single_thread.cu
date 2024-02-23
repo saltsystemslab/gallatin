@@ -105,7 +105,7 @@ __host__ void gallatin_test_single_thread(uint64_t num_allocs, uint64_t num_roun
 
    gallatin::utils::timer boot_timing;
 
-   //uint64_t num_segments = poggers::utils::get_max_chunks<mem_segment_size>(num_bytes);
+   //uint64_t num_segments = gallatin::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
    //betta_type * allocator = betta_type::generate_on_device(num_bytes, 42);
 

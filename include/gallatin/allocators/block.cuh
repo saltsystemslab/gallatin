@@ -325,7 +325,7 @@ struct Block {
 
       
 
-      printf("Block for full segment already malloced. Not an error but concerning.\n")
+      printf("Block for full segment already malloced. Not an error but concerning.\n");
 
      
 

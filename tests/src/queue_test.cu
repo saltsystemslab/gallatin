@@ -10,12 +10,14 @@
 
 
 
-#include <poggers/allocators/alloc_utils.cuh>
-#include <poggers/counter_blocks/beta.cuh>
+#include <gallatin/allocators/alloc_utils.cuh>
+//#include <gallatin/counter_blocks/beta.cuh>
 
-#include <poggers/counter_blocks/timer.cuh>
+#include <gallatin/allocators/global_allocator.cuh>
 
-#include <poggers/data_structs/custring.cuh>
+#include <gallatin/allocators/timer.cuh>
+
+#include <gallatin/data_structs/custring.cuh>
 
 
 #include <stdio.h>
@@ -33,7 +35,7 @@ using namespace gallatin::data_structs;
 template <typename queue> 
 __global__ void enqueue_test_kernel(queue * dev_queue, uint64_t nitems){
 
-   uint64_t tid = poggers::utils::get_tid();
+   uint64_t tid = gallatin::utils::get_tid();
 
    if (tid >= nitems) return;
 
@@ -45,7 +47,7 @@ __global__ void enqueue_test_kernel(queue * dev_queue, uint64_t nitems){
 template <typename queue>
 __global__ void dequeue_test_kernel(queue * dev_queue, uint64_t * bitarray, uint64_t nitems){
 
-   uint64_t tid = poggers::utils::get_tid();
+   uint64_t tid = gallatin::utils::get_tid();
 
    if (tid >= nitems) return;
 
@@ -80,7 +82,11 @@ __host__ void queue_test(uint64_t n_threads){
    using queue_type = queue<uint64_t, gallatin_allocator>;
 
    //boot with 20 Gigs
-   gallatin_allocator * alloc = gallatin_allocator::generate_on_device(20ULL*1024*1024*1024, 111);
+   //gallatin_allocator * alloc = gallatin_allocator::generate_on_device(20ULL*1024*1024*1024, 111);
+
+
+   init_global_allocator(20ULL*1024*1024*1024, 111);
+
 
    queue_type * dev_queue = queue_type::generate_on_device(alloc);
 
@@ -114,6 +120,8 @@ __host__ void queue_test(uint64_t n_threads){
    
 
    dequeue_timing.print_throughput("Dequeued", n_threads);
+
+   free_global_allocator();
 
 
 }

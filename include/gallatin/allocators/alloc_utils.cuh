@@ -98,6 +98,33 @@ __device__ inline uint16_t ldcv(const uint16_t *p) {
   return res;
 }
 
+
+__device__ inline uint64_t ld_acq(const uint64_t *p) {
+  uint64_t res;
+  asm volatile("ld.gpu.acquire.u64 %0, [%1];" : "=l"(res) : "l"(p));
+  return res;
+
+  // return atomicOr((unsigned long long int *)p, 0ULL);
+}
+
+__device__ inline uint16_t ld_acq(const uint16_t *p) {
+  uint16_t res;
+  asm volatile("ld.gpu.acquire.u16 %0, [%1];" : "=h"(res) : "l"(p));
+  return res;
+}
+
+
+__device__ inline void st_rel(const uint64_t *p, uint64_t store_val) {
+  
+  asm volatile("st.gpu.release.u64 [%0], %1;" :: "l"(p), "l"(store_val) : "memory");
+
+  // return atomicOr((unsigned long long int *)p, 0ULL);
+}
+
+
+
+
+
 __device__ inline uint16_t global_read_uint16_t(const uint16_t *p) {
   uint16_t res;
   asm volatile("ld.global.ca.u16 %0, [%1];" : "=h"(res) : "l"(p));
@@ -374,6 +401,15 @@ __device__ uint64_t get_tid() {
   return ((uint64_t)threadIdx.x) + ((uint64_t)blockIdx.x) * ((uint64_t) blockDim.x);
 }
 
+
+template <typename team_type>
+__device__ uint64_t get_tile_tid(team_type team) {
+
+
+  return ((uint64_t) team.meta_group_rank()) + ((uint64_t)blockIdx.x) * ((uint64_t) team.meta_group_size());
+
+}
+
 template <uint team_size>
 __device__ uint64_t get_team_tid(cg::thread_block_tile<team_size> team) {
 
@@ -575,12 +611,51 @@ __device__ void memclear(T * memory, uint64_t nitems, uint64_t nthreads){
 #endif
 
 
-constexpr unsigned numberOfBits(unsigned x)
+constexpr uint64_t numberOfBits(uint64_t x)
 {
     return x < 2 ? x : 1+numberOfBits(x >> 1);
 }
 
 
+__device__ void clear_host_memory_per_thread(void * memory, uint64_t num_bytes, uint64_t n_threads, uint64_t tid){
+
+  uint64_t bytes_per_thread = (num_bytes-1)/n_threads+1;
+
+  uint64_t my_start = bytes_per_thread*tid;
+
+  uint64_t my_length = num_bytes;
+
+  //this thread responsible for weird offset at end.
+  if ((my_start + my_length) >= num_bytes) my_length = num_bytes-my_start;
+
+  if (my_length == 0 || my_start >= num_bytes) return;
+
+  memset( ((char *) memory)+my_start, 0, my_length);
+
+  __threadfence();
+
+  return;
+
+
+}
+
+
+__global__ void clear_host_memory_kernel(void * memory, uint64_t num_bytes, uint64_t num_threads){
+
+  uint64_t tid = gallatin::utils::get_tid();
+
+  clear_host_memory_per_thread(memory, num_bytes, num_threads, tid);
+
+}
+
+
+__host__ void clear_device_host_memory(void * ptr, uint64_t num_bytes){
+
+  uint64_t num_threads = (num_bytes-1)/16+1;
+
+  clear_host_memory_kernel<<<(num_threads-1)/512+1,512>>>(ptr, num_bytes, num_threads);
+
+}
 
 
 }  // namespace utils

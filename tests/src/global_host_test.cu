@@ -41,7 +41,7 @@ __global__ void insert_one_size(uint64_t num_inserts, uint64_t size, uint64_t **
    if (tid >= num_inserts) return;
 
 
-   uint64_t * malloc = (uint64_t *) global_malloc(size);
+   uint64_t * malloc = (uint64_t *) global_malloc_host(size);
 
    if (malloc == nullptr){
       atomicAdd((unsigned long long int *)misses, 1ULL);
@@ -93,7 +93,7 @@ __global__ void free_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64
       printf("Addr: %llx vs %llx\n", (uint64_t) malloc, (uint64_t) bitarray[alt_address]);
 
 
-      global_gallatin->check_alloc_valid((void *)malloc);
+      global_host_gallatin->check_alloc_valid((void *)malloc);
 
       uint64_t miss_amount;
       if (tid >= malloc[0]){
@@ -102,15 +102,15 @@ __global__ void free_one_size_pointer(uint64_t num_allocs, uint64_t size, uint64
          miss_amount = malloc[0] - tid;
       }
 
-      uint64_t segment = global_gallatin->table->get_segment_from_ptr((void *)malloc);
+      uint64_t segment = global_host_gallatin->table->get_segment_from_ptr((void *)malloc);
 
-      uint16_t tree_id = global_gallatin->table->read_tree_id(segment);
+      uint16_t tree_id = global_host_gallatin->table->read_tree_id(segment);
 
       printf("Double malloc %lu vs %lu - diff is %lu, %u\n", tid, malloc[0], miss_amount, tree_id);
       return;
    }
 
-   global_free(malloc);
+   global_free_host(malloc);
 
    __threadfence();
 
@@ -143,7 +143,7 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
    printf("Starting test with %lu segments, %lu allocs per segment\n", num_segments, max_allocs_per_segment);
    printf("Actual allocs per segment %lu total allocs %lu\n", allocs_per_segment_size, num_allocs);
 
-   init_global_allocator(num_bytes, 42);
+   init_global_allocator_host(num_bytes, 42);
 
 
    //generate bitarry
@@ -200,13 +200,13 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
 
    printf("Total missed across %d runs: %lu/%lu\n", num_rounds, total_misses, num_allocs*num_rounds);
 
-   print_global_stats();
+   print_global_stats_host();
 
    cudaFree(misses);
 
    cudaFree(bits);
 
-   free_global_allocator();
+   free_global_allocator_host();
 
 
 }

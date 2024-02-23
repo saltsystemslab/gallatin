@@ -54,6 +54,84 @@ using namespace gallatin::allocators;
 #endif
 
 
+
+//debug
+
+template <typename allocator>
+__global__ void check_overlaps_kernel(allocator * alloc, uint64_t * counts, uint64_t num_segments, uint64_t blocks_per_segment, uint64_t slice_size, uint64_t ** allocations, uint64_t num_allocs){
+
+
+   uint64_t tid = gallatin::utils::get_tid();
+
+   if (tid >= num_allocs) return;
+
+   char * start_of_memory = alloc->table->memory;
+
+   uint64_t * my_allocation = allocations[tid];
+
+   if (my_allocation == nullptr){
+      printf("Allocation %lu modified to be nullptr\n", tid);
+      return;
+   }
+
+   uint64_t offset = ((uint64_t) my_allocation - (uint64_t) start_of_memory)/slice_size;
+
+   uint64_t block_offset = offset/4096;
+
+   atomicAdd((unsigned long long int *)&counts[block_offset], 1ULL);
+
+
+}
+
+
+__global__ void print_block_counts(uint64_t * counts, uint64_t num_blocks, uint64_t blocks_per_segment){
+
+   uint64_t tid = gallatin::utils::get_tid();
+
+   if (tid >= num_blocks) return;
+
+   if (counts[tid] != 4096 && counts[tid] != 0) printf("Weird value for block %lu in segment %lu: %lu\n", tid, tid/blocks_per_segment, counts[tid]);
+
+}
+
+//read in all allocations and return the overlaps > or < 4096.
+template <typename allocator>
+__host__ void check_for_overlaps(allocator * gallatin, uint64_t num_segments, uint64_t blocks_per_segment, uint64_t slice_size, uint64_t ** allocations, uint64_t num_allocs){
+
+
+   uint64_t num_blocks = num_segments*blocks_per_segment;
+
+   uint64_t * counts;
+
+   cudaMalloc((void **)&counts, sizeof(uint64_t)*num_blocks);
+
+   cudaMemset(counts, 0, sizeof(uint64_t)*num_blocks);
+
+   cudaDeviceSynchronize();
+
+
+   check_overlaps_kernel<allocator><<<(num_allocs-1)/256+1,256>>>(gallatin, counts, num_segments, blocks_per_segment, slice_size,allocations, num_allocs);
+
+
+   print_block_counts<<<(num_blocks-1)/256+1,256>>>(counts, num_blocks, blocks_per_segment);
+
+   cudaDeviceSynchronize();
+
+   cudaFree(counts);
+
+}
+
+template <typename allocator_type>
+__global__ void view_kernel(allocator_type * gallatin){
+
+   uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+}
+
+
+//end of debug
+
+
 template<typename allocator_type>
 __global__ void alloc_one_size_pointer(allocator_type * allocator, uint64_t num_allocs, uint64_t size, uint64_t ** bitarray, uint64_t * misses){
 
@@ -67,6 +145,8 @@ __global__ void alloc_one_size_pointer(allocator_type * allocator, uint64_t num_
 
 
    if (malloc == nullptr){
+
+      printf("Tid %llu read a nullptr\n", tid);
       atomicAdd((unsigned long long int *)misses, 1ULL);
 
       bitarray[tid] = malloc;
@@ -96,7 +176,10 @@ __global__ void free_one_size_pointer(allocator_type * allocator, uint64_t num_a
 
    uint64_t * malloc = bitarray[tid];
 
-   if (malloc == nullptr) return;
+   if (malloc == nullptr){
+      printf("Allocation in free was nullptr\n");
+      return;
+   } 
 
 
    if (malloc[0] != tid){
@@ -141,17 +224,52 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
    printf("Actual allocs per segment %llu total allocs %llu\n", allocs_per_segment_size, num_allocs);
 
 
-   gallatin_type * allocator = gallatin_type::generate_on_device(num_bytes, 42);
+   gallatin_type * allocator = gallatin_type::generate_on_device_host(num_bytes, 42);
 
 
+   uint64_t clipped_num_allocs = num_allocs*.9;
 
    //generate bitarry
    //space reserved is one 
    uint64_t ** bits;
-   cudaMalloc((void **)&bits, sizeof(uint64_t *)*num_allocs);
 
-   cudaMemset(bits, 0, sizeof(uint64_t *)*num_allocs);
 
+   if (num_segments > 3000){
+
+      printf("Array too large, using host memory for storage array\n");
+      
+      uint64_t ** host_memory;
+      uint64_t ** dev_ptr_host_memory;
+
+      cudaDeviceProp prop;
+      GPUErrorCheck(cudaGetDeviceProperties(&prop, 0));
+      if (!prop.canMapHostMemory)
+      {
+          throw std::runtime_error{"Device does not supported mapped memory."};
+      }
+
+      GPUErrorCheck(cudaHostAlloc((void **)&host_memory, sizeof(uint64_t *)*clipped_num_allocs, cudaHostAllocMapped));
+
+      //memset(host_memory, 0, sizeof(uint64_t *)*clipped_num_allocs);
+
+
+
+      GPUErrorCheck(cudaHostGetDevicePointer(&dev_ptr_host_memory, host_memory, 0));
+
+      gallatin::utils::clear_device_host_memory(dev_ptr_host_memory, sizeof(uint64_t *)*clipped_num_allocs);
+
+      bits = dev_ptr_host_memory;
+
+
+   } else {
+
+      printf("Gallatin using device memory for storage array\n");
+
+      cudaMalloc((void **)&bits, sizeof(uint64_t *)*clipped_num_allocs);
+
+      cudaMemset(bits, 0, sizeof(uint64_t *)*clipped_num_allocs);
+
+   }
 
    uint64_t * misses;
    cudaMallocManaged((void **)&misses, sizeof(uint64_t));
@@ -170,18 +288,27 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
       printf("Starting Round %d/%d\n", i, num_rounds);
 
       gallatin::utils::timer kernel_timing;
-      alloc_one_size_pointer<gallatin_type><<<(num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(allocator, .9*num_allocs, size, bits, misses);
+      alloc_one_size_pointer<gallatin_type><<<(clipped_num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(allocator, clipped_num_allocs, size, bits, misses);
       kernel_timing.sync_end();
 
-      allocator->print_info();
+      // allocator->print_info();
+
+      // cudaDeviceSynchronize();
+
+      // printf("Missed: %llu\n", misses[0]);
+
+      // cudaDeviceSynchronize();
+
+      //check_for_overlaps<gallatin_type>(allocator, num_segments, allocs_per_segment_size/4096, size, bits, clipped_num_allocs);
+
 
       gallatin::utils::timer free_timing;
-      free_one_size_pointer<gallatin_type><<<(num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(allocator, .9*num_allocs, size, bits);
+      free_one_size_pointer<gallatin_type><<<(clipped_num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(allocator, clipped_num_allocs, size, bits);
       free_timing.sync_end();
 
-      kernel_timing.print_throughput("Malloced", .9*num_allocs);
+      kernel_timing.print_throughput("Malloced", clipped_num_allocs);
 
-      free_timing.print_throughput("Freed", .9*num_allocs);
+      free_timing.print_throughput("Freed", clipped_num_allocs);
 
       printf("Missed: %llu\n", misses[0]);
 
@@ -189,19 +316,30 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
 
       misses[0] = 0;
 
-      allocator->print_info();
+      //view_kernel<<<1,1>>>(allocator);
+
+
+      //allocator->print_segment_fills();
+
+     
 
    }
 
+   allocator->print_info();
+
    cudaFree(misses);
 
-   cudaFree(bits);
+   if (num_segments > 3000){
+      cudaFreeHost(bits);
+   } else {
+      cudaFree(bits);
+   }
+   
 
    gallatin_type::free_on_device(allocator);
 
 
 }
-
 
 
 int main(int argc, char** argv) {

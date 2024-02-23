@@ -105,7 +105,7 @@ namespace allocators {
 
 //Consequently, these are left as modifiable values
 //Correctness is only guaranteed at the set values, change at your own risk.
-#define REQUEST_BLOCK_MAX_ATTEMPTS 10
+#define REQUEST_BLOCK_MAX_ATTEMPTS 1000
 #define GALLATIN_MAX_ATTEMPTS 500
 #define GALLATIN_MALLOC_LOOP_ATTEMPTS 10
 #define GALLATIN_MALLOC_BLOCK_ATTEMPTS 500
@@ -243,6 +243,43 @@ __global__ void print_guided_fill_kernel(allocator * table, uint16_t id){
   if (tid != 0) return;
 
   table->print_guided_fill(id);
+
+}
+
+template <typename allocator>
+__global__ void print_segment_fill_kernel(allocator * alloc){
+
+  uint64_t tid = gallatin::utils::get_tid();
+
+  if (tid >= alloc->table->num_segments) return;
+
+  //each tid scans for segment that is set
+
+  uint16_t my_tree_id = alloc->table->read_tree_id(tid);
+
+  if (my_tree_id == 65535) return;
+
+  uint64_t num_blocks = alloc->table->get_blocks_per_segment(my_tree_id);
+
+  uint64_t offset = tid*alloc->table->blocks_per_segment;
+
+  uint64_t expected = 0;
+  uint64_t free = 0;
+
+  for (uint64_t i = 0; i < num_blocks; i++){
+
+    auto my_block = alloc->table->get_block_from_global_block_id(offset+i);
+
+
+    free += my_block->free_counter;
+    expected+=4096;
+
+
+  }
+
+  if (free != expected){
+    printf("Segment %lu has %lu/%lu allocations\n", tid, free, expected);
+  }
 
 }
 
@@ -384,12 +421,27 @@ struct Gallatin {
   }
 
 
-    static __host__ my_type *generate_on_device_host(uint64_t max_bytes,
-                                              uint64_t seed, bool print_info=true) {
+  // generate the allocator on device, with host memory as the backing.
+  // this takes in the number of bytes owned by the allocator (does not include
+  // the space of the allocator itself.)
+  static __host__ my_type *generate_on_device_host(uint64_t max_bytes,
+                                              uint64_t seed, bool print_info=true, bool running_calloc=false) {
+    
+
+    uint64_t max_chunks = get_max_chunks<bytes_per_segment>(max_bytes);
+
+    if (running_calloc){
+      cudaDeviceSetLimit(cudaLimitDevRuntimePendingLaunchCount, 60000);
+
+    }
+
+    GPUErrorCheck(cudaSetDeviceFlags(cudaDeviceMapHost));
+
+
     my_type *host_version = get_host_version<my_type>();
 
     // plug in to get max chunks
-    uint64_t max_chunks = get_max_chunks<bytes_per_segment>(max_bytes);
+
 
     uint64_t total_mem = max_bytes;
 
@@ -401,6 +453,9 @@ struct Gallatin {
 
     host_version->local_blocks =
         pinned_block_type::generate_on_device_nowait(blocks_per_pinned_block, MIN_PINNED_CUTOFF);
+
+
+    host_version->is_calloc = running_calloc;
 
     uint64_t num_bytes = 0;
 
@@ -452,7 +507,111 @@ struct Gallatin {
 
     host_version
         ->table = alloc_table<bytes_per_segment, smallest>::generate_on_device_nowait(
-        max_bytes);
+        max_bytes, host_only, running_calloc);
+
+    if (print_info){
+      printf("Booted Gallatin with %lu trees in range %lu-%lu and %f GB of \033[1;32mpinned Host\033[1;0m memory %lu segments\n", num_trees, smallest, biggest, 1.0*total_mem/1024/1024/1024, max_chunks);
+    }
+    
+
+
+    auto device_version = move_to_device_nowait(host_version);
+
+    boot_shared_block_container<my_type><<<(blocks_per_pinned_block-1)/128+1, 128>>>(device_version,num_trees, blocks_per_pinned_block, MIN_PINNED_CUTOFF);
+
+    GPUErrorCheck(cudaDeviceSynchronize());
+
+    return device_version;
+
+  }
+
+    // generate the allocator on device, with host memory as the backing.
+  // this takes in the number of bytes owned by the allocator (does not include
+  // the space of the allocator itself.)
+  static __host__ my_type *generate_on_device_managed(uint64_t max_bytes,
+                                              uint64_t seed, bool print_info=true, bool running_calloc=false) {
+    
+
+    uint64_t max_chunks = get_max_chunks<bytes_per_segment>(max_bytes);
+
+    if (running_calloc){
+      cudaDeviceSetLimit(cudaLimitDevRuntimePendingLaunchCount, 60000);
+
+    }
+
+    GPUErrorCheck(cudaSetDeviceFlags(cudaDeviceMapHost));
+
+
+    my_type *host_version = get_host_version<my_type>();
+
+    // plug in to get max chunks
+
+
+    uint64_t total_mem = max_bytes;
+
+    host_version->segment_tree = veb_tree::generate_on_device_nowait(max_chunks, seed);
+
+    // estimate the max_bits
+    uint64_t blocks_per_pinned_block = 128;
+    uint64_t num_bits = bytes_per_segment / (4096 * smallest);
+
+    host_version->local_blocks =
+        pinned_block_type::generate_on_device_nowait(blocks_per_pinned_block, MIN_PINNED_CUTOFF);
+
+
+    host_version->is_calloc = running_calloc;
+
+    uint64_t num_bytes = 0;
+
+    do {
+      //printf("Bits is %llu, bytes is %llu\n", num_bits, num_bytes);
+
+      num_bytes += ((num_bits - 1) / 64 + 1) * 8;
+
+      num_bits = num_bits / 64;
+    } while (num_bits > 64);
+
+    num_bytes += 8 + num_bits * sizeof(Block);
+
+    uint64_t num_trees =
+        get_first_bit_bigger(biggest) - get_first_bit_bigger(smallest) + 1;
+    host_version->smallest_bits = get_first_bit_bigger(smallest);
+    host_version->num_trees = num_trees;
+
+    // init sub trees
+    sub_tree_type **ext_sub_trees =
+        get_host_version<sub_tree_type *>(num_trees);
+
+    for (int i = 0; i < num_trees; i++) {
+      sub_tree_type *temp_tree =
+          sub_tree_type::generate_on_device_nowait(max_chunks, i + seed);
+      ext_sub_trees[i] = temp_tree;
+    }
+
+    host_version->sub_trees =
+        move_to_device<sub_tree_type *>(ext_sub_trees, num_trees);
+
+    boot_segment_trees<<<(max_chunks - 1) / 512 + 1, 512>>>(
+        host_version->sub_trees, max_chunks, num_trees);
+
+   
+
+    #if GALLATIN_DEBUG_PRINTS
+
+    cudaDeviceSynchronize();
+
+
+    assert_empty<<<1,1>>>(host_version->sub_trees, num_trees);
+
+    cudaDeviceSynchronize();
+
+    #endif
+
+    host_version->locks = 0;
+
+    host_version
+        ->table = alloc_table<bytes_per_segment, smallest>::generate_on_device_nowait(
+        max_bytes, managed, running_calloc);
 
     if (print_info){
       printf("Booted Gallatin with %lu trees in range %lu-%lu and %f GB of memory %lu segments\n", num_trees, smallest, biggest, 1.0*total_mem/1024/1024/1024, max_chunks);
@@ -755,9 +914,9 @@ struct Gallatin {
     #if GALLATIN_DEBUG_PRINTS
 
 
-    // uint64_t alt_block_segment = table->get_segment_from_block_ptr(my_block);
+    uint64_t alt_block_segment = table->get_segment_from_block_ptr(my_block);
 
-    // uint16_t alt_tree_id = table->read_tree_id(alt_block_segment);
+    uint16_t alt_tree_id = table->read_tree_id(alt_block_segment);
 
     uint64_t block_id = table->get_global_block_offset(my_block);
 
@@ -855,19 +1014,25 @@ struct Gallatin {
 
     should_replace = coalesced_team.ballot(should_replace);
 
+    bool did_replace_block = false;
 
+    __threadfence();
     if (should_replace){
 
       if (coalesced_team.thread_rank() == 0){
-        replace_block(tree_id, shared_block_storage_index, my_block, local_shared_block_storage);
+        did_replace_block = replace_block(tree_id, shared_block_storage_index, my_block, local_shared_block_storage);
       }
 
     }
 
     //sync is necessary for block transistion - illegal to free block until detached.
     __threadfence();
+
+    //forces sync.
+    did_replace_block = coalesced_team.ballot(did_replace_block);
     coalesced_team.sync();
     //__threadfence();
+
 
     if (allocation != ~0ULL){
 
@@ -895,6 +1060,10 @@ struct Gallatin {
 
       
 
+    } else {
+      // if (!did_replace_block){
+      //   return ~0ULL;
+      // }
     }
 
 
@@ -924,6 +1093,24 @@ struct Gallatin {
         #if GALLATIN_DEBUG_PRINTS
         printf("Failed to acquire block\n");
         #endif
+
+        //PROCEDURE UPDATE
+        //SWAP BLOCK BACK IN
+        // this makes 100% space usage a recoverable condition
+        // but slows down threads at the OOM threshold
+        // if (!my_pinned_blocks->swap_out_nullptr(smid, my_block)){
+
+        //   #if GALLATIN_DEBUG_PRINTS
+        //   printf("Incorrect behavior when swapping out block index %d for tree %d\n", smid, tree_id);
+        //   #endif
+
+        //   free_block(new_block);
+
+        //   #if GALLATIN_TRAP_ON_ERR
+        //   asm volatile ("trap;");
+        //   #endif
+
+        // }
 
   			return false;
   		}
@@ -1191,20 +1378,25 @@ struct Gallatin {
   __device__ void free(void * allocation){
 
 
-
     //this logic is verifie allocation to offset
     uint64_t segment = table->get_segment_from_ptr(allocation);
 
     uint16_t tree_id = table->read_tree_id(segment);
 
 
+    // uint64_t alt_segment = ((uint64_t) allocation - (uint64_t) table->memory)/table->get_bytes_per_segment();
+
+    // if (alt_segment != segment) printf("mismatch: Segment %lu != alt %lu\n", segment, alt_segment);
+
+
+
     //if this is true, removing valid large allocation of unknown size.  
     if (tree_id > num_trees && (~tree_id != 0)){
 
-
-
       uint16_t size = tree_id - num_trees - 1;
       //freeing large block.
+
+      //printf("Freeing segment %lu with tree id %u\n", segment, tree_id);
 
 
       if (is_calloc){
@@ -1246,6 +1438,9 @@ struct Gallatin {
 
     uint64_t offset = allocation_to_offset(allocation, tree_id);
 
+    // uint64_t byte_offset = (char *) allocation - table->memory;
+
+    // uint64_t offset = byte_offset/table->get_tree_alloc_size(tree_id);
    
 
     #if GALLATIN_DEBUG_PRINTS
@@ -1471,9 +1666,11 @@ struct Gallatin {
 
       #if DEBUG_NO_FREE
 
-      #if GALLATIN_DEBUG_PRINTS
-      printf("Segment %llu derregister. this is a bug\n", segment);
-      #endif
+      // #if GALLATIN_DEBUG_PRINTS
+      // printf("Segment %llu derregister. this is a bug\n", segment);
+      // #endif
+
+      //segment is returned back rather than 
 
       return;
 
@@ -1817,6 +2014,19 @@ struct Gallatin {
   __host__ void print_guided_fill_host(uint16_t id){
 
     print_guided_fill_kernel<my_type><<<1,1>>>(this, id);
+
+  }
+
+  __host__ void print_segment_fills(){
+
+    print_segment_fill_kernel<my_type><<<2000, 256>>>(this);
+
+  }
+
+  //returns true if this allocation is inside the range of the allocator
+  __device__ bool owns_allocation(void * alloc){
+
+    return table->owns_allocation(alloc);
 
   }
 

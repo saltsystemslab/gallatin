@@ -15,7 +15,7 @@
 
 #include <gallatin/allocators/timer.cuh>
 
-#include <gallatin/data_structs/extendible_ht.cuh>
+#include <gallatin/data_structs/bulk_coop_ext_ht.cuh>
 
 #include <openssl/rand.h>
 
@@ -40,7 +40,9 @@ __host__ T * generate_data(uint64_t nitems){
 
    //malloc space
 
-   T * vals = (T *) malloc(nitems * sizeof(T));
+   T * vals;
+
+   cudaMallocHost((void **)&vals, sizeof(T)*nitems);
 
 
    //          100,000,000
@@ -196,6 +198,8 @@ __host__ T * generate_data(uint64_t nitems){
 template <typename ht, typename key_type>
 __global__ void insert_ht_kernel(ht * table, key_type * data, uint64_t nitems, uint64_t * misses, int n_rounds){
 
+
+
    uint64_t tid = gallatin::utils::get_tid();
 
    if (tid >= nitems) return;
@@ -206,54 +210,56 @@ __global__ void insert_ht_kernel(ht * table, key_type * data, uint64_t nitems, u
       if (!table->insert(data[tid], data[tid])){
 
          atomicAdd((unsigned long long int *)&misses[i], 1ULL);
-      } else {
-         return;
+
+         //if (my_tile.thread_rank() == 0) printf("Failed - Done with %llu\n", tid);
+
       }
 
 
    }
 
-
-
-   //printf("Done with %llu\n", tid+1);
+   //printf("Done with %llu\n", tid);
 
 }
 
 
-template <typename ht, typename key_type>
-__global__ void query_ht_kernel(ht * table, key_type * data, uint64_t nitems, uint64_t * missed_key, uint64_t * missed_val){
+// template <typename ht, typename key_type>
+// __global__ void query_ht_kernel(ht * table, key_type * data, uint64_t nitems, uint64_t * missed_key, uint64_t * missed_val){
 
-   uint64_t tid = gallatin::utils::get_tid();
+//    auto my_tile = table->get_my_tile();
 
-   if (tid >= nitems) return;
-
-   uint64_t val_read;
-
-   if (!table->query(data[tid], val_read)){
-
-      atomicAdd((unsigned long long int *)missed_key, 1ULL);
-      //printf("Failed to query %llu\n", tid+1);
-
-      return;
-   }
+//    uint64_t tid = gallatin::utils::get_tile_tid(my_tile);
 
 
-   if (val_read != data[tid]){
+//    if (tid >= nitems) return;
 
-      atomicAdd((unsigned long long int *)missed_val, 1ULL);
-      //printf("Failed to read correct query val %lu is not expected %lu\n", val_read, tid);
-   }
+//    uint64_t val_read;
 
-   //printf("Done with %llu\n", tid+1);
+//    if (!table->query(data[tid], val_read, my_tile)){
 
-}
+//       if (my_tile.thread_rank() == 0) atomicAdd((unsigned long long int *)missed_key, 1ULL);
+//       //printf("Failed to query %llu\n", tid+1);
+
+//       return;
+//    }
 
 
-template <typename Key, Key defaultKey, Key tombstoneKey, typename Val, int num_slots, uint64_t min_bits, uint64_t max_bits>
+//    if (val_read != data[tid] && my_tile.thread_rank() == 0){
+
+//       atomicAdd((unsigned long long int *)missed_val, 1ULL);
+//       //printf("Failed to read correct query val %lu is not expected %lu\n", val_read, tid);
+//    }
+
+//    //if (my_tile.thread_rank() == 0) printf("Done with %llu\n", tid);
+
+// }
+
+
+template <typename Key, typename Val, uint64_t n_vectors>
 __host__ void extendible_ht_test(uint64_t num_bytes, uint64_t nitems, int n_rounds){
 
 
-   using ht_type = gallatin::data_structs::extendible_hash_table<Key, defaultKey, tombstoneKey, Val, num_slots, min_bits, max_bits>;
+   using ht_type = gallatin::data_structs::bulk_ext_table<Key, Val, n_vectors>;
 
 
    init_global_allocator(num_bytes, 42, false);
@@ -264,12 +270,15 @@ __host__ void extendible_ht_test(uint64_t num_bytes, uint64_t nitems, int n_roun
 
    auto data = generate_data<Key>(nitems);
 
+
+   auto vals = generate_data<Val>(nitems);
+
    // gallatin::utils::timer boot_timing;
 
    
    uint64_t * misses;
 
-   cudaMallocManaged((void **)&misses, sizeof(uint64_t)*n_rounds+2);
+   cudaMallocManaged((void **)&misses, sizeof(uint64_t)*(n_rounds+2));
 
    cudaDeviceSynchronize();
 
@@ -300,40 +309,36 @@ __host__ void extendible_ht_test(uint64_t num_bytes, uint64_t nitems, int n_roun
    gallatin::utils::timer insert_timing;
 
 
-   insert_ht_kernel<<<(nitems-1)/512+1, 512>>>(my_table, data, nitems, misses, n_rounds);
+   my_table->bulk_insert(data, vals, nitems);
+   //insert_ht_kernel<<<((nitems-1)/TEST_BLOCK_SIZE+1), TEST_BLOCK_SIZE>>>(my_table, data, nitems, misses, n_rounds);
 
    insert_timing.sync_end();
 
    insert_timing.print_throughput("Inserted", nitems);
 
    //double fill = 0;
-   double fill = my_table->calculate_fill(true);
-
-   double exist_fill = my_table->calculate_fill(false);
-
-   printf("Fill is %f - total fill %f\n", fill, exist_fill);
-
+  
    for (int i = 0; i < n_rounds; i++){
 
       printf("Round %d missed %llu/%llu, %f\n",  i, misses[i], nitems, 1.0*misses[i]/nitems);
 
    }
 
-   gallatin::utils::timer query_timing;
+   // gallatin::utils::timer query_timing;
 
 
-   query_ht_kernel<<<(nitems-1)/512+1, 512>>>(my_table, data, nitems, misses+n_rounds, misses+n_rounds+1);
+   // query_ht_kernel<<<((nitems-1)/TEST_BLOCK_SIZE+1)*group_size, TEST_BLOCK_SIZE>>>(my_table, data, nitems, misses+n_rounds, misses+n_rounds+1);
 
-   query_timing.sync_end();
+   // query_timing.sync_end();
 
-   query_timing.print_throughput("Queried", nitems);
+   // query_timing.print_throughput("Queried", nitems);
 
-   printf("Query missed %llu keys, %llu vals off\n", misses[n_rounds], misses[n_rounds+1]);
+   // printf("Query missed %llu keys, %llu vals off\n", misses[n_rounds], misses[n_rounds+1]);
 
    cudaFree(misses);
 
 
-   print_global_stats();
+   //print_global_stats();
 
    cudaDeviceSynchronize();
 
@@ -341,10 +346,11 @@ __host__ void extendible_ht_test(uint64_t num_bytes, uint64_t nitems, int n_roun
    ht_type::free_on_device(my_table);
 
    cudaFree(data);
+   cudaFree(vals);
 
-   printf("After ht free\n");
+   //printf("After ht free\n");
 
-   print_global_stats();
+   //print_global_stats();
 
    // init_ht_kernel<ht_type><<<1,1>>>(table, num_inserts*init_fill_ratio, 42, resize_ratio);
 
@@ -448,8 +454,33 @@ int main(int argc, char** argv) {
    // extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 15, 20, 27>(num_segments*16*1024*1024, 1000000000, 1);
    // extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 31, 20, 26>(num_segments*16*1024*1024, 1000000000, 1);
 
-   //extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 20, 29>(num_segments*16*1024*1024, 1000000000, 1);
-   extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 7, 20, 28>(num_segments*16*1024*1024, 1000000000, 1);
+   //extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 20, 29, 1>(num_segments*16*1024*1024, 100000000, 1);
+
+   // extendible_ht_test<uint64_t, uint64_t, 1048576>(num_segments*16*1024*1024, 8388608ULL, 1);
+   // extendible_ht_test<uint64_t, uint64_t, 1048576>(num_segments*16*1024*1024, 16777216ULL, 1);
+   // extendible_ht_test<uint64_t, uint64_t, 1048576>(num_segments*16*1024*1024, 33554432ULL, 1);
+   // extendible_ht_test<uint64_t, uint64_t, 1048576>(num_segments*16*1024*1024, 67108864ULL, 1);
+   // extendible_ht_test<uint64_t, uint64_t, 1048576>(num_segments*16*1024*1024, 134217728ULL, 1);
+   // extendible_ht_test<uint64_t, uint64_t, 1048576>(num_segments*16*1024*1024, 268435456ULL, 1);
+
+   extendible_ht_test<uint32_t, uint32_t, 131072>(num_segments*16*1024*1024, 268435456ULL, 1);
+   extendible_ht_test<uint32_t, uint32_t, 262144>(num_segments*16*1024*1024, 268435456ULL, 1);
+   extendible_ht_test<uint32_t, uint32_t, 524288>(num_segments*16*1024*1024, 268435456ULL, 1);
+   extendible_ht_test<uint32_t, uint32_t, 1048576>(num_segments*16*1024*1024, 268435456ULL, 1);
+   extendible_ht_test<uint32_t, uint32_t, 2097152>(num_segments*16*1024*1024, 268435456ULL, 1);
+   // extendible_ht_test<uint32_t, uint32_t, 4194304>(num_segments*16*1024*1024, 268435456ULL, 1);
+   // extendible_ht_test<uint32_t, uint32_t, 8388608>(num_segments*16*1024*1024, 268435456ULL, 1);
+   // extendible_ht_test<uint32_t, uint32_t, 16777216>(num_segments*16*1024*1024, 268435456ULL, 1);
+   // extendible_ht_test<uint32_t, uint32_t, 33554432>(num_segments*16*1024*1024, 268435456ULL, 1);
+   // extendible_ht_test<uint32_t, uint32_t, 67108864>(num_segments*16*1024*1024, 268435456ULL, 1);
+
+   //extendible_ht_test<uint64_t, uint64_t, 16>(num_segments*16*1024*1024, 268435456ULL, 1);
+
+
+
+
+   //extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 20, 20, 4>(num_segments*16*1024*1024, 300000, 1);
+   //extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 7, 20, 22, 1>(num_segments*16*1024*1024, 2000000, 1);
    // extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 7, 20, 30>(num_segments*16*1024*1024, 200000000, 1);
    // extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 15, 20, 30>(num_segments*16*1024*1024, 200000000, 1);
    //extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 31, 20, 30>(num_segments*16*1024*1024, 200000000, 1);

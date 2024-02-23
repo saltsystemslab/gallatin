@@ -110,6 +110,7 @@ __global__ void string_test_floats(uint64_t n_sums){
 
 }
 
+
 __global__ void test_string_combination(){
 
    uint64_t tid = gallatin::utils::get_tid();
@@ -117,13 +118,36 @@ __global__ void test_string_combination(){
    //gallatin::data_structs::make_string("This is a test with tid: ", tid, "/", 10U, "\n");
 
 
-   auto s1 = gallatin::data_structs::make_string("This is a test with tid: ", 12345.12345, " ", 12345.12345*-1, " ", 1000/100, " ", 1000.0/100);
+   auto s1 = gallatin::data_structs::make_string_device("This is a test with tid: ", 12345.12345, " ", 12345.12345*-1, " ", 1000/100, " ", 1000.0/100);
 
       //, ", Next is gonna be: ", tid+1, " along with double: ", .5, " and negative ", -5, " vs positive: ", 5*25, "\n");
 
    s1.print_string_device();
 
-   auto my_string = gallatin::data_structs::make_string("This is a test with tid: ", tid, ", Next is gonna be: ", tid+1, " along with double: ", .5, " and negative ", -5, " vs positive: ", 5*25, "\n");
+   auto my_string = gallatin::data_structs::make_string_device("This is a test with tid: ", tid, ", Next is gonna be: ", tid+1, " along with double: ", .5, " and negative ", -5, " vs positive: ", 5*25, "\n");
+
+   my_string.print_string_device();
+
+}
+
+
+__global__ void test_host_string_combination(){
+
+   uint64_t tid = gallatin::utils::get_tid();
+
+   //gallatin::data_structs::make_string("This is a test with tid: ", tid, "/", 10U, "\n");
+
+
+   auto s1 = gallatin::data_structs::make_string_host("This is a test with tid: ", 12345.12345, " ", 12345.12345*-1, " ", 1000/100, " ", 1000.0/100);
+
+      //, ", Next is gonna be: ", tid+1, " along with double: ", .5, " and negative ", -5, " vs positive: ", 5*25, "\n");
+
+   s1.print_string_device();
+
+   auto my_string = gallatin::data_structs::make_string_host("This is a test with tid: ", tid, ", Next is gonna be: ", tid+1, " along with double: ", .5, " and other double ", .005, " and negative ", -5, " vs positive: ", 5*25, "\n");
+
+   auto sample_string = gallatin::data_structs::make_string_host(12345.12345);
+
 
    my_string.print_string_device();
 
@@ -135,7 +159,7 @@ __global__ void test_string_combination(){
 int main(int argc, char** argv) {
 
 
-   gallatin::allocators::init_global_allocator(8ULL*1024*1024*1024, 42);
+   gallatin::allocators::init_global_allocator_combined(8ULL*1024*1024*1024,8ULL*1024*1024*1024, 42);
 
 
    cudaDeviceSynchronize();
@@ -151,7 +175,11 @@ int main(int argc, char** argv) {
 
    cudaDeviceSynchronize();
 
-   gallatin::allocators::free_global_allocator();
+   test_host_string_combination<<<1,1>>>();
+
+   cudaDeviceSynchronize();
+
+   gallatin::allocators::free_global_allocator_combined();
 
    cudaDeviceReset();
    return 0;

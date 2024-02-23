@@ -13,5 +13,4 @@ function(ConfigureExecutable EXE_NAME EXE_SRC EXE_DEST)
       set_target_properties(${EXE_NAME} PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)  # this is required for some reason
     endif(GAL_DYNAMIC)
 
-
 endfunction(ConfigureExecutable)

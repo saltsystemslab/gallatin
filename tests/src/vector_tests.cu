@@ -9,52 +9,55 @@
 
 
 
+//This tests the fixed vector type, which allows for vector operations within
+// a set range of sizes.
+//Fixing he size of the vector alows for faster operations
+// due to the stability of the vector components.
 
-
-#include <poggers/counter_blocks/beta.cuh>
-
-#include <poggers/beta/timer.cuh>
-
-#include <poggers/data_structs/vector.cuh>
-
+#include <gallatin/data_structs/fixed_vector.cuh>
+#include <gallatin/allocators/timer.cuh>
 
 #include <stdio.h>
 #include <iostream>
 #include <assert.h>
 #include <chrono>
 
-using namespace beta::allocators;
+using namespace gallatin::data_structs;
+using namespace gallatin::allocators;
 
 
-#if BETA_DEBUG_PRINTS
-   #define TEST_BLOCK_SIZE 256
-#else
-   #define TEST_BLOCK_SIZE 256
-#endif
+template <uint64_t min, uint64_t max>
+__global__ void single_vector_test(){
+
+
+   //using vector_type = gallatin::data_structs::fixed_vector<uint64_t, min, max>;
 
 
 
-template <typename allocator>
-__global__ void init_vector_test(allocator * alloc){
-
-
-   using vector_type = gallatin::data_structs::vector<uint64_t, allocator>;
-
-
-   uint64_t tid = poggers::utils::get_tid();
+   uint64_t tid = gallatin::utils::get_tid();
 
    if (tid != 0) return;
 
 
-   vector_type test_vector(4, alloc);
+   gallatin::data_structs::fixed_vector<uint64_t, min, max> test_vector;
 
 
-   for (uint64_t i=0; i < 9; i++){
+   for (uint64_t i=0; i < max; i++){
 
       test_vector.insert(i);
 
    }
 
+
+
+   printf("Done with insert, verifying\n");
+
+   for (uint64_t i =0; i < max; i++){
+
+      if (test_vector[i] != i) printf("Failed to set index %lu\n", i);
+   }
+
+   printf("Test finished\n");
 
    test_vector.free_vector();
   
@@ -62,33 +65,150 @@ __global__ void init_vector_test(allocator * alloc){
 }
 
 
-//pull from blocks
-//this kernel tests correctness, and outputs misses in a counter.
-template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
-__host__ void vector_test_one(uint64_t num_bytes){
+template <uint64_t min, uint64_t max, bool on_host>
+__global__ void multi_vector_test(gallatin::data_structs::fixed_vector<uint64_t, min, max, on_host> * test_vector){
 
 
-   beta::utils::timer boot_timing;
-
-   using betta_type = beta::allocators::beta_allocator<mem_segment_size, smallest, largest>;
+   //using vector_type = gallatin::data_structs::fixed_vector<uint64_t, min, max>;
 
 
-   betta_type * allocator = betta_type::generate_on_device(num_bytes, 111);
 
-   std::cout << "Init in " << boot_timing.sync_end() << " seconds" << std::endl;
+   uint64_t tid = gallatin::utils::get_tid();
 
-   beta::utils::timer kernel_timing;
-   init_vector_test<betta_type><<<1,1>>>(allocator);
-   kernel_timing.sync_end();
+   if (tid >= max) return;
 
-   allocator->print_info();
+   //printf("Started %lu\n", tid);
 
-   betta_type::free_on_device(allocator);
+   uint64_t index = test_vector->insert(tid);
 
-   cudaDeviceSynchronize();
+   if (index == ~0ULL){
+      printf("Failed insert\n");
+   } else {
+      uint64_t output = test_vector[0][index];
+
+      if (output != tid){
+         printf("Index %lu does not match: %lu instead of %lu\n", index, output, tid);
+      }
+   }
+
+   //printf("ended %lu\n", tid);
 
 }
 
+template <uint64_t min, uint64_t max>
+__host__ void init_and_test_vector(){
+
+   //init_global_allocator(30ULL*1024*1024*1024, 42);
+
+
+   cudaDeviceSynchronize();
+   
+
+   gallatin::utils::timer vector_timing;
+
+   single_vector_test<min, max><<<1,1>>>();
+
+   vector_timing.sync_end();
+
+   vector_timing.print_throughput("vector enqueued", max);
+
+
+   //free_global_allocator();
+
+}
+
+template <typename vector_type>
+__global__ void verify_vector(vector_type * vector, uint64_t * bits, uint64_t nitems){
+
+   uint64_t tid = gallatin::utils::get_tid();
+
+   if (tid >= nitems)return;
+
+   uint64_t my_item = vector[0][tid];
+
+   uint64_t high = my_item/64;
+   uint64_t low = my_item % 64;
+
+
+   if (atomicOr((unsigned long long int *)&bits[high], SET_BIT_MASK(low)) & SET_BIT_MASK(low)){
+      printf("Double set for item %llu with index %lu\n", my_item, tid);
+   }
+
+}
+
+template <uint64_t min, uint64_t max, bool on_host>
+__host__ void init_and_test_multi(){
+
+
+   using vector_type = gallatin::data_structs::fixed_vector<uint64_t, min, max, on_host>;
+
+   vector_type * dev_vector = vector_type::get_device_vector();
+
+   cudaDeviceSynchronize();
+
+   gallatin::utils::timer vector_timing;
+
+   multi_vector_test<min, max, on_host><<<(max-1)/256+1,256>>>(dev_vector);
+
+   vector_timing.sync_end();
+
+   vector_timing.print_throughput("vector enqueued", max);
+
+
+   uint64_t * bits;
+
+   uint64_t num_uints = (max-1)/64+1;
+
+   cudaMallocManaged((void **)&bits, sizeof(uint64_t)*num_uints);
+
+   cudaMemset(bits, 0, sizeof(uint64_t)*num_uints);
+
+   verify_vector<vector_type><<<(max-1)/256+1,256>>>(dev_vector, bits, max);
+
+   cudaDeviceSynchronize();
+
+   cudaFree(bits);
+
+   vector_type::free_device_vector(dev_vector);
+
+
+
+}
+
+
+template <uint64_t min, uint64_t max, bool on_host>
+__host__ void init_and_test_output(){
+
+
+   using vector_type = gallatin::data_structs::fixed_vector<uint64_t, min, max, on_host>;
+
+   vector_type * dev_vector = vector_type::get_device_vector();
+
+   cudaDeviceSynchronize();
+
+   gallatin::utils::timer vector_timing;
+
+   multi_vector_test<min, max, on_host><<<(max-1)/256+1,256>>>(dev_vector);
+
+   vector_timing.sync_end();
+
+   vector_timing.print_throughput("vector enqueued", max);
+
+   gallatin::utils::timer vector_export;
+   auto vector_output = vector_type::export_to_host(dev_vector);
+   //vector_type::free_device_vector(dev_vector);
+
+   vector_export.sync_end();
+
+   vector_export.print_throughput("vector exported", max);
+
+
+
+   printf("First = %lu, last = %lu\n", vector_output[0], vector_output[vector_output.size()-1]);
+   vector_type::free_device_vector(dev_vector);
+
+
+}
 
 
 //using allocator_type = buddy_allocator<0,0>;
@@ -101,8 +221,46 @@ int main(int argc, char** argv) {
 
    //beta_test_allocs_correctness<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
 
+   //init_global_allocator(30ULL*1024*1024*1024, 42);
+   init_global_allocator_combined(20ULL*1024*1024*1024, 20ULL*1024*1024*1024, 42);
 
-   vector_test_one<16ULL*1024*1024, 16ULL, 4096ULL>(16ULL*1024*1024*1024);
+   //init_and_test_vector<16ULL, 16384ULL>();
+
+   init_and_test_multi<16ULL, 16384ULL, false>();
+   init_and_test_multi<16ULL, 65336ULL, false>();
+
+   init_and_test_multi<16384ULL, 65336ULL, false>();
+   init_and_test_multi<16384ULL, 65536ULL, false>();
+   
+   init_and_test_multi<16ULL, 1048576ULL, false>();
+   init_and_test_multi<32ULL, 1048576ULL, false>();
+   init_and_test_multi<64ULL, 1048576ULL, false>();
+   init_and_test_multi<128ULL, 1048576ULL, false>();
+   init_and_test_multi<256ULL, 1048576ULL, false>();
+   init_and_test_multi<16ULL, 1073741824ULL, false>();
+   init_and_test_multi<1048576ULL, 1073741824ULL, false>();
+
+   init_and_test_multi<16384ULL, 65336ULL, true>();
+   init_and_test_multi<16384ULL, 65536ULL, true>();
+   
+   init_and_test_multi<16ULL, 1048576ULL, true>();
+   init_and_test_multi<32ULL, 1048576ULL, true>();
+   init_and_test_multi<64ULL, 1048576ULL, true>();
+   init_and_test_multi<128ULL, 1048576ULL, true>();
+   init_and_test_multi<256ULL, 1048576ULL, true>();
+   init_and_test_multi<16ULL, 1073741824ULL, true>();
+   init_and_test_multi<1048576ULL, 1073741824ULL, true>();
+
+
+   //init_and_test_multi<16ULL, 64ULL>();
+   // init_and_test_multi<16ULL, 65336ULL>();
+
+
+   init_and_test_output<1048576ULL, 1073741824ULL, false>();
+   init_and_test_output<1048576ULL, 1073741824ULL, true>();
+
+
+   free_global_allocator_combined();
 
    //beta_full_churn<16ULL*1024*1024, 16ULL, 4096ULL>(1600ULL*16*1024*1024,  num_segments, num_rounds);
 

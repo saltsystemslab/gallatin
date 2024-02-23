@@ -21,6 +21,14 @@
 #include <gallatin/data_structs/formattable_atomics_recursive.cuh>
 
 
+//including CG
+#include <cooperative_groups.h>
+#include <cooperative_groups/reduce.h>
+#include <cooperative_groups/scan.h>
+
+namespace cg = cooperative_groups;
+
+
 #define USE_ATOMICS 1
 #define HT_PRINT 0
 
@@ -129,10 +137,10 @@ namespace data_structs {
 	// check primary -> check secondary -> check primary.
 	//	This dodges the case where keys are being shuttled. -> Secondary->primary is always correct:
 	//	 keys must be entirely tranfered befor visbility in secondary is removed.
-	template <typename Key, Key defaultKey, Key tombstoneKey, typename Val, int num_pairs>
+	template <typename Key, Key defaultKey, Key tombstoneKey, typename Val, int num_pairs, int group_size>
 	struct extendible_bucket {
 
-		using my_type = extendible_bucket<Key, defaultKey, tombstoneKey, Val, num_pairs>;
+		using my_type = extendible_bucket<Key, defaultKey, tombstoneKey, Val, num_pairs, group_size>;
 
 
 		//determine sizing
@@ -140,6 +148,8 @@ namespace data_structs {
 		uint16_t size;
 
 		uint16_t lock;
+
+		static const uint64_t n_traversals = ((num_pairs-1)/group_size+1)*group_size;
 
 		//do metadataBS?
 		extendible_key_val_pair<Key, Val> slots [num_pairs];
@@ -173,7 +183,26 @@ namespace data_structs {
 
 		}
 
-		__device__ int insert(Key ext_key, Val ext_val){
+
+		__device__ bool insert_direct(int index, Key ext_key, Val ext_val){
+
+			if (typed_atomic_write(&slots[index].key, defaultKey, ext_key)){
+				typed_atomic_exchange(&slots[index].val, ext_val);
+				return true;
+			} else {
+
+				#if HT_PRINT
+				printf("Failed exchange!\n");
+				#endif
+
+				return false;
+			}
+
+		}
+
+
+
+		__device__ int insert(Key ext_key, Val ext_val, cg::thread_block_tile<group_size> team){
 
 
 			//first read size
@@ -182,56 +211,87 @@ namespace data_structs {
 			// //failure means resize has started...
 			// if (internal_read_size != expected_size) return false;
 
+			for (int i = team.thread_rank(); i < n_traversals; i+=team.size()){
 
-			//otherwise attempt insert
+				bool key_match = (i < num_pairs);
+
+				Key loaded_key;
+
+				if (key_match) loaded_key = gallatin::utils::ld_acq(&slots[i].key);
+
+				//early drop if loaded_key is gone
+				bool ballot = key_match && (loaded_key == defaultKey);
+
+				auto ballot_result = team.ballot(ballot);
+
+	       		while (ballot_result){
+
+	       			ballot = false;
+
+	       			const auto leader = __ffs(ballot_result)-1;
+
+	       			if (leader == team.thread_rank()){
 
 
-			for (int i = 0; i < num_pairs; i++){
+	       				ballot = typed_atomic_write(&slots[i].key, defaultKey, ext_key);
+	       				if (ballot){
+	       					typed_atomic_exchange(&slots[i].val, ext_val);
+	       				}
+	       			} 
 
+	  
 
+       				//if leader succeeds return
+       				if (team.ballot(ballot)){
+       					return __ffs(team.ballot(ballot))-1;
+       				}
+	       			
 
-				Key loaded_key = gallatin::utils::ld_acq(&slots[i].key);
+	       			//if we made it here no successes, decrement leader
+	       			ballot_result  ^= 1UL << leader;
 
-				if (loaded_key == defaultKey){
+	       			//printf("Stalling in insert_into_bucket keys\n");
 
-					//attempt update!
+	       		}
 
-					if (typed_atomic_write(&slots[i].key, defaultKey, ext_key)){
+	       		ballot = key_match && (loaded_key == tombstoneKey);
 
-						typed_atomic_exchange(&slots[i].val, ext_val);
+	       		ballot_result = team.ballot(ballot);
 
-						return i;
+	       		while (ballot_result){
 
-					}
+	       			ballot = false;
 
-				} 
+	       			const auto leader = __ffs(ballot_result)-1;
 
-				//no idea, should just attempt.
-				if (loaded_key == tombstoneKey){
+	       			if (leader == team.thread_rank()){
+	       				ballot = typed_atomic_write(&slots[i].key, tombstoneKey, ext_key);
+	       				if (ballot){
+	       					typed_atomic_exchange(&slots[i].val, ext_val);
+	       				}
+	       			} 
 
-					if (typed_atomic_write(&slots[i].key, tombstoneKey, ext_key)){
-						
-						typed_atomic_exchange(&slots[i].val, ext_val);
+	  
 
-						return i;
-					}
+       				//if leader succeeds return
+       				if (team.ballot(ballot)){
+       					return __ffs(team.ballot(ballot))-1;
+       				}
+	       			
 
-				}
+	       			//if we made it here no successes, decrement leader
+	       			ballot_result  ^= 1UL << leader;
 
-				// if (typed_atomic_write(&slots[i].key, tombstoneKey, ext_key)){
-						
-				// 	typed_atomic_exchange(&slots[i].val, ext_val);
+	       			//printf("Stalling in insert_into_bucket\n");
+	       			//printf("Stalling in insert_into_bucket tombstone\n");
 
-				// 	return i;
-				// }
+	       		}
+
 
 			}
 
 
-			//all slots occupado
 			return -1;
-
-
 
 		}
 
@@ -246,8 +306,10 @@ namespace data_structs {
 		}
 
 
-		__device__ uint16_t load_size_atomic(){
-			return gallatin::utils::ldcv(&size);
+		__device__ uint16_t load_size_atomic(cg::thread_block_tile<group_size> team){
+
+			return cg::invoke_one_broadcast(team, [&]() { return gallatin::utils::ldcv(&size); });
+
 		}
 
 		// __device__ bool query(Key ext_key, Val & ext_val, uint16_t expected_size, bool & other_check_needed){
@@ -283,26 +345,41 @@ namespace data_structs {
 
 		// }
 
-		__device__ bool query(Key ext_key, Val & ext_val){
+		__device__ bool query(Key ext_key, Val & ext_val, cg::thread_block_tile<group_size> team){
 
 			//asserts that query may nnot be in another bucket.
 
-			for (int i = 0; i < num_pairs; i++){
+			for (int i = team.thread_rank(); i < n_traversals; i+=team.size()){
 
 
-				if (peek_key(i) == ext_key){
+				bool key_match = (i < num_pairs);
 
-					ext_val = gallatin::utils::ldcv(&slots[i].val);
+				Key loaded_key;
+
+				if (key_match) loaded_key = gallatin::utils::ld_acq(&slots[i].key);
+
+				bool ballot = (key_match && loaded_key == ext_key);
+
+
+				auto ballot_result = team.ballot(ballot);
+				if (ballot_result){
+					//match!
+
+					auto leader = __ffs(ballot_result)-1;
+
+					if (team.thread_rank() == leader){
+						ext_val = gallatin::utils::ld_acq(&slots[i].val);
+					}
+
+					ext_val = team.shfl(ext_val, leader);
+
 					return true;
-
 				}
 
-				//shortcut! Exit early as insert would have inserted here.
-				if (slots[i].key == defaultKey){
-					return false;
-				}
+
 
 			}
+
 
 			return false;
 
@@ -322,7 +399,7 @@ namespace data_structs {
 
 			while (atomicCAS((unsigned short int *)&lock, (unsigned short int)0, (unsigned short int) 1) != 0){
 				#if HT_PRINT
-				printf("Spinning on stall lock\n");
+				printf("%llu Spinning on stall lock\n", gallatin::utils::get_tid());
 				#endif
 			}
 
@@ -409,12 +486,12 @@ namespace data_structs {
 	}
 
 
-	template <typename Key, Key defaultKey, Key tombstoneKey, typename Val, int items_per_bucket, uint64_t min_bits, uint64_t max_bits>
+	template <typename Key, Key defaultKey, Key tombstoneKey, typename Val, int items_per_bucket, uint64_t min_bits, uint64_t max_bits, int group_size>
 	struct extendible_hash_table {
 
-		using my_type = extendible_hash_table<Key, defaultKey, tombstoneKey, Val, items_per_bucket, min_bits, max_bits>;
+		using my_type = extendible_hash_table<Key, defaultKey, tombstoneKey, Val, items_per_bucket, min_bits, max_bits, group_size>;
 
-		using bucket_type = extendible_bucket<Key, defaultKey, tombstoneKey, Val, items_per_bucket>;
+		using bucket_type = extendible_bucket<Key, defaultKey, tombstoneKey, Val, items_per_bucket, group_size>;
 
 		
 		static const uint n_directory = max_bits-min_bits+1;
@@ -441,7 +518,7 @@ namespace data_structs {
 		static __host__ my_type * generate_on_device(){
 
 
-			printf("Min bits: %lu, Max bits: %lu, n_directory: %lu, min_items: %lu, max_items: %lu\n", min_bits, max_bits, n_directory, min_items, max_items);
+			printf("Min bits: %lu, Max bits: %lu, n_directory: %lu, min_items: %lu, max_items: %lu, CG: %d\n", min_bits, max_bits, n_directory, min_items, max_items, group_size);
 
 			printf("Size of bucket: %llu, Max size: %fGB\n", sizeof(bucket_type), 1.0*(max_items*(sizeof(bucket_type)+sizeof(bucket_type*)))/(1024ULL*1024*1024));
 
@@ -600,8 +677,34 @@ namespace data_structs {
 		}
 
 
+		__device__ uint64_t generate_clipped_hash(Key key){
+
+				#if KEY_IS_HASH
+
+				return clip_hash_to_max_size(key);
+
+				#else
+
+				return clip_hash_to_max_size(get_full_hash(key));
+
+				#endif
+
+		}
 
 
+		__device__ uint64_t cooperative_get_hash(Key key, cg::thread_block_tile<group_size> & team){
+
+			return cg::invoke_one_broadcast(team, [&] () { return generate_clipped_hash(key); });
+
+		}
+
+
+		__device__ uint64_t cooperative_get_global_level(cg::thread_block_tile<group_size> & team){
+
+			return cg::invoke_one_broadcast(team, [&] () { return gallatin::utils::ld_acq(&level)-1; });
+								
+
+		}
 
 		// 	while (atomicCAS((unsigned long long int *)&promote_level, 0ULL, 1ULL) != 0ULL){
 
@@ -839,27 +942,25 @@ namespace data_structs {
 
 		}
 
-		__device__ bool insert(Key key, Val val){
+		__device__ bool insert(Key key, Val val, cg::thread_block_tile<group_size> team){
 
 
-			#if KEY_IS_HASH
-
-			uint64_t hash = clip_hash_to_max_size(key);
-
-			#else
-
-			uint64_t hash = clip_hash_to_max_size(get_full_hash(key));
-
-			#endif
-			
-			uint64_t global_level = gallatin::utils::ld_acq(&level)-1;
-			//uint64_t global_level = atomicAdd((unsigned long long int *)&level, 0ULL)-1;
-
+			uint64_t hash = cooperative_get_hash(key, team);
+			uint64_t global_level = cooperative_get_global_level(team);
 			uint64_t local_level = global_level;
+
+			bucket_type * primary_bucket;
+			
 
 			while (true){
 
-				//printf("%llu Looping in main\n", gallatin::utils::get_tid());
+				#if HT_PRINT
+				printf("%llu Looping in main\n", gallatin::utils::get_tid());
+				#endif
+
+				
+				//broadcast info
+
 				
 				#if HT_PRINT
 				if (local_level >= n_directory){
@@ -877,7 +978,10 @@ namespace data_structs {
 				//force refinement if not valid
 				uint64_t bucket_index = clip_to_global_level(local_level, hash);
 
-				auto primary_bucket = get_bucket_from_index(bucket_index, true);
+				if (team.thread_rank() == 0){
+					primary_bucket = get_bucket_from_index(bucket_index, true);
+				}
+				primary_bucket = team.shfl(primary_bucket, 0);
 
 				//base case - bucket should always be 0.
 				// if (local_level == 0){
@@ -895,25 +999,28 @@ namespace data_structs {
 
 				if (primary_bucket != nullptr){
 
-					int insert_slot = primary_bucket->insert(key, val);
+					int insert_slot = primary_bucket->insert(key, val, team);
 					if (insert_slot != -1){
 
 						//check size for rollback
-						auto bucket_size = primary_bucket->load_size_atomic();
+
+
+						auto bucket_size = primary_bucket->load_size_atomic(team);
 
 						if (clip_to_global_level(bucket_size, hash) == bucket_index){
 							return true;
+
 						} else {
 
 							//rollback.
 
-							if (primary_bucket->resetExact(insert_slot, key)){
+							if (cg::invoke_one_broadcast(team, [&] () { return primary_bucket->resetExact(insert_slot, key); })){
 
 								__threadfence();
 								local_level = local_level+1;
 
 
-								global_level = gallatin::utils::ld_acq(&level)-1;
+								global_level = cg::invoke_one_broadcast(team, [&] () { return gallatin::utils::ld_acq(&level)-1; });
 								//global_level = atomicAdd((unsigned long long int *)&level, 0ULL)-1;
 
 								#if HT_PRINT
@@ -960,7 +1067,7 @@ namespace data_structs {
 						//reload
 
 
-						auto primary_bucket_size = primary_bucket->load_size_atomic();
+						auto primary_bucket_size = primary_bucket->load_size_atomic(team);
 
 						if (local_level == (n_directory-1) && primary_bucket_size == (n_directory-1)){
 
@@ -978,8 +1085,7 @@ namespace data_structs {
 							local_level = local_level+1;
 
 							//global_level = atomicAdd((unsigned long long int *)&level, 0ULL)-1;
-							global_level = gallatin::utils::ld_acq(&level)-1;
-
+							global_level = cooperative_get_global_level(team);
 							#if HT_PRINT
 							if (local_level > global_level){
 								printf("Mid track generates bug\n");
@@ -991,27 +1097,26 @@ namespace data_structs {
 						}
 
 						//proceeding with resize Load external data needed
-						global_level = gallatin::utils::ld_acq(&level)-1;
-						//global_level = atomicAdd((unsigned long long int *)&level, 0ULL)-1;
+						global_level = cooperative_get_global_level(team);
 
 
 						if (primary_bucket_size == global_level){
 							//implies global_level < n_directory;
 							//therefore you can (and should) upsize safely.
-							add_new_backing(primary_bucket_size+1);
+							cg::invoke_one(team, [&] () { add_new_backing(primary_bucket_size+1); });
 
 						}
 
-
 						//at this point, we should upsize the bucket.
-						maybe_add_new_bucket(bucket_index, primary_bucket_size+1, primary_bucket);
+						maybe_add_new_bucket(bucket_index, primary_bucket_size+1, primary_bucket, team);
 
 						//at this point, reload variables
+
 
 						
 
 						__threadfence();
-						global_level = gallatin::utils::ld_acq(&level)-1;
+						global_level = cooperative_get_global_level(team);
 						//global_level = atomicAdd((unsigned long long int *)&level, 0ULL)-1;
 
 
@@ -1079,13 +1184,7 @@ namespace data_structs {
 						// } 
 
 	
-						// //try promote.
-						// //this bad... - do resize check here?
-						// //if (primary_bucket_size >= local_level)
 
-						// maybe_add_new_bucket(bucket_index, primary_bucket_size+1, primary_bucket);
-
-						// continue;
 
 					}
 
@@ -1115,7 +1214,7 @@ namespace data_structs {
 		//bucket end
 		// prep size is size
 		// true size is size-1 
-		__device__ void move_into_new_bucket(uint64_t start_index, uint64_t alt_index, uint64_t promotion_size, bucket_type * start, bucket_type * end){
+		__device__ void move_into_new_bucket(uint64_t start_index, uint64_t alt_index, uint64_t promotion_size, bucket_type * start, bucket_type * end, cg::thread_block_tile<group_size> team){
 
 			uint64_t moved_keys = 0;
 			//iterate through bucket.
@@ -1125,23 +1224,14 @@ namespace data_structs {
 			for (int i = 0; i < items_per_bucket; i++){
 
 				//global read of key - non-destructive.
-				auto currentKey = start->peek_key(i);
+				auto currentKey = cg::invoke_one_broadcast(team, [&](){ return start->peek_key(i); });
 
 				//done! all later keys MUST be null;
 				if (currentKey == defaultKey) return;
 
 				if (currentKey != tombstoneKey){
 
-					
-					#if KEY_IS_HASH
-
-					uint64_t hash = clip_hash_to_max_size(currentKey);
-
-					#else
-
-					uint64_t hash = clip_hash_to_max_size(get_full_hash(currentKey));
-
-					#endif
+					uint64_t hash = cooperative_get_hash(currentKey, team);
 
 					//uint64_t hash = clip_hash_to_max_size(get_full_hash(currentKey));
 
@@ -1159,43 +1249,36 @@ namespace data_structs {
 					items_moved |= SET_BIT_MASK(i);
 					moved_keys+=1;
 
-					auto currentVal = start->peek_val(i);
+					auto currentVal = cg::invoke_one_broadcast(team, [&] (){ return start->peek_val(i); });
 
 					//at this point, valid.
 					//start transfer
-					end->insert(currentKey, currentVal);
+					end->insert(currentKey, currentVal, team);
 
 
 				}
 
 			}
-
-			//printf("Moved %lu keys\n", moved_keys);
+			#if HT_PRINT
+			printf("Moved %lu keys\n", moved_keys);
+			#endif
 
 			for (int i = 0; i < items_per_bucket; i++){
 
 				if ((SET_BIT_MASK(i) & items_moved) == 0) continue;
 
-				auto currentKey = start->peek_key(i);
+				auto currentKey = cg::invoke_one_broadcast(team, [&] () { return start->peek_key(i); });
 
 				if (currentKey != tombstoneKey && currentKey != defaultKey){
 
 										
-					#if KEY_IS_HASH
-
-					uint64_t hash = clip_hash_to_max_size(currentKey);
-
-					#else
-
-					uint64_t hash = clip_hash_to_max_size(get_full_hash(currentKey));
-
-					#endif
+					uint64_t hash = cooperative_get_hash(currentKey,team);
 
 					uint64_t index = clip_to_global_level(promotion_size, hash);
 
 					if (index == alt_index){
 
-						start->resetPair(i);
+						cg::invoke_one(team, [&] () { start->resetPair(i); });
 
 					}
 
@@ -1207,8 +1290,85 @@ namespace data_structs {
 
 		}
 
+		//cooperative version that moves group_size items at a time.
+		__device__ void move_into_new_bucket_coop(uint64_t start_index, uint64_t alt_index, uint64_t promotion_size, bucket_type * start, bucket_type * end, cg::thread_block_tile<group_size> team){
 
-		__device__ void maybe_add_new_bucket(uint64_t index,  uint64_t promotion_size, bucket_type * primary_bucket){
+			uint64_t moved_keys = 0ULL;
+			//iterate through bucket.
+
+			uint64_t items_moved = 0ULL;
+
+			for (int i = team.thread_rank(); i < start->n_traversals; i+=team.size()){
+
+
+				Key currentKey = tombstoneKey;
+
+
+				bool key_match = (i < items_per_bucket);
+
+
+				if (key_match) currentKey = start->peek_key(i);
+
+				//if (currentKey == defaultKey) continue;
+
+				uint64_t hash = generate_clipped_hash(currentKey);
+
+				uint64_t index = clip_to_global_level(promotion_size, hash);
+
+				bool moving = key_match && (currentKey != tombstoneKey) && (currentKey != defaultKey) && (index != start_index);
+
+				auto ballot_moving = team.ballot(moving);
+
+				auto keys_below = __popc(ballot_moving & BITMASK(team.thread_rank()));
+
+
+
+				if (moving){
+
+					items_moved |= SET_BIT_MASK(i);
+
+					auto currentVal = start->peek_val(i);
+
+					if (!end->insert_direct(moved_keys+keys_below, currentKey, currentVal)){
+						printf("Bucket %llx Failed to insert from %d to %llu\n", (unsigned long long int) start, i, moved_keys+keys_below);
+					}
+
+				}
+
+				//update tracking.
+				moved_keys += __popc(ballot_moving);
+
+
+			}
+
+
+			team.sync();
+
+
+			bool bucket_attached = cg::invoke_one_broadcast(team, [&] () { return attach_bucket(end, alt_index); } );
+
+			if (!bucket_attached){
+
+				printf("Failed to attach!\n");
+
+				asm volatile("trap;");
+			}
+
+			//unset round
+			for (int i = team.thread_rank(); i < start->n_traversals; i+=team.size()){		
+
+				if ((SET_BIT_MASK(i) & items_moved) == 0) continue;
+
+				start->resetPair(i);
+
+			}
+
+
+
+		}
+
+
+		__device__ void maybe_add_new_bucket(uint64_t index,  uint64_t promotion_size, bucket_type * primary_bucket, cg::thread_block_tile<group_size> team){
 
 
 			if (promotion_size >= n_directory){
@@ -1216,7 +1376,7 @@ namespace data_structs {
 				return;
 			}
 
-			if (primary_bucket->start_promotion(promotion_size)){
+			if (cg::invoke_one_broadcast(team, [&] () { return primary_bucket->start_promotion(promotion_size);})){
 
 				//printf("Promotion started: resizing from %lu -> %lu\n", promotion_size-1, promotion_size);
 
@@ -1236,34 +1396,45 @@ namespace data_structs {
 				#endif
 
 
-				auto alt_bucket = get_new_bucket(promotion_size);
+				auto alt_bucket = cg::invoke_one_broadcast(team, [&] () { return get_new_bucket(promotion_size);});
 
-				alt_bucket->stall_lock();
 
-				//printf("Bucket added\n");
+				//bool failed_attach = false;
 
-				if (!attach_bucket(alt_bucket, alt_index)){
 
-					#if HT_PRINT
-					printf("New bucket set failed\n");
-					#endif
+				// if (team.thread_rank() == 0){
 
-					//this should not occur ever now.
-					//global_free(alt_bucket);
+				// 	alt_bucket->stall_lock();
 
-					asm volatile("trap;");
 
-					return;
-				}
+				// 		//printf("Bucket added\n");
 
+				// }
+
+				cg::invoke_one(team, [&] () { alt_bucket->stall_lock(); });
+
+				// if (team.ballot(failed_attach)) {
+
+				// 	#if HT_PRINT
+				// 	printf("New bucket set failed\n");
+				// 	#endif
+
+				// 	asm volatile("trap;");
+
+
+				// }
 
 				//bucket attached, begin promotion process
-				move_into_new_bucket(index, alt_index, promotion_size, primary_bucket, alt_bucket);
+				move_into_new_bucket_coop(index, alt_index, promotion_size, primary_bucket, alt_bucket, team);
 
-				primary_bucket->unlock();
 
-				alt_bucket->unlock();
+				if (team.thread_rank() == 0){
+					primary_bucket->unlock();
 
+					alt_bucket->unlock();
+				}
+
+				team.sync();
 
 
 				//printf("Bucket move finished\n");
@@ -1274,7 +1445,9 @@ namespace data_structs {
 
 			} else {
 
-				primary_bucket->wait_on_bucket_promote();
+				cg::invoke_one(team, [&] () { primary_bucket->wait_on_bucket_promote(); });
+
+				team.sync();
 
 			}
 
@@ -1288,23 +1461,14 @@ namespace data_structs {
 		//step through levels, looking for key
 		//we must probe at most 2 buckets - this should always be verifiable by stepping down through the buckets
 		//do we need to step up occassionally?
-		__device__ bool query(Key key, Val & val){
+		__device__ bool query(Key key, Val & val, cg::thread_block_tile<group_size> team){
 
-					
-			#if KEY_IS_HASH
 
-			uint64_t hash = clip_hash_to_max_size(key);
-
-			#else
-
-			uint64_t hash = clip_hash_to_max_size(get_full_hash(key));
-
-			#endif
-			//uint64_t hash = clip_hash_to_max_size(get_full_hash(key));
-
-			uint64_t global_level = __ldcv(&level)-1;
-
+			uint64_t hash = cooperative_get_hash(key, team);
+			uint64_t global_level = cooperative_get_global_level(team);
 			uint64_t local_level = global_level;
+
+
 
 			while (true){
 				
@@ -1316,23 +1480,22 @@ namespace data_structs {
 				//force refinement if not valid
 				uint64_t bucket_index = clip_to_global_level(local_level, hash);
 
-				auto primary_bucket = get_bucket_from_index(bucket_index, true);
+				auto primary_bucket = cg::invoke_one_broadcast(team, [&] () { return get_bucket_from_index(bucket_index, true); });
 
 
 				//printf("Tid %llu Looping on local level %lu\n", gallatin::utils::get_tid(), local_level);
 
 				if (primary_bucket != nullptr){
 
-					if (primary_bucket->query(key, val)){
+					if (primary_bucket->query(key, val, team)){
 						return true;
 					} else {
-
 
 						if (local_level != 0){
 
 							uint64_t alt_bucket_index = clip_to_global_level(local_level-1, hash);
 
-							auto secondary_bucket = get_bucket_from_index(bucket_index, true);
+							auto secondary_bucket = cg::invoke_one_broadcast(team, [&] () { return get_bucket_from_index(alt_bucket_index, true); }); 
 
 							#if HT_PRINT
 							if (secondary_bucket == nullptr){
@@ -1341,7 +1504,8 @@ namespace data_structs {
 							#endif
 
 
-							if (!secondary_bucket->query(key, val)){
+
+							if (!secondary_bucket->query(key, val, team)){
 
 								return false;
 
@@ -1351,6 +1515,8 @@ namespace data_structs {
 
 
 
+						} else {
+							return false;
 						}
 
 
@@ -1428,6 +1594,17 @@ namespace data_structs {
 
 			return bucket != nullptr;
 
+		}
+
+		//helper for pulling tiles
+		__device__ __inline__ cg::thread_block_tile<group_size> get_my_tile(){
+
+		auto thread_block = cg::this_thread_block();
+
+  	 	cg::thread_block_tile<group_size> my_tile = cg::tiled_partition<group_size>(thread_block);
+
+  	 	return my_tile;
+ 
 		}
 
 	};

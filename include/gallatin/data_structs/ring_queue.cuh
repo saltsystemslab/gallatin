@@ -210,11 +210,11 @@ namespace data_structs {
 	// 	//generate a live version of the queue
 	// 	__host__ my_type * generate_on_device(allocator * backing_allocator){
 
-	// 		my_type * host_version = poggers::utils::get_host_version<my_type>();
+	// 		my_type * host_version = gallatin::utils::get_host_version<my_type>();
 
 	// 		host_version->init(backing_allocator);
 
-	// 		return poggers::utils::move_to_device<my_type>(host_version);
+	// 		return gallatin::utils::move_to_device<my_type>(host_version);
 
 	// 	}
 
