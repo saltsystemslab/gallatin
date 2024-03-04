@@ -143,6 +143,22 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
    printf("Starting test with %lu segments, %lu allocs per segment\n", num_segments, max_allocs_per_segment);
    printf("Actual allocs per segment %lu total allocs %lu\n", allocs_per_segment_size, num_allocs);
 
+
+   size_t free, total;
+   cudaMemGetInfo( &free, &total );
+
+   uint64_t space_needed = num_segments*16ULL*1024*1024 + sizeof(uint64_t *)*num_allocs;
+
+   if (space_needed >= free){
+
+      printf("Test requires %llu bytes of space, only %llu free on device\n", space_needed, free);
+      throw std::invalid_argument("Not enough space on GPU");
+
+
+   }
+
+
+
    init_global_allocator(num_bytes, 42);
 
 
@@ -220,23 +236,40 @@ int main(int argc, char** argv) {
    
    uint64_t size;
 
-   if (argc < 2){
-      num_segments = 1000;
-   } else {
-      num_segments = std::stoull(argv[1]);
-   }
+   // if (argc < 2){
+   //    num_segments = 1000;
+   // } else {
+   //    num_segments = std::stoull(argv[1]);
+   // }
 
-   if (argc < 3){
-      num_rounds = 1;
-   } else {
-      num_rounds = std::stoull(argv[2]);
-   }
+   // if (argc < 3){
+   //    num_rounds = 1;
+   // } else {
+   //    num_rounds = std::stoull(argv[2]);
+   // }
 
+
+   // if (argc < 4){
+   //    size = 16;
+   // } else {
+   //    size = std::stoull(argv[3]);
+   // }
 
    if (argc < 4){
-      size = 16;
-   } else {
-      size = std::stoull(argv[3]);
+      printf("Test pulls 90%% of segments given as allocations of a set size\n");
+      printf("Usage: ./tests/global_test [num_segments] [num_rounds] [allocation size]\n");
+      return 0;
+   }
+
+   num_segments = std::stoull(argv[1]);
+   num_rounds = std::stoull(argv[2]);
+   size = std::stoull(argv[3]);
+
+
+   if (num_segments < 500){
+
+      throw std::invalid_argument("Num segments must be greater than 500\n");
+
    }
 
    gallatin_test_allocs_pointer(num_segments*16*1024*1024, num_rounds, size);

@@ -20,6 +20,7 @@
 #include <iostream>
 #include <assert.h>
 #include <chrono>
+#include <new>
 
 using namespace gallatin::allocators;
 
@@ -128,7 +129,7 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
 
    uint64_t max_allocs_per_segment = mem_segment_size/smallest;
 
-   uint64_t max_num_allocs = max_allocs_per_segment*num_segments;
+   // uint64_t max_num_allocs = max_allocs_per_segment*num_segments;
 
 
    uint64_t allocs_per_segment_size = mem_segment_size/size;
@@ -141,6 +142,21 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
    printf("Actual allocs per segment %llu total allocs %llu\n", allocs_per_segment_size, num_allocs);
 
 
+
+   size_t free, total;
+   cudaMemGetInfo( &free, &total );
+
+   uint64_t space_needed = num_segments*16ULL*1024*1024 + sizeof(uint64_t *)*num_allocs;
+
+   if (space_needed >= free){
+
+      printf("Test requires %llu bytes of space, only %llu free on device\n", space_needed, free);
+      throw std::invalid_argument("Not enough space on GPU");
+
+
+   }
+
+
    gallatin_type * allocator = gallatin_type::generate_on_device(num_bytes, 42);
 
 
@@ -148,13 +164,13 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
    //generate bitarry
    //space reserved is one 
    uint64_t ** bits;
-   cudaMalloc((void **)&bits, sizeof(uint64_t *)*num_allocs);
+   GPUErrorCheck(cudaMalloc((void **)&bits, sizeof(uint64_t *)*num_allocs));
 
    cudaMemset(bits, 0, sizeof(uint64_t *)*num_allocs);
 
 
    uint64_t * misses;
-   cudaMallocManaged((void **)&misses, sizeof(uint64_t));
+   GPUErrorCheck(cudaMallocManaged((void **)&misses, sizeof(uint64_t)));
 
    cudaDeviceSynchronize();
 
@@ -212,24 +228,43 @@ int main(int argc, char** argv) {
    
    uint64_t size;
 
-   if (argc < 2){
-      num_segments = 1000;
-   } else {
-      num_segments = std::stoull(argv[1]);
-   }
+   // if (argc < 2){
+   //    num_segments = 1000;
+   // } else {
+   //    num_segments = std::stoull(argv[1]);
+   // }
 
-   if (argc < 3){
-      num_rounds = 1;
-   } else {
-      num_rounds = std::stoull(argv[2]);
-   }
+   // if (argc < 3){
+   //    num_rounds = 1;
+   // } else {
+   //    num_rounds = std::stoull(argv[2]);
+   // }
+
+
+   // if (argc < 4){
+   //    size = 16;
+   // } else {
+   //    size = std::stoull(argv[3]);
+   // }
 
 
    if (argc < 4){
-      size = 16;
-   } else {
-      size = std::stoull(argv[3]);
+      printf("Test pulls 90%% of segments given as allocations of a set size\n");
+      printf("Usage: ./tests/gallatin_test [num_segments] [num_rounds] [allocation size]\n");
+      return 0;
    }
+
+   num_segments = std::stoull(argv[1]);
+   num_rounds = std::stoull(argv[2]);
+   size = std::stoull(argv[3]);
+
+
+   if (num_segments < 500){
+
+      throw std::invalid_argument("Num segments must be greater than 500\n");
+
+   }
+
 
    gallatin_test_allocs_pointer<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
 

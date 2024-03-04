@@ -86,6 +86,9 @@ set(GALLATIN_TESTS_BINARY_DIR "${CMAKE_BINARY_DIR}/tests")
 
 option(GAL_TESTS "Configure CMake to build tests for the allocator" OFF)
 
+
+option(GAL_DS "Extended testing for auxillary data structures" OFF)
+
 if(GAL_TESTS)
     add_subdirectory(tests)
 endif(GAL_TESTS)
