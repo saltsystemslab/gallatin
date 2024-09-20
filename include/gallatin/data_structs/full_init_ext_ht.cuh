@@ -82,6 +82,28 @@ namespace data_structs {
 
 	}
 
+	//set yourself to nullptr if you do not detect that the bucket is the same level as you
+	//This occurs IFF there is difference in your level + bucket level where bucket level is smaller than your level
+	//To detect this, call load and clip to global level.
+	template<typename ht>
+	__global__ void clip_ext_buckets(ht * table, uint64_t max_items){
+
+		uint64_t tid = gallatin::utils::get_tid();
+
+		if (tid >= max_items) return;
+
+		auto bucket = table->get_bucket_for_fill(tid);
+
+		auto bucket_level = bucket->load_size_atomic_singleton();
+
+		if (table->clip_to_global_level(bucket_level, tid) != tid){
+
+			table->swap_bucket_in_index(tid, bucket, nullptr);
+
+		}
+
+	}
+
 
 	template<typename ht>
 	__global__ void free_ext_buckets(ht * table, uint64_t max_items){
@@ -91,6 +113,8 @@ namespace data_structs {
 		if (tid >= max_items) return;
 
 		auto bucket = table->get_bucket_for_fill(tid);
+
+		//need to check for double assignment...
 
 		if (bucket != nullptr){ global_free(bucket); }
 
@@ -111,11 +135,20 @@ namespace data_structs {
 
 
 	template <typename ht>
-	__global__ void set_table_pointers(ht * table, int directory_num, uint64_t items_in_layer){
+	__global__ void set_table_pointers(ht * table, uint64_t min_items, uint64_t max_items){
 
 		uint64_t tid = gallatin::utils::get_tid();
 
-		if (tid >= items_in_layer) return;
+
+		if (tid < min_items) return;
+
+		if (tid >= max_items) return;
+
+
+		auto my_lower_bucket = table->get_bucket_from_index(tid % min_items);
+
+		table->swap_bucket_in_index(tid, nullptr, my_lower_bucket);
+
 
 
 	}
@@ -323,6 +356,12 @@ namespace data_structs {
 
 		}
 
+		__device__ uint16_t load_size_atomic_singleton(){
+
+			return gallatin::utils::ldcv(&size);
+
+		}
+
 		// __device__ bool query(Key ext_key, Val & ext_val, uint16_t expected_size, bool & other_check_needed){
 
 		// 	//asserts that query may nnot be in another bucket.
@@ -499,7 +538,7 @@ namespace data_structs {
 		if (tid >= num_buckets) return;
 
 
-		auto bucket = table->get_new_bucket(table->n_directory-1);
+		auto bucket = table->get_new_bucket(0);
 
 		table->attach_bucket(bucket, tid);
 
@@ -563,17 +602,21 @@ namespace data_structs {
 
 			init_table_device<my_type><<<1,1>>>(device_version);
 
-			set_table_buckets<my_type><<<(max_items-1)/256+1,256>>>(device_version, max_items);
+			set_table_buckets<my_type><<<(max_items-1)/256+1,256>>>(device_version, min_items);
 
 			// for (int i = 1; i < n_directory; i++){
 
 			// 	//loop through directories and set pointers
 			// 	uint64_t loop_n_buckets = min_items << (i-1);
 
-			// 	set_table_pointers<my_type><<<(min_items-1)/256+1,256>>>(device_version, i, min_items);
+				
 
 
 			// }
+
+
+			set_table_pointers<my_type><<<(max_items-1)/256+1,256>>>(device_version, min_items, max_items);
+
 
 			cudaDeviceSynchronize();
 
@@ -585,6 +628,8 @@ namespace data_structs {
 
 		static __host__ void free_on_device(my_type * dev_version){
 
+
+			clip_ext_buckets<my_type><<<(max_items-1)/256+1, 256>>>(dev_version, max_items);
 			free_ext_buckets<my_type><<<(max_items-1)/256+1, 256>>>(dev_version, max_items);
 			free_ext_directory<my_type><<<(n_directory-1)/256+1, 256>>>(dev_version, n_directory);
 
@@ -731,7 +776,10 @@ namespace data_structs {
 
 		__device__ uint64_t cooperative_get_global_level(cg::thread_block_tile<group_size> & team){
 
-			return cg::invoke_one_broadcast(team, [&] () { return gallatin::utils::ld_acq(&level)-1; });
+			//make non-global as static.
+
+			return level-1;
+			//return cg::invoke_one_broadcast(team, [&] () { return gallatin::utils::ld_acq(&level)-1; });
 								
 
 		}
@@ -894,25 +942,38 @@ namespace data_structs {
 
 
 		//given a bucket, perform a CAS to update load!
-		__device__ bucket_type * store_CAS_bucket_in_index(uint64_t index, bucket_type * old_bucket, bucket_type * new bucket){
+		__device__ bool swap_bucket_in_index(uint64_t index, bucket_type * old_bucket, bucket_type * new_bucket){
+
+
+
+			bucket_type ** bucket_address = get_address_of_bucket(index);
+
+
+			return (atomicCAS((unsigned long long int *)bucket_address, (unsigned long long int) old_bucket, (unsigned long long int) new_bucket) == (unsigned long long int) old_bucket);
+
 
 			
 
 		}
 
-		__device__ bucket_type * get_bucket_from_index(uint64_t index, bool load_atomic=false){
+		__device__ void force_bucket_exchange(uint64_t index, bucket_type * new_bucket){
+
+			bucket_type ** bucket_address = get_address_of_bucket(index);
+
+			atomicExch((unsigned long long int *)bucket_address, (unsigned long long int) new_bucket);
+
+		}
+
+		//get the index of a bucket
+		__device__ bucket_type ** get_address_of_bucket(uint64_t index){
+
 
 			uint64_t directory_index = get_directory_index(index);
 
-			uint64_t local_position = get_local_position(index,directory_index);
-
-			//check if directory exists - iteratively refine untile smaller key reached
-
+			uint64_t local_position = get_local_position(index, directory_index);
 
 			bucket_type ** global_read_directory = directory[directory_index];
 
-			//to get to this point, the directory must be set somewhere.
-			//loop until the cache mechanism detects and corrects
 			while (global_read_directory == nullptr){
 
 				//printf("Stalling in read of global directory\n");
@@ -928,20 +989,20 @@ namespace data_structs {
 				printf("Looping %lu\n", gallatin::utils::get_tid());
 				#endif
 
-				//extra safety check - if less than global level, drop.
-
 			}
 
-			return (bucket_type *) gallatin::utils::ld_acq((uint64_t *)&global_read_directory[local_position]);
+			return &global_read_directory[local_position];
 
 
-			// if (load_atomic && global_read_directory[local_position] == nullptr){
 
-			// 	return (bucket_type * ) atomicCAS((unsigned long long int *)&global_read_directory[local_position], 0ULL, 0ULL);
+		}
 
-			// } else {
-			// 	return global_read_directory[local_position];
-			// }
+		__device__ bucket_type * get_bucket_from_index(uint64_t index, bool load_atomic=false){
+
+			bucket_type ** bucket_ptr = get_address_of_bucket(index);
+
+			return (bucket_type *) gallatin::utils::ld_acq((uint64_t *)bucket_ptr);
+
 
 		}
 
@@ -995,6 +1056,8 @@ namespace data_structs {
 				printf("%llu Looping in main\n", gallatin::utils::get_tid());
 				#endif
 
+
+				//printf("%lu looping\n", gallatin::utils::get_tid());
 				
 				//broadcast info
 
@@ -1034,238 +1097,71 @@ namespace data_structs {
 
 				//printf("Tid %llu Looping on local level %lu\n", gallatin::utils::get_tid(), local_level);
 
-				if (primary_bucket != nullptr){
 
-					int insert_slot = primary_bucket->insert(key, val, team);
-					if (insert_slot != -1){
+				//refactor - insert
+				//unrolling loop
+				//this cannot occur now.
+				if (primary_bucket == nullptr){
 
-						//check size for rollback
+					printf("This cannot occur.\n");
+					continue;
 
-
-
-						//UPDATED code
-						//new position exists somewhere in table.
-
-						//either A up-to-date or B lagging.
-						//we always approach a key at the highest point in which we would observe it.
-						//can calculate position as BITMASK(bucket_size) & hash.
-
-						auto bucket_size = primary_bucket->load_size_atomic(team);
-
-						auto local_bucket_index = clip_to_global_level(bucket_size, hash)
-
-						//what we expected was correct!
-						if (local_bucket_index == bucket_index){
-							return true;
-
-						} else {
-
-							//rollback.
-
-							bool rolled_back = cg::invoke_one_broadcast(team, [&] () { return primary_bucket->resetExact(insert_slot, key); });
-
-							//insert succeeded as another thread performed the move for us.
-							if (!rolled_back) return true;
-
-
-							//at this point the address must be lower
-							//boot up A) one level
-							//or B) all levels.
-
-							//next level index
-							local_bucket_index = clip_to_global_level(bucket_size+1, hash);
-
-							auto next_bucket_ptr = 
-
-
-							__threadfence();
-							local_level = local_level+1;
-
-
-							global_level = cg::invoke_one_broadcast(team, [&] () { return gallatin::utils::ld_acq(&level)-1; });
-							//global_level = atomicAdd((unsigned long long int *)&level, 0ULL)-1;
-
-							#if HT_PRINT
-							if (local_level > global_level){
-								printf("Upper track generates bug\n");
-							}
-							#endif
-
-
-
-
-
-							continue;
-
-							
-
-			
-						}
-
-
-
-
-
-						return true;
-					} else {
-
-						//fail! see if we can promote the bucket.
-
-
-						//things needed
-						//1. bucket size.
-						//2. global size.
-						//3. local level.
-
-
-						//procedure
-						//if local level and global bucket size are n_directory return.
-						//global read bucket size
-						//if new bucket should be added
-						//check if should add new backing
-						//if true expand
-
-
-						//after keys are moved up local level if not cap.
-						//reload
-
-
-						auto primary_bucket_size = primary_bucket->load_size_atomic(team);
-
-						if (local_level == (n_directory-1) && primary_bucket_size == (n_directory-1)){
-
-							//table is full!
-							return false;
-						}
-
-						//early drop - primary bucket can't resize, but maybe another bucket can
-						//this shouldn't happen but who knows? We'll leave it in for now.
-						if (primary_bucket_size == (n_directory-1)){
-
-							#if HT_PRINT
-							printf("Triggering local resize without bucket upsize\n");
-							#endif
-							local_level = local_level+1;
-
-							//global_level = atomicAdd((unsigned long long int *)&level, 0ULL)-1;
-							global_level = cooperative_get_global_level(team);
-							#if HT_PRINT
-							if (local_level > global_level){
-								printf("Mid track generates bug\n");
-							}
-							#endif
-
-							__threadfence();
-							continue;
-						}
-
-						//proceeding with resize Load external data needed
-						global_level = cooperative_get_global_level(team);
-
-
-						if (primary_bucket_size == global_level){
-							//implies global_level < n_directory;
-							//therefore you can (and should) upsize safely.
-							cg::invoke_one(team, [&] () { add_new_backing(primary_bucket_size+1); });
-
-						}
-
-						//at this point, we should upsize the bucket.
-						maybe_add_new_bucket(bucket_index, primary_bucket_size+1, primary_bucket, team);
-
-						//at this point, reload variables
-
-
-						
-
-						__threadfence();
-						global_level = cooperative_get_global_level(team);
-						//global_level = atomicAdd((unsigned long long int *)&level, 0ULL)-1;
-
-
-						if (local_level != (n_directory-1) && local_level < global_level) local_level+=1;
-
-						#if HT_PRINT
-						if (local_level > global_level){
-							printf("Final track generates bug: %lu > %lu\n",local_level, global_level);
-						}
-						#endif
-
-						continue;
-
-
-						//start of extension
-
-						// local_level = local_level+1;
-
-						// __threadfence();
-						// //reload global level...
-						// global_level = gallatin::utils::ld_acq(&level)-1;
-
-						// if (local_level > global_level){
-
-						// 	//can't expand.
-						// 	if (local_level >= n_directory) return false;
-
-
-						// 	add_new_backing(global_level+1);
-
-						// 	__threadfence();
-
-						// 	global_level = gallatin::utils::ld_acq(&level)-1;
-
-						// 	//after new backing, fall back to re-read global.
-						// 	continue;
-						// }
-
-						//regenerate index
-						//uint64_t alt_index = clip_to_global_level(local_level, hash);
-
-						//if (alt_index == local_level) break;
-
-						//auto alt_bucket = get_bucket_from_index(alt_index);
-
-
-						//printf("Attempting move\n");
-						//promote size.
-
-						// if (local_level >= n_directory) return false;
-
-						// auto primary_bucket_size = primary_bucket->load_size_atomic();
-
-						// if (primary_bucket_size >= global_level){
-
-
-						// 	if (primary_bucket_size+1 >= n_directory) return false;
-
-						// 	//printf("Adding Backing for b")
-
-						// 	add_new_backing(primary_bucket_size+1);
-							
-						// 	continue;
-
-						// } 
-
-	
-
-
-					}
-
-				} else {
-					//refine
-					local_level = local_level-1;
 				}
 
-				
+				int insert_slot = primary_bucket->insert(key, val, team);
+
+				auto bucket_size = primary_bucket->load_size_atomic(team);
+
+				auto local_bucket_index = clip_to_global_level(bucket_size, hash);
+
+				//what we expected was correct! return.
+				if (local_bucket_index <= bucket_index){
+
+					//correct behavior.
+
+					if (insert_slot == -1){
+
+						//could not insert.
+						if (bucket_size == global_level) return false;
+						//attempt promotion of bucket
 
 
+						maybe_add_new_bucket(local_bucket_index, bucket_size+1, primary_bucket, team);
 
-			
+						continue;
+					}
+
+					//otherwise correct.
+
+					return true;
+				}
+
+
+				//in this case - we are clearly wrong.
+				//unset and update
+				if (insert_slot != -1){
+
+					bool rolled_back = cg::invoke_one_broadcast(team, [&] () { return primary_bucket->resetExact(insert_slot, key); });
+
+					//insert succeeded as another thread performed the move for us.
+					//other threads will not move for rollback unless exactly one off on size due to race.
+					if (!rolled_back) return true;
+
+				}
+
+				//otherwise we rolled back. - flense old pointer and update.
+
+				auto correct_bucket_index = clip_to_global_level(bucket_size+1, hash);
+
+				bucket_type * new_bucket = get_bucket_from_index(correct_bucket_index);
+
+				swap_bucket_in_index(clip_to_global_level(global_level, hash), primary_bucket, new_bucket);
+
+				__threadfence();
+				continue;
 
 			}
 
-
-			return false;
 
 		}
 
@@ -1408,14 +1304,15 @@ namespace data_structs {
 			team.sync();
 
 
-			bool bucket_attached = cg::invoke_one_broadcast(team, [&] () { return attach_bucket(end, alt_index); } );
+			//bool bucket_attached = 
+			//cg::invoke_one_broadcast(team, [&] () { return force_bucket_exchange(alt_index, end); } );
 
-			if (!bucket_attached){
+			// if (!bucket_attached){
 
-				printf("Failed to attach!\n");
+			// 	printf("Failed to attach!\n");
 
-				asm volatile("trap;");
-			}
+			// 	asm volatile("trap;");
+			// }
 
 			//unset round
 			for (int i = team.thread_rank(); i < start->n_traversals; i+=team.size()){		

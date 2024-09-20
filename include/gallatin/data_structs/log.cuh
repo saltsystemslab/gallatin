@@ -26,6 +26,27 @@ namespace gallatin {
 namespace data_structs {
 
 
+
+
+	//exception type
+	template <bool on_host>
+	class InvalidLogCallException: public std::exception {
+
+	public:
+		char * what(){\
+
+			constexpr if (on_host){
+				return "Calling device-allocator only function on log with host entries."
+			} else {
+				return "Calling host-allocator only function on log with device entries."
+			}
+			
+		}
+
+
+	}
+
+
 	template <typename log_vector>
 	__global__ void free_log_strings(log_vector * logs, uint64_t nitems){
 
@@ -182,6 +203,18 @@ namespace data_structs {
 
 			storage_vector->insert(new_log_entry);
 
+
+		}
+
+
+
+		static __host__ std::vector<std::string> export_log_device(my_type * device_version){
+
+			if (on_host){
+				throw new InvalidLogCallException<on_host>();
+			}
+
+			//record number of 
 
 		}
 

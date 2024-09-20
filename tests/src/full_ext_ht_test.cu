@@ -332,7 +332,7 @@ __host__ void extendible_ht_test(uint64_t num_bytes, uint64_t nitems, int n_roun
    gallatin::utils::timer query_timing;
 
 
-   query_ht_kernel<<<((nitems-1)/TEST_BLOCK_SIZE+1)*group_size, TEST_BLOCK_SIZE>>>(my_table, data, nitems, misses+n_rounds, misses+n_rounds+1);
+   //query_ht_kernel<<<((nitems-1)/TEST_BLOCK_SIZE+1)*group_size, TEST_BLOCK_SIZE>>>(my_table, data, nitems, misses+n_rounds, misses+n_rounds+1);
 
    query_timing.sync_end();
 
@@ -348,7 +348,7 @@ __host__ void extendible_ht_test(uint64_t num_bytes, uint64_t nitems, int n_roun
    cudaDeviceSynchronize();
 
 
-   ht_type::free_on_device(my_table);
+   //ht_type::free_on_device(my_table);
 
    cudaFree(data);
 
@@ -460,9 +460,23 @@ int main(int argc, char** argv) {
 
    //extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 20, 29, 1>(num_segments*16*1024*1024, 100000000, 1);
 
+   // extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 20, 28, 1>(num_segments*16*1024*1024, 30000000, 1);
+   // extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 20, 28, 2>(num_segments*16*1024*1024, 30000000, 1);
+   // extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 20, 28, 4>(num_segments*16*1024*1024, 30000000, 1);
+
    extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 20, 28, 1>(num_segments*16*1024*1024, 30000000, 1);
-   extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 20, 28, 2>(num_segments*16*1024*1024, 30000000, 1);
-   extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 20, 28, 4>(num_segments*16*1024*1024, 30000000, 1);
+   extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 21, 28, 1>(num_segments*16*1024*1024, 30000000, 1);
+   extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 22, 28, 1>(num_segments*16*1024*1024, 30000000, 1);
+   extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 23, 28, 1>(num_segments*16*1024*1024, 30000000, 1);
+   extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 24, 28, 1>(num_segments*16*1024*1024, 30000000, 1);
+   extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 25, 28, 1>(num_segments*16*1024*1024, 30000000, 1);
+   extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 26, 28, 1>(num_segments*16*1024*1024, 30000000, 1);
+   extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 27, 28, 1>(num_segments*16*1024*1024, 30000000, 1);
+   extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 28, 28, 1>(num_segments*16*1024*1024, 30000000, 1);
+
+   //extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 7, 20, 28, 8>(num_segments*16*1024*1024, 30000000, 1);
+
+   // extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 3, 20, 28, 4>(num_segments*16*1024*1024, 300000000, 1);
    
 
    // extendible_ht_test<uint64_t, 0ULL, ~0ULL, uint64_t, 7, 20, 28, 1>(num_segments*16*1024*1024, 30000000, 1);

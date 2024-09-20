@@ -54,29 +54,30 @@ namespace data_structs {
 
 
 
-	template <typename Key, typename Val, int size>
+	template <typename Key, Key defaultKey, typename Val, Val defaultVal, int size>
 	struct chaining_block {
 
-		using filled_type = chaining_block<Key, Val, size>;
+		using filled_type = chaining_block<Key, defaultKey, Val, defaultVal, size>;
 		filled_type * next;
 
 		Key keys[size];
 		Val vals[size];
 
 
-		__device__ void init(Key & defaultKey){
+		__device__ void init(){
 
 			//next points to nullptr
 			atomicExch((unsigned long long int *)&next, 0ULL);
 
 			for (int i = 0; i < size; i++){
 
-				typed_atomic_exchange(&keys[i], defaultKey);
+				gallatin::utils::st_rel(&keys[i], defaultKey);
+				//typed_atomic_exchange(&keys[i], defaultKey);
 
 			}
 		}
 
-		__device__ bool insert(Key & defaultKey, Key insertKey, Val insertVal){
+		__device__ bool insert(Key insertKey, Val insertVal){
 
 			for (int i = 0; i < size; i++){
 
@@ -99,9 +100,9 @@ namespace data_structs {
 			for (int i =0; i < size; i++){
 
 
-				if (keys[i] == queryKey){
+				if (gallatin::utils::ld_acq(&keys[i]) == queryKey){
 
-					returnVal = vals[i];
+					returnVal = gallatin::utils::ld_acq(&vals[i]);
 					return true;
 				}
 			}
@@ -109,12 +110,32 @@ namespace data_structs {
 			return false;
 		}
 
+		__device__ bool remove(Key deleteKey){
+
+
+			for (int i = 0; i < size; i++){
+
+				if (gallatin::utils::ld_acq(&keys[i]) == deleteKey){
+
+					if (typed_atomic_write(&keys[i], deleteKey, defaultKey)){
+						typed_atomic_exchange(&vals[i], defaultVal);
+						return true;
+					}
+
+				}
+
+			}
+
+			return false;
+		}
+
+
 	};
 
-	template <typename Key, typename Val, int size=4>
+	template <typename Key, Key defaultKey, typename Val, Val defaultVal, int size=4>
 	struct chaining_table{
 
-		using my_type = chaining_table<Key, Val, size>;
+		using my_type = chaining_table<Key, defaultKey, Val, defaultVal, size>;
 
 		uint64_t nslots;
 
@@ -122,14 +143,11 @@ namespace data_structs {
 
 		uint64_t seed;
 
-		using block_type = chaining_block<Key, Val, size>;
+		using block_type = chaining_block<Key, defaultKey, Val, defaultVal, size>;
 
 		block_type ** pointer_list;
 
-		//todo: make const for improved performance.
-		Key defaultKey;
-
-		static __host__ my_type * generate_on_device(uint64_t ext_nslots, Key ext_defaultKey, uint64_t ext_seed){
+		static __host__ my_type * generate_on_device(uint64_t ext_nslots, uint64_t ext_seed){
 
 			my_type * host_version = gallatin::utils::get_host_version<my_type>();
 
@@ -139,9 +157,6 @@ namespace data_structs {
 			block_type ** ext_pointer_list;
 
 			host_version->nblocks = ext_nslots/size;
-
-
-			host_version->defaultKey = ext_defaultKey;
 
 			cudaMalloc((void **)&ext_pointer_list, host_version->nblocks*sizeof(block_type *));
 
@@ -165,8 +180,6 @@ namespace data_structs {
 			block_type ** ext_pointer_list;
 
 			host_version->nblocks = ext_nslots/size;
-
-			host_version->defaultKey = ext_defaultKey;
 
 			cudaMalloc((void **)&ext_pointer_list, host_version->nblocks*sizeof(block_type *));
 
@@ -205,7 +218,7 @@ namespace data_structs {
 
 			if (new_block == nullptr) return false;
 
-			new_block->init(defaultKey);
+			new_block->init();
 
 			if (atomicCAS((unsigned long long int *)block_ptr, 0ULL, (unsigned long long int ) new_block) != 0ULL){
 
@@ -258,7 +271,7 @@ namespace data_structs {
 
 				//otherwise, try to insert
 
-				if (my_block->insert(defaultKey, newKey, newVal)){
+				if (my_block->insert(newKey, newVal)){
 					return;
 				}
 

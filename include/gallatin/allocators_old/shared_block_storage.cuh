@@ -48,6 +48,8 @@ __global__ void gallatin_set_block_bitarrs(Block **blocks, uint64_t num_blocks) 
 struct per_size_pinned_blocks {
   uint64_t num_blocks;
 
+  int blocks_unset;
+
   uint64_t *block_bitmap;
 
   Block **blocks;
@@ -70,6 +72,8 @@ struct per_size_pinned_blocks {
         gallatin::utils::get_device_version<Block *>(num_blocks);
 
     host_version->num_blocks = num_blocks;
+
+    host_version->blocks_unset = 0;
 
     gallatin_set_block_bitarrs<<<(num_blocks - 1) / 512 + 1, 512>>>(
         host_version->blocks, num_blocks);
@@ -96,6 +100,8 @@ struct per_size_pinned_blocks {
         gallatin::utils::get_device_version<Block *>(num_blocks);
 
     host_version->num_blocks = num_blocks;
+
+    host_version->blocks_unset = 0;
 
     gallatin_set_block_bitarrs<<<(num_blocks - 1) / 512 + 1, 512>>>(
         host_version->blocks, num_blocks);
@@ -144,6 +150,84 @@ struct per_size_pinned_blocks {
 
  }
 
+
+ __device__ void mark_unset(int my_smid){
+
+    int high = my_smid / 64;
+    int low = my_smid % 64;
+
+    uint64_t mask = SET_BIT_MASK(low);
+
+    uint64_t old_bits =
+        atomicOr((unsigned long long int *)&block_bitmap[high], mask);
+
+    atomicAdd(&blocks_unset, 1);
+
+
+ }
+
+ //opposite of mark unset
+ __device__ int find_lock_unset(){
+
+  uint64_t num_uints = (num_blocks-1)/64+1;
+
+  for (int i = 0; i < num_uints; i++){
+
+
+    uint64_t load = gallatin::utils::ld_acq(&block_bitmap[i]);
+
+    while (load != 0){
+
+      //printf("Looping load %lx\n", load);
+
+      int first_found = __ffs(load)-1;
+
+      while (first_found != -1){
+
+        //printf("Looping inner load %d\n", first_found);
+
+        if (atomicAnd((unsigned long long int *)&block_bitmap[i], ~SET_BIT_MASK(first_found)) & SET_BIT_MASK(first_found)){
+
+
+          //done!
+
+          //atomicSub(&blocks_unset, 1);
+
+          return first_found + i*64;
+        }
+
+        load  ^= 1UL << first_found;
+
+        first_found = __ffs(load)-1;
+
+      }
+
+      load = gallatin::utils::ld_acq(&block_bitmap[i]);
+
+    }
+
+  }
+
+  return -1;
+
+ }
+
+ __device__ int read_n_unset(){
+
+  return (int) gallatin::utils::ld_acq((uint32_t *) &blocks_unset);
+
+ }
+
+ __device__ int subtract_n_unset(){
+
+  return atomicSub(&blocks_unset, 1);
+
+ }
+
+ __device__ int add_n_unset(){
+  return atomicAdd(&blocks_unset, 1);
+ }
+
   __device__ Block *get_alt_block() {
     int my_smid = gallatin::utils::get_smid();
 
@@ -179,7 +263,7 @@ struct per_size_pinned_blocks {
     int high = my_smid / 64;
     int low = my_smid % 64;
 
-    uint64_t mask = BITMASK(low);
+    uint64_t mask = SET_BIT_MASK(low);
 
     uint64_t old_bits =
         atomicOr((unsigned long long int *)&block_bitmap[high], mask);
@@ -193,7 +277,7 @@ struct per_size_pinned_blocks {
     int high = my_smid / 64;
     int low = my_smid % 64;
 
-    uint64_t mask = BITMASK(low);
+    uint64_t mask = SET_BIT_MASK(low);
 
     uint64_t old_bits =
         atomicAnd((unsigned long long int *)&block_bitmap[high], ~mask);

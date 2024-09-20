@@ -77,19 +77,19 @@ __global__ void query_kernel(ht_type * table, uint64_t ninserts){
 
 }
 
-template <typename Key, typename Val, int size>
+template <typename Key, Key defualtKey, typename Val, Val defaultVal, int size>
 __host__ void gallatin_ht_test(uint64_t num_bytes, uint64_t num_inserts){
 
 
    std::cout << "Table with " << typeid(Key).name() << " keys, " << typeid(Val).name() << " vals, and " << size << " slots per bucket" << std::endl;
 
-   using ht_type = gallatin::data_structs::chaining_table<Key, Val, size>;
+   using ht_type = gallatin::data_structs::chaining_table<Key, defualtKey, Val, defaultVal, size>;
 
    gallatin::utils::timer boot_timing;
 
    init_global_allocator(num_bytes, 42);
    
-   ht_type * table = ht_type::generate_on_device(num_inserts, 0, 123456ULL);
+   ht_type * table = ht_type::generate_on_device(num_inserts, 123456ULL);
 
    //ht_type * table;
    //cudaMalloc((void **)&table, sizeof(ht_type));
@@ -175,21 +175,23 @@ int main(int argc, char** argv) {
       num_inserts = std::stoull(argv[2]);
    }
 
-   gallatin_ht_test<uint32_t, uint32_t, 1>(num_segments*16*1024*1024, num_inserts);
-   gallatin_ht_test<uint32_t, uint32_t, 2>(num_segments*16*1024*1024, num_inserts);
-   gallatin_ht_test<uint32_t, uint32_t, 4>(num_segments*16*1024*1024, num_inserts);
-   gallatin_ht_test<uint32_t, uint32_t, 8>(num_segments*16*1024*1024, num_inserts);
-   gallatin_ht_test<uint32_t, uint32_t, 16>(num_segments*16*1024*1024, num_inserts);
-   gallatin_ht_test<uint32_t, uint32_t, 32>(num_segments*16*1024*1024, num_inserts);
+   // gallatin_ht_test<uint32_t, 0U, uint32_t, 0U, 1>(num_segments*16*1024*1024, num_inserts);
+   // gallatin_ht_test<uint32_t, 0U, uint32_t, 0U, 2>(num_segments*16*1024*1024, num_inserts);
+   // gallatin_ht_test<uint32_t, 0U, uint32_t, 0U, 4>(num_segments*16*1024*1024, num_inserts);
+   // gallatin_ht_test<uint32_t, 0U, uint32_t, 0U, 8>(num_segments*16*1024*1024, num_inserts);
+   // gallatin_ht_test<uint32_t, 0U, uint32_t, 0U, 16>(num_segments*16*1024*1024, num_inserts);
+   // gallatin_ht_test<uint32_t, 0U, uint32_t, 0U, 32>(num_segments*16*1024*1024, num_inserts);
 
 
-   gallatin_ht_test<uint64_t, uint64_t, 1>(num_segments*16*1024*1024, num_inserts);
-   gallatin_ht_test<uint64_t, uint64_t, 2>(num_segments*16*1024*1024, num_inserts);
-   gallatin_ht_test<uint64_t, uint64_t, 4>(num_segments*16*1024*1024, num_inserts);
-   gallatin_ht_test<uint64_t, uint64_t, 8>(num_segments*16*1024*1024, num_inserts);
-   gallatin_ht_test<uint64_t, uint64_t, 16>(num_segments*16*1024*1024, num_inserts);
-   gallatin_ht_test<uint64_t, uint64_t, 32>(num_segments*16*1024*1024, num_inserts);
+   // gallatin_ht_test<uint64_t, 0ULL, uint64_t, 0ULL, 1>(num_segments*16*1024*1024, num_inserts);
+   // gallatin_ht_test<uint64_t, 0ULL, uint64_t, 0ULL, 2>(num_segments*16*1024*1024, num_inserts);
+   // gallatin_ht_test<uint64_t, 0ULL, uint64_t, 0ULL, 4>(num_segments*16*1024*1024, num_inserts);
+   // gallatin_ht_test<uint64_t, 0ULL, uint64_t, 0ULL, 8>(num_segments*16*1024*1024, num_inserts);
+   // gallatin_ht_test<uint64_t, 0ULL, uint64_t, 0ULL, 16>(num_segments*16*1024*1024, num_inserts);
+   // gallatin_ht_test<uint64_t, 0ULL, uint64_t, 0ULL, 32>(num_segments*16*1024*1024, num_inserts);
 
+   gallatin_ht_test<uint32_t, 0U, uint32_t, 0U, 15>(num_segments*16*1024*1024, num_inserts);
+   gallatin_ht_test<uint64_t, 0ULL, uint64_t, 0ULL, 7>(num_segments*16*1024*1024, num_inserts);
 
 
    cudaDeviceSynchronize();

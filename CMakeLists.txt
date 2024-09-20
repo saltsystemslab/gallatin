@@ -34,14 +34,13 @@ include(cmake/CPM.cmake)
 include(cmake/ConfigureExecutable.cmake)
 
 ## Package Target
-
 add_library(gallatin INTERFACE)
 
 target_include_directories(gallatin INTERFACE
                            "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
                            $<INSTALL_INTERFACE:include>)
 
-target_link_libraries(gallatin INTERFACE ssl crypto)
+target_link_libraries(gallatin INTERFACE ssl crypto cufile)
 
 
 option(LINFO "Add lineInfo for NSight Compute profiling" OFF)
@@ -86,12 +85,29 @@ set(GALLATIN_TESTS_BINARY_DIR "${CMAKE_BINARY_DIR}/tests")
 
 option(GAL_TESTS "Configure CMake to build tests for the allocator" OFF)
 
+option(GAL_CORRECTNESS "Configure CMake to build correctness tests for the allocator" ON)
+
+
 
 option(GAL_DS "Extended testing for auxillary data structures" OFF)
 
 if(GAL_TESTS)
     add_subdirectory(tests)
+
+    if (GAL_DS)
+      message("auxillary data structure tests are live. Correctness and usage are not guaranteed for these experiments.")
+    endif (GAL_DS)
+
 endif(GAL_TESTS)
+
+
+if (GAL_CORRECTNESS)
+  
+  add_subdirectory(correctness_tests)
+
+endif(GAL_CORRECTNESS)
+
+
 
 
 

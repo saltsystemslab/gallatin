@@ -1,376 +1,71 @@
-#ifndef BETA_BLOCK
-#define BETA_BLOCK
-// Betta, the block-based extending-tree thread allocaotor, made by Hunter McCoy
-// (hunter@cs.utah.edu) Copyright (C) 2023 by Hunter McCoy
+#ifndef GALLATIN_BLOCK
+#define GALLATIN_BLOCK
 
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without l> imitation the
-// rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
-// sell copies of the Software, and to permit persons to whom the Software is
-// furnished to do so,
-//  subject to the following conditions:
+#include <gallatin/allocators/config.cuh>
 
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial
-//  portions of the Software.
-
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY,
-//  WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-//  IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-//  SOFTWARE.
-
-// The alloc table is an array of uint64_t, uint64_t pairs that store
-
-// inlcudes
-#include <cuda.h>
-#include <cuda_runtime_api.h>
-
-// #include <cassert>
-// #include <cmath>
-// #include <cstdio>
-// #include <iostream>
-
-#include <gallatin/allocators/alloc_utils.cuh>
-
-
-#include <cooperative_groups.h>
-#include <cooperative_groups/scan.h>
-
-// #include "assert.h"
-// #include "stdio.h"
-
-// These need to be enabled for bitarrays
-#include <cooperative_groups/reduce.h>
-#include <cooperative_groups/scan.h>
-
-#define GALLATIN_BLOCK_DEBUG 0
-
-#define GALLATIN_BLOCK_TREE_OFFSET 20
 
 namespace gallatin {
 
-namespace allocators {
 
-struct Block {
-  
-  uint malloc_counter;
-  uint free_counter;
-
-  __device__ void init() {
-    //f u its gotta be big.
-    malloc_counter = 4097UL;
-    free_counter = 0UL;
-  }
-
-  // helper functions
-
-  // frees must succeed - precondition - fail on double free but print error.
-  // uint64_t must be clipped ahead of time. 0 - 4096
-  __device__ bool block_free() {
-    uint old = atomicAdd((unsigned int *)&free_counter, 1ULL);
+namespace internals {
 
 
-    #if GALLATIN_BLOCK_DEBUG
+  //A block represents 4096 allocations of a specific size 
+  //each block is represented by 2 counters, the malloc counter and free counter
+  //the upper 6 bits of a malloc counter represent the tree size, while the lower 26 bits represent malloc count
+  //rollover must not occur
 
-    if (old > 4095) printf("Double free to block: %u frees\n", old+1);
+  //Addition of pack gaurantees that uint64_t swap is valid, as it is aligned.
+  #pragma pack(8)
+  struct block {
 
-    #endif
-
-    return (old == 4095);
-  }
-
-  __device__ bool block_free_multiple(uint num_frees) {
-    uint old = atomicAdd((unsigned int *)&free_counter, num_frees);
+    uint malloc_counter;
+    uint free_counter;
 
 
-    #if GALLATIN_BLOCK_DEBUG
-
-    if (old > 4096-num_frees) printf("Double free to block: %u frees\n", old+num_frees);
-
-    #endif
-
-    return (old+num_frees == 4096);
-  }
-
-  __device__ uint64_t block_malloc(cg::coalesced_group &active_threads) {
-    uint old_count;
-
-    if (active_threads.thread_rank() == 0) {
-      old_count =
-          atomicAdd((unsigned int *)&malloc_counter, active_threads.size());
+    __device__ void init(){
+      malloc_counter = 4097;
+      free_counter = 4096;
     }
 
-    old_count = active_threads.shfl(old_count, 0);
 
-    uint my_value = old_count + active_threads.thread_rank();
+    __device__ void reset(uint16_t tree_size){
 
-    if (my_value < 4096) {
-      return my_value;
-    }
+      uint64_t shifted_tree_size = ((uint64_t) tree_size) << (GALLATIN_BLOCK_TREE_OFFSET);
 
-    return ~0ULL;
-  }
+      //uint64_t merged = ((uint64_t) shifted_tree_size) << 32;
 
-  //allow threads to procure multiple allocations simultaneously
-  __device__ uint64_t block_malloc_multi_size(cg::coalesced_group &active_threads, uint copies_needed){
+      uint64_t leftover = atomicExch((unsigned long long int *)this, (unsigned long long int) shifted_tree_size);
 
-    //calculate exclusive sum - if value is less than that, valid
+      #if GALLATIN_DEBUG
 
-    uint my_group_sum = cg::exclusive_scan(active_threads, copies_needed, cg::plus<uint>());
+      //only fully allocated, fully released blocks should be freed.
+      uint32_t malloc_leftover = leftover & BITMASK(32);
+      uint32_t free_leftover = leftover >> 32;
 
-    //last thread in group has total size and controls atomic
 
-    uint old_count;
+      uint count = malloc_leftover & BITMASK(GALLATIN_BLOCK_TREE_OFFSET);
 
-    if (active_threads.thread_rank() == active_threads.size()-1){
-
-      old_count = atomicAdd((unsigned int *)&malloc_counter, my_group_sum+copies_needed);
-
-    }
-
-    old_count = active_threads.shfl(old_count, 0);
-
-    uint my_value = old_count + my_group_sum;
-
-    if (my_value + copies_needed <= 4096){
-
-      //example here
-      //one thread - malloc set to 4095
-      //group sum = 0
-      //sum_copies = 1
-      //old count = 4095
-      //value + copies needed = 4096 - valid!
-
-      //two threads - 2 and 1
-      // malloc set to 4094
-      // group sum = 2
-      // sum + copies = 3
-      //thread 1 - 4094 + 2 = 4096
-
-      //thread 3 - 4094+2+1 = 4097 - fail.
-
-      //recoalesce
-
-      cg::coalesced_group successful_threads = cg::coalesced_threads();
-
-      uint excess_allocs = cg::reduce(successful_threads, copies_needed-1, cg::plus<uint>());
-
-      //only reduce excess if necessary
-      if (excess_allocs > 0 && successful_threads.thread_rank() == 0){
-
-        //don't need to check free logic, as at least one allocation must be active!
-        atomicAdd((unsigned int *)&free_counter, excess_allocs);
-
+      if (count < 4096 || free_leftover != 4096){
+        write_global_log(26, count, free_leftover);
       }
 
-      return my_value;
-
+      #endif
 
 
     }
 
 
-    return ~0ULL;
+    // //called before block is returned to the system.
+    // __device__ void reset_frees(){
 
-
-  }
-
-//   __device__ void reset_block() {
-//     uint old = atomicExch((unsigned int *)&free_counter, 0ULL);
-
-// #if GALLATIN_BLOCK_DEBUG
-
-//     if (old != 4096) {
-//       printf("Double free issue %u != 4096\n", old);
-//     }
-
-// #endif
-
-//     atomicExch((unsigned int *)&malloc_counter, 4097ULL);
-
-
-//   }
-
-
-  __device__ void reset_free(){
-
-    uint old = atomicExch((unsigned int *)&free_counter, 0ULL);
-
-    #if GALLATIN_BLOCK_DEBUG
-
-    if (old != 4096) {
-      printf("Double free issue %u != 4096\n", old);
-    }
-
-    #endif
-
-  }
-
-  //setting
-  __device__ void init_malloc(uint16_t tree_size){
-
-
-    //uint big_tree_size = tree_size;
-
-    uint shifted_tree_size = tree_size << GALLATIN_BLOCK_TREE_OFFSET;
-
-    atomicExch((unsigned int *)&malloc_counter, shifted_tree_size);
-
-  }
-
-
-  //atomically increment the counter and add the old value
-  //this version accounts for the tree size.
-  __device__ uint block_malloc_tree(cg::coalesced_group &active_threads){
-
-    uint old_count;
-
-    if (active_threads.thread_rank() == 0) {
-      old_count =
-          atomicAdd((unsigned int *)&malloc_counter, active_threads.size());
-    }
-
-    old_count = active_threads.shfl(old_count, 0);
-
-    return old_count;
-
-  }
-
-   //allow threads to procure multiple allocations simultaneously
-  __device__ uint64_t block_malloc_tree_multi_size(cg::coalesced_group &active_threads, uint group_sum){
-
-    //calculate exclusive sum - if value is less than that, valid
-
-    //last thread in group has total size and controls atomic
-
-    uint old_count;
-
-    if (active_threads.thread_rank() == active_threads.size()-1){
-
-      old_count = atomicAdd((unsigned int *)&malloc_counter, group_sum);
-
-    }
-
-    old_count = active_threads.shfl(old_count, active_threads.size()-1);
-
-
-    return old_count;
-
-  }
-
-  //secondary correction
-  __device__ void block_correct_frees(cg::coalesced_group &active_threads, uint copies_needed){
-
-
-    uint excess_allocs = cg::reduce(active_threads, copies_needed, cg::plus<uint>());
-
-    //only reduce excess if necessary
-    if (excess_allocs > 0 && active_threads.thread_rank() == 0){
-
-      //don't need to check free logic, as at least one allocation must be active!
-      atomicAdd((unsigned int *)&free_counter, excess_allocs);
-
-    }
-
-
-  }
-
-  //set the malloc bits in the block to 4096
-  //this guarantees that no other threads can allocate
-  //does a sanity check that the block is not already in use, which may occur.
-  //block comes initialized, so we just need to set malloc counter. 
-  //if it fails throw a fit - this shouldn't occur but ya never know.
-  __device__ uint malloc_fill_block(uint16_t tree_size){
-
-    // uint old = atomicAdd((unsigned int *)&free_counter, 4095);
-
-    // #if GALLATIN_BLOCK_DEBUG
-    // if (old != 0){
-
-    //   printf("Old in fill block is %u\n", old);
+    //   gallatin::utils::st_rel(&free_counter, 0U);
 
     // }
 
-    // #endif
 
-    uint old_merged = atomicAdd((unsigned int *)&malloc_counter, 4096);
-
-    uint old_count = clip_count(old_merged);
-
-    if (!check_valid(old_merged, tree_size)){
-
-
-      #if GALLATIN_BLOCK_DEBUG
-      printf("Catrastrophic failure! Block for contiguous section is in use\n");
-      #endif
-
-      asm("trap;");
-
-    }
-
-    //uint64_t amount_to_free = (4095 - (old_count + (old_count == 0)));
-
-    atomicAdd(&free_counter, 4095 - old_count);
-
-    #if GALLATIN_BLOCK_DEBUG
-
-    if (old_count != 0){
-
-      //we fucked up, but it's ok! just need to add to the free counter so the block cycles
-
-      
-
-      printf("Block for full segment already malloced. Not an error but concerning.\n");
-
-     
-
-      //atomicAdd(&free_counter, (4095-old_count));
-
-    }
-
-    #endif
-
-    return old_count;
-
-  }
-
-  //return true if the 
-  __device__ bool check_valid(uint old_count, uint16_t tree_size){
-
-    uint block_tree_size = (old_count >> GALLATIN_BLOCK_TREE_OFFSET);
-
-    #if GALLATIN_BLOCK_DEBUG
-
-    if (block_tree_size != tree_size){
-      printf("Block has different block tree size: %u != %u", block_tree_size, tree_size);
-    }
-
-    #endif
-
-    return (block_tree_size == tree_size);
-
-  }
-
-  __device__ uint64_t extract_count(cg::coalesced_group &active_threads, uint old_count){
-
-    uint true_count = (old_count & BITMASK(GALLATIN_BLOCK_TREE_OFFSET));
-
-    uint my_value = true_count + active_threads.thread_rank();
-
-    if (my_value < 4096) {
-      return my_value;
-    }
-
-    return ~0ULL;
-
-  }
-
-  __device__ uint64_t extract_count_multi_size(cg::coalesced_group &active_threads, uint old_count, uint group_sum, uint my_size){
+    //helpers for extracting
+  __device__ uint64_t extract_count(cg::coalesced_group &active_threads, uint old_count, uint group_sum){
 
     uint true_count = (old_count & BITMASK(GALLATIN_BLOCK_TREE_OFFSET));
 
@@ -378,27 +73,186 @@ struct Block {
 
     return my_value;
 
-    //push check condition outside.
-    // if (my_value + my_size <= 4096) {
-    //   return my_value;
-    // }
+  }
 
-    // return ~0ULL;
+
+  __device__ bool check_valid(uint old_count, uint16_t tree_size){
+
+
+    uint block_tree_size = (old_count >> GALLATIN_BLOCK_TREE_OFFSET);
+
+    return (block_tree_size == tree_size);
 
   }
 
 
-  __device__ uint64_t clip_count(uint old_count){
+    //pull multiple allocations per thread
+    //the threads operate as a team to perform this together.
+    __device__ uint64_t block_malloc(cg::coalesced_group &active_threads, uint copies_needed, uint16_t tree_id, bool & reset_free){
 
-    return (old_count & BITMASK(GALLATIN_BLOCK_TREE_OFFSET));
+    //calculate exclusive sum - if value is less than that, valid
 
+    uint my_group_sum = cg::exclusive_scan(active_threads, copies_needed, cg::plus<uint>());
+
+    //last thread in group has total size and controls atomic
+
+    uint prev_count;
+
+    if (active_threads.thread_rank() == active_threads.size()-1){
+
+      prev_count = atomicAdd((unsigned int *)&malloc_counter, my_group_sum+copies_needed);
+
+    }
+
+    prev_count = active_threads.shfl(prev_count, active_threads.size()-1);
+
+    bool valid = check_valid(prev_count, tree_id);
+
+    //after this prev count is correct.
+    //and marks the # of allocations given out beforehand
+    // this is also the start index of this allocation.
+    prev_count = extract_count(active_threads, prev_count, my_group_sum);
+
+
+    #if GALLATIN_DEBUG
+
+    if (prev_count > 30000000){ write_global_log(2, (uint64_t)this, prev_count); }
+
+    #endif
+
+    uint n_drop;
+
+    //successful marks if allocation was correct.
+    bool successful = (prev_count + copies_needed) <= 4096;
+
+    if (successful){
+
+      //if valid, should be copies_needed-1
+      //if invalid, should be copies needed as all must be returned.
+      n_drop = (copies_needed) + (valid)*-1;
+    } else if (prev_count < 4096){
+
+      //this is the case where the allocation bled over
+      //need to correct for claimed allocs
+      //this one alloc runs from prev_count > 4096, if it didn't it would be successful.
+      n_drop = 4096-prev_count;
+
+      //printf("Trigger: my_count %u, copies_needed %u, correcting %u\n", prev_count, copies_needed, n_drop);
+
+
+    } else {
+      //no allocations claimed.
+      n_drop = 0;
+    }
+
+
+    uint excess_allocs = cg::reduce(active_threads, n_drop, cg::plus<uint>());
+
+    if (excess_allocs > 0 && active_threads.thread_rank() == 0){
+
+      //don't need to check free logic, as at least one allocation must be active!
+      // this is only true IFF the stride is an even multiple.
+      uint free_result = atomicAdd((unsigned int *)&free_counter, excess_allocs);
+
+
+      reset_free = (free_result+excess_allocs) == 4096;
+
+    }
+
+    //must team wait? if any thread is successful thread 0 must be successful.
+    //active_threads.sync();
+
+    if (valid && successful){
+
+      #if GALLATIN_DEBUG
+
+      if (prev_count >= 4096 || prev_count + copies_needed > 4096){
+        write_global_log(27, prev_count);
+      }
+      #endif
+
+      return prev_count;
+    }
+
+    //threads should undo bad progress
+    // if (prev_count+my_group_sum+copies_needed > 2000000 && active_threads.thread_rank() == active_threads.size()-1){
+
+
+    //   // if (my_group_sum+copies_needed == 0){
+    //   //   printf("Bad group sum\n");
+    //   // }
+    //   // printf("Undoing progress, count is %u, copies %u, free_counter %u\n", prev_count, my_group_sum+copies_needed, gallatin::utils::ld_acq(&free_counter));
+
+    //   while(prev_count+my_group_sum+copies_needed > 2000000){
+
+
+    //     uint prepped_val = (((uint) tree_id) << GALLATIN_BLOCK_TREE_OFFSET)+prev_count;
+    //     prev_count = atomicCAS(&malloc_counter, prepped_val+my_group_sum+copies_needed, prepped_val);
+
+    //     if (prev_count == prev_count+my_group_sum+copies_needed) return ~0ULL;
+    //     prev_count = prev_count-(my_group_sum+copies_needed);
+
+    //   }
+
+    // }
+
+
+    return ~0ULL;
+
+
+  }
+
+
+  __device__ bool block_free(cg::coalesced_group &active_threads) {
+
+    #if GALLATIN_DEBUG
+
+    uint64_t host_this = active_threads.shfl((uint64_t) this, 0);
+
+    if (host_this != ((uint64_t) this)){
+      write_global_log(33, host_this, (uint64_t) this);
+    }
+    #endif
+
+    uint old;
+    if (active_threads.thread_rank() == 0){
+
+      old = atomicAdd((unsigned int *)&free_counter, active_threads.size());
+
+    }
+
+
+    old = active_threads.shfl(old, 0) + active_threads.thread_rank();
+
+    #if GALLATIN_DEBUG
+
+
+    if (old >= 4096){
+      write_global_log(1, (uint64_t) this, gallatin::utils::ld_acq(&malloc_counter), old);
+    } 
+
+    #endif
+
+    //return true if this is the last thread.
+    return (old == 4095);
   }
 
 
 };
 
-}  // namespace allocators
 
-}  // namespace beta
 
-#endif  // End of VEB guard
+
+} //namespace internals
+
+} //namespace gallatin
+
+
+#endif
+
+
+
+
+
+
+

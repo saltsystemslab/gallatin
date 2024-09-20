@@ -20,6 +20,7 @@ namespace data_structs {
 
 		using tuple_type = cuda::std::tuple<Args...>;
 
+
 		tuple_type my_args;
 
 		__device__ functor(Args...input_arguments){

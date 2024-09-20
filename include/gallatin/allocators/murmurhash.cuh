@@ -17,7 +17,7 @@ namespace gallatin {
 namespace hashers {
 
 
-__host__ __device__ uint64_t MurmurHash64A ( const void * key, int len, uint64_t seed )
+static __host__ __device__ uint64_t MurmurHash64A ( const void * key, int len, uint64_t seed )
 {
 	const uint64_t m = 0xc6a4a7935bd1e995;
 	const int r = 47;

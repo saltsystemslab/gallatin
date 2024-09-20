@@ -117,13 +117,13 @@ __global__ void free_one_size_pointer(allocator_type * allocator, uint64_t num_a
 //works on actual pointers instead of uint64_t
 //The correctness check is done by treating each allocation as a uint64_t and writing the tid
 // if TID is not what is expected, we know that a double malloc has occurred.
-template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest>
+template <uint64_t mem_segment_size, uint64_t smallest, uint64_t largest, uint segment_tree_size, uint block_tree_size>
 __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, uint64_t size){
 
 
    gallatin::utils::timer boot_timing;
 
-   using gallatin_type = gallatin::allocators::Gallatin<mem_segment_size, smallest, largest>;
+   using gallatin_type = gallatin::allocators::Gallatin<mem_segment_size, smallest, largest, segment_tree_size, block_tree_size>;
 
    uint64_t num_segments = gallatin::utils::get_max_chunks<mem_segment_size>(num_bytes);
 
@@ -189,7 +189,7 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
       alloc_one_size_pointer<gallatin_type><<<(num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(allocator, .9*num_allocs, size, bits, misses);
       kernel_timing.sync_end();
 
-      allocator->print_info();
+      //allocator->print_info();
 
       gallatin::utils::timer free_timing;
       free_one_size_pointer<gallatin_type><<<(num_allocs-1)/TEST_BLOCK_SIZE+1,TEST_BLOCK_SIZE>>>(allocator, .9*num_allocs, size, bits);
@@ -205,7 +205,7 @@ __host__ void gallatin_test_allocs_pointer(uint64_t num_bytes, int num_rounds, u
 
       misses[0] = 0;
 
-      allocator->print_info();
+      //allocator->print_info();
 
    }
 
@@ -266,7 +266,7 @@ int main(int argc, char** argv) {
    }
 
 
-   gallatin_test_allocs_pointer<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
+   gallatin_test_allocs_pointer<16ULL*1024*1024, 16ULL, 4096ULL, 8, 8>(num_segments*16*1024*1024, num_rounds, size);
 
 
 

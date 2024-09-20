@@ -4,6 +4,9 @@ cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 
 #mainline tests
 
+ConfigureExecutable(ptr_chase_test "${CMAKE_CURRENT_SOURCE_DIR}/src/ptr_chase_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
+
 ConfigureExecutable(gallatin_test "${CMAKE_CURRENT_SOURCE_DIR}/src/gallatin_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
 ConfigureExecutable(gallatin_churn "${CMAKE_CURRENT_SOURCE_DIR}/src/gallatin_churn.cu" "${GALLATIN_TESTS_BINARY_DIR}")
@@ -11,7 +14,11 @@ ConfigureExecutable(gallatin_churn "${CMAKE_CURRENT_SOURCE_DIR}/src/gallatin_chu
 
 ConfigureExecutable(global_test "${CMAKE_CURRENT_SOURCE_DIR}/src/global_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+ConfigureExecutable(global_test_overload "${CMAKE_CURRENT_SOURCE_DIR}/src/global_test_overload.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
 ConfigureExecutable(global_churn "${CMAKE_CURRENT_SOURCE_DIR}/src/global_churn.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
+ConfigureExecutable(cu_file_test "${CMAKE_CURRENT_SOURCE_DIR}/src/cu_file_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
 
 #optional tests
@@ -83,7 +90,8 @@ ConfigureExecutable(full_ext_ht_test "${CMAKE_CURRENT_SOURCE_DIR}/src/full_ext_h
 
 ConfigureExecutable(grow_ext_ht_test "${CMAKE_CURRENT_SOURCE_DIR}/src/grow_ext_ht_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+ConfigureExecutable(flat_ht_test "${CMAKE_CURRENT_SOURCE_DIR}/src/flat_ht_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
-
+ConfigureExecutable(prealloc_ht_test "${CMAKE_CURRENT_SOURCE_DIR}/src/prealloc_ht_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
 endif(GAL_DS)

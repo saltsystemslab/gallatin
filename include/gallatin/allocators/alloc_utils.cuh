@@ -107,6 +107,14 @@ __device__ inline uint64_t ld_acq(const uint64_t *p) {
   // return atomicOr((unsigned long long int *)p, 0ULL);
 }
 
+__device__ inline uint32_t ld_acq(const uint32_t *p) {
+  uint32_t res;
+  asm volatile("ld.gpu.acquire.u32 %0, [%1];" : "=r"(res) : "l"(p));
+  return res;
+
+  // return atomicOr((unsigned long long int *)p, 0ULL);
+}
+
 __device__ inline uint16_t ld_acq(const uint16_t *p) {
   uint16_t res;
   asm volatile("ld.gpu.acquire.u16 %0, [%1];" : "=h"(res) : "l"(p));
@@ -117,6 +125,21 @@ __device__ inline uint16_t ld_acq(const uint16_t *p) {
 __device__ inline void st_rel(const uint64_t *p, uint64_t store_val) {
   
   asm volatile("st.gpu.release.u64 [%0], %1;" :: "l"(p), "l"(store_val) : "memory");
+
+  // return atomicOr((unsigned long long int *)p, 0ULL);
+}
+
+
+__device__ inline void st_rel(const uint32_t *p, uint32_t store_val) {
+  
+  asm volatile("st.gpu.release.u32 [%0], %1;" :: "l"(p), "r"(store_val) : "memory");
+
+  // return atomicOr((unsigned long long int *)p, 0ULL);
+}
+
+__device__ inline void st_rel(const uint16_t *p, uint16_t store_val) {
+  
+  asm volatile("st.gpu.release.u16 [%0], %1;" :: "l"(p), "h"(store_val) : "memory");
 
   // return atomicOr((unsigned long long int *)p, 0ULL);
 }
@@ -185,7 +208,7 @@ __device__ inline uint64_t get_clock_time() {
   return res;
 }
 
-__device__ uint get_smid() {
+__device__ inline uint get_smid() {
   uint ret;
 
   asm("mov.u32 %0, %smid;" : "=r"(ret));
@@ -193,7 +216,7 @@ __device__ uint get_smid() {
   return ret;
 }
 
-__host__ int get_num_streaming_multiprocessors(int which_device) {
+__host__ inline int get_num_streaming_multiprocessors(int which_device) {
   cudaDeviceProp prop;
   cudaGetDeviceProperties(&prop, which_device);
   int mp = prop.multiProcessorCount;
@@ -211,7 +234,7 @@ __host__ uint64_t get_max_chunks() {
   return mem_total / bytes_per_chunk;
 }
 
-__host__ void print_mem_in_use() {
+__host__ inline void print_mem_in_use() {
   size_t mem_total;
   size_t mem_free;
   cudaMemGetInfo(&mem_free, &mem_total);
@@ -221,12 +244,12 @@ __host__ void print_mem_in_use() {
 }
 
 template <uint64_t bytes_per_chunk>
-__host__ uint64_t get_max_chunks(uint64_t max_bytes) {
+__host__ inline uint64_t get_max_chunks(uint64_t max_bytes) {
   return max_bytes / bytes_per_chunk;
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *get_host_version() {
+__host__ inline Struct_Type *get_host_version() {
   Struct_Type *host_version;
 
   cudaMallocHost((void **)&host_version, sizeof(Struct_Type));
@@ -235,7 +258,7 @@ __host__ Struct_Type *get_host_version() {
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *get_host_version(uint64_t num_copies) {
+__host__ inline Struct_Type *get_host_version(uint64_t num_copies) {
   Struct_Type *host_version;
 
   cudaMallocHost((void **)&host_version, num_copies * sizeof(Struct_Type));
@@ -244,7 +267,7 @@ __host__ Struct_Type *get_host_version(uint64_t num_copies) {
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *get_device_version() {
+__host__ inline Struct_Type *get_device_version() {
   Struct_Type *dev_version;
 
   cudaMalloc((void **)&dev_version, sizeof(Struct_Type));
@@ -253,7 +276,7 @@ __host__ Struct_Type *get_device_version() {
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *get_device_version(uint64_t num_copies) {
+__host__ inline Struct_Type *get_device_version(uint64_t num_copies) {
   Struct_Type *dev_version;
 
   cudaMalloc((void **)&dev_version, num_copies * sizeof(Struct_Type));
@@ -262,7 +285,7 @@ __host__ Struct_Type *get_device_version(uint64_t num_copies) {
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *move_to_device(Struct_Type *host_version) {
+__host__ inline Struct_Type *move_to_device(Struct_Type *host_version) {
   Struct_Type *dev_version = get_device_version<Struct_Type>();
 
   cudaMemcpy(dev_version, host_version, sizeof(Struct_Type),
@@ -276,7 +299,7 @@ __host__ Struct_Type *move_to_device(Struct_Type *host_version) {
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *move_to_host(Struct_Type *dev_version) {
+__host__ inline Struct_Type *move_to_host(Struct_Type *dev_version) {
   Struct_Type *host_version = get_host_version<Struct_Type>();
 
   cudaMemcpy(host_version, dev_version, sizeof(Struct_Type),
@@ -290,7 +313,7 @@ __host__ Struct_Type *move_to_host(Struct_Type *dev_version) {
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *move_to_device(Struct_Type *host_version,
+__host__ inline Struct_Type *move_to_device(Struct_Type *host_version,
                                      uint64_t num_copies) {
   // printf("Starting copy\n");
 
@@ -309,7 +332,7 @@ __host__ Struct_Type *move_to_device(Struct_Type *host_version,
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *move_to_host(Struct_Type *dev_version,
+__host__ inline Struct_Type *move_to_host(Struct_Type *dev_version,
                                    uint64_t num_copies) {
   Struct_Type *host_version = get_host_version<Struct_Type>(num_copies);
 
@@ -324,7 +347,7 @@ __host__ Struct_Type *move_to_host(Struct_Type *dev_version,
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *move_to_device_nowait(Struct_Type *host_version) {
+__host__ inline Struct_Type *move_to_device_nowait(Struct_Type *host_version) {
   Struct_Type *dev_version = get_device_version<Struct_Type>();
 
   cudaMemcpy(dev_version, host_version, sizeof(Struct_Type),
@@ -337,7 +360,7 @@ __host__ Struct_Type *move_to_device_nowait(Struct_Type *host_version) {
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *move_to_device_nowait(Struct_Type *host_version,
+__host__ inline Struct_Type *move_to_device_nowait(Struct_Type *host_version,
                                      uint64_t num_copies) {
   // printf("Starting copy\n");
 
@@ -355,7 +378,7 @@ __host__ Struct_Type *move_to_device_nowait(Struct_Type *host_version,
 
 
 template <typename Struct_Type>
-__host__ Struct_Type *copy_to_host(Struct_Type *dev_version,
+__host__ inline Struct_Type *copy_to_host(Struct_Type *dev_version,
                                    uint64_t num_copies) {
   Struct_Type *host_version = get_host_version<Struct_Type>(num_copies);
 
@@ -368,7 +391,7 @@ __host__ Struct_Type *copy_to_host(Struct_Type *dev_version,
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *copy_to_host(Struct_Type *dev_version) {
+__host__ inline Struct_Type *copy_to_host(Struct_Type *dev_version) {
   Struct_Type *host_version = get_host_version<Struct_Type>();
 
   cudaMemcpy(host_version, dev_version, sizeof(Struct_Type),
@@ -397,13 +420,13 @@ static __host__ __device__ int get_first_bit_bigger(uint64_t counter) {
 #endif
 }
 
-__device__ uint64_t get_tid() {
+__device__ inline uint64_t get_tid() {
   return ((uint64_t)threadIdx.x) + ((uint64_t)blockIdx.x) * ((uint64_t) blockDim.x);
 }
 
 
 template <typename team_type>
-__device__ uint64_t get_tile_tid(team_type team) {
+__device__ inline uint64_t get_tile_tid(team_type team) {
 
 
   return ((uint64_t) team.meta_group_rank()) + ((uint64_t)blockIdx.x) * ((uint64_t) team.meta_group_size());
@@ -411,7 +434,7 @@ __device__ uint64_t get_tile_tid(team_type team) {
 }
 
 template <uint team_size>
-__device__ uint64_t get_team_tid(cg::thread_block_tile<team_size> team) {
+__device__ inline uint64_t get_team_tid(cg::thread_block_tile<team_size> team) {
 
   uint64_t block_id = blockIdx.x;
 
@@ -423,21 +446,21 @@ __device__ uint64_t get_team_tid(cg::thread_block_tile<team_size> team) {
 
 }
 
-__device__ void cooperative_copy(char *dst, char *src, uint64_t num_bytes) {
+__device__ inline void cooperative_copy(char *dst, char *src, uint64_t num_bytes) {
   for (uint64_t i = threadIdx.x; i < num_bytes; i += blockDim.x) {
     dst[i] = src[i];
   }
 }
 
 template <typename T>
-__device__ void cooperative_copy(T *dst, T *src) {
+__device__ inline void cooperative_copy(T *dst, T *src) {
   return cooperative_copy((char *)dst, (char *)src, sizeof(T));
 }
 
 
 //count first contiguous - ll variant
 //return # of contiguous 1s present in lower order bits
-__device__ int __cfcll(uint64_t bits){
+__device__ inline int __cfcll(uint64_t bits){
 
 
   int popc = __popcll(bits);
@@ -617,45 +640,45 @@ constexpr uint64_t numberOfBits(uint64_t x)
 }
 
 
-__device__ void clear_host_memory_per_thread(void * memory, uint64_t num_bytes, uint64_t n_threads, uint64_t tid){
+// __device__ inline void clear_host_memory_per_thread(void * memory, uint64_t num_bytes, uint64_t n_threads, uint64_t tid){
 
-  uint64_t bytes_per_thread = (num_bytes-1)/n_threads+1;
+//   uint64_t bytes_per_thread = (num_bytes-1)/n_threads+1;
 
-  uint64_t my_start = bytes_per_thread*tid;
+//   uint64_t my_start = bytes_per_thread*tid;
 
-  uint64_t my_length = num_bytes;
+//   uint64_t my_length = num_bytes;
 
-  //this thread responsible for weird offset at end.
-  if ((my_start + my_length) >= num_bytes) my_length = num_bytes-my_start;
+//   //this thread responsible for weird offset at end.
+//   if ((my_start + my_length) >= num_bytes) my_length = num_bytes-my_start;
 
-  if (my_length == 0 || my_start >= num_bytes) return;
+//   if (my_length == 0 || my_start >= num_bytes) return;
 
-  memset( ((char *) memory)+my_start, 0, my_length);
+//   memset( ((char *) memory)+my_start, 0, my_length);
 
-  __threadfence();
+//   __threadfence();
 
-  return;
-
-
-}
+//   return;
 
 
-__global__ void clear_host_memory_kernel(void * memory, uint64_t num_bytes, uint64_t num_threads){
-
-  uint64_t tid = gallatin::utils::get_tid();
-
-  clear_host_memory_per_thread(memory, num_bytes, num_threads, tid);
-
-}
+// }
 
 
-__host__ void clear_device_host_memory(void * ptr, uint64_t num_bytes){
+// __global__ void clear_host_memory_kernel(void * memory, uint64_t num_bytes, uint64_t num_threads){
 
-  uint64_t num_threads = (num_bytes-1)/16+1;
+//   uint64_t tid = gallatin::utils::get_tid();
 
-  clear_host_memory_kernel<<<(num_threads-1)/512+1,512>>>(ptr, num_bytes, num_threads);
+//   clear_host_memory_per_thread(memory, num_bytes, num_threads, tid);
 
-}
+// }
+
+
+// __host__ inline void clear_device_host_memory(void * ptr, uint64_t num_bytes){
+
+//   uint64_t num_threads = (num_bytes-1)/16+1;
+
+//   clear_host_memory_kernel<<<(num_threads-1)/512+1,512>>>(ptr, num_bytes, num_threads);
+
+// }
 
 
 }  // namespace utils
