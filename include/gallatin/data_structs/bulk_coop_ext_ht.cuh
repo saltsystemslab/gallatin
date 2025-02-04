@@ -31,7 +31,7 @@ namespace data_structs {
 
 
 	template<typename ht>
-	__global__ void init_vectors(ht * table , uint64_t n_threads){
+	__global__ inline void init_vectors(ht * table , uint64_t n_threads){
 		uint64_t tid = gallatin::utils::get_tid();
 
 		if (tid >= n_threads) return;
@@ -43,7 +43,7 @@ namespace data_structs {
 	}
 
 	template<typename ht, typename Key , typename Val>
-	__global__ void bulk_insert_kernel(ht * table, Key * keys, Val * vals, uint64_t nitems){
+	__global__ inline void bulk_insert_kernel(ht * table, Key * keys, Val * vals, uint64_t nitems){
 
 		uint64_t tid = gallatin::utils::get_tid();
 
@@ -76,7 +76,7 @@ namespace data_structs {
 		fixed_vector_type directory[n_vectors];
 
 
-		static __host__ my_type * generate_on_device(){
+		static __host__ inline my_type * generate_on_device(){
 
 
 
@@ -90,14 +90,14 @@ namespace data_structs {
 
 		}
 
-		static __host__ void free_on_device(my_type * dev_version){
+		static __host__ inline void free_on_device(my_type * dev_version){
 
 
 			printf("Free is currently not implemented\n");
 			return;
 		}
 
-		__device__ uint64_t get_hash(Key key){
+		__device__ inline uint64_t get_hash(Key key){
 
 			//todo seed
 			return gallatin::hashers::MurmurHash64A(&key, sizeof(Key), 42) % n_vectors;
@@ -105,7 +105,7 @@ namespace data_structs {
 
 
 
-		__device__ void init_vector(uint64_t id){
+		__device__ inline void init_vector(uint64_t id){
 
 			directory[id].init();
 			directory[id].add_new_backing(0);
@@ -115,7 +115,7 @@ namespace data_structs {
 		}
 
 
-		__device__ bool insert(Key ext_key, Val ext_val){
+		__device__ inline bool insert(Key ext_key, Val ext_val){
 
 			key_val_type packed_pair{ext_key, ext_val};
 
@@ -132,7 +132,7 @@ namespace data_structs {
 		}
 
 
-		__device__ bool device_bulk_insert(Key ext_key, Val ext_val){
+		__device__ inline bool device_bulk_insert(Key ext_key, Val ext_val){
 
 			key_val_type packed_pair{ext_key, ext_val};
 
@@ -156,7 +156,7 @@ namespace data_structs {
 
 
 
-		__host__ void bulk_insert(Key * keys, Val * vals, uint64_t nitems){
+		__host__ inline void bulk_insert(Key * keys, Val * vals, uint64_t nitems){
 
 
 			//sort

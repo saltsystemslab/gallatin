@@ -29,7 +29,7 @@ namespace data_structs {
 
 
 	template <typename ht_type>
-	__global__ void coop_chaining_table_fill_buffers(ht_type * table){
+	__global__ inline void coop_chaining_table_fill_buffers(ht_type * table){
 
 
 		uint64_t tid = gallatin::utils::get_tid();
@@ -45,7 +45,7 @@ namespace data_structs {
 
 
 	template <typename ht_type>
-	__global__ void calculate_chain_kernel(ht_type * table, uint64_t * max, uint64_t * avg, uint64_t nblocks){
+	__global__ inline void calculate_chain_kernel(ht_type * table, uint64_t * max, uint64_t * avg, uint64_t nblocks){
 
 
 		uint64_t tid = gallatin::utils::get_tid();
@@ -72,7 +72,7 @@ namespace data_structs {
 		Val vals[size];
 
 
-		__device__ void init(cg::thread_block_tile<team_size> team, Key & defaultKey){
+		__device__ inline void init(cg::thread_block_tile<team_size> team, Key & defaultKey){
 
 			//next points to nullptr
 			atomicExch((unsigned long long int *)&next, 0ULL);
@@ -84,7 +84,7 @@ namespace data_structs {
 			}
 		}
 
-		__device__ bool insert(cg::thread_block_tile<team_size> team, Key & defaultKey, Key insertKey, Val insertVal){
+		__device__ inline bool insert(cg::thread_block_tile<team_size> team, Key & defaultKey, Key insertKey, Val insertVal){
 
 			for (int i = team.thread_rank(); i < size; i+=team_size){
 
@@ -130,7 +130,7 @@ namespace data_structs {
 
 		}
 
-		__device__ bool query(cg::thread_block_tile<team_size> team, Key queryKey, Val & returnVal){
+		__device__ inline bool query(cg::thread_block_tile<team_size> team, Key queryKey, Val & returnVal){
 
 
 			for (int i = team.thread_rank(); i < size; i+= team_size){
@@ -177,7 +177,7 @@ namespace data_structs {
 		//todo: make const for improved performance.
 		Key defaultKey;
 
-		static __host__ my_type * generate_on_device(uint64_t ext_nslots, Key ext_defaultKey, uint64_t ext_seed){
+		static __host__ inline my_type * generate_on_device(uint64_t ext_nslots, Key ext_defaultKey, uint64_t ext_seed){
 
 			my_type * host_version = gallatin::utils::get_host_version<my_type>();
 
@@ -203,7 +203,7 @@ namespace data_structs {
 
 		}
 
-		static __host__ my_type * generate_on_device_prealloc(uint64_t ext_nslots, Key ext_defaultKey, uint64_t ext_seed){
+		static __host__ inline my_type * generate_on_device_prealloc(uint64_t ext_nslots, Key ext_defaultKey, uint64_t ext_seed){
 
 			my_type * host_version = gallatin::utils::get_host_version<my_type>();
 
@@ -234,7 +234,7 @@ namespace data_structs {
 
 		}
 
-		static __host__ void free_on_device(my_type * device_version){
+		static __host__ inline void free_on_device(my_type * device_version){
 
 			auto host_version = gallatin::utils::move_to_host(device_version);
 
@@ -246,7 +246,7 @@ namespace data_structs {
 
 
 		//format new block and attempt to atomicCAS
-		__device__ bool attach_block(cg::thread_block_tile<team_size> team, block_type ** block_ptr){
+		__device__ inline bool attach_block(cg::thread_block_tile<team_size> team, block_type ** block_ptr){
 
 
 			block_type * new_block = nullptr;
@@ -284,7 +284,7 @@ namespace data_structs {
 		}
 
 
-		__device__ void calculate_chain_length(uint64_t * max_len, uint64_t * avg_len, uint64_t my_index){
+		__device__ inline void calculate_chain_length(uint64_t * max_len, uint64_t * avg_len, uint64_t my_index){
 
 			uint64_t my_length = 0;
 
@@ -300,7 +300,7 @@ namespace data_structs {
 
 		}
 
-		__device__ void insert(cg::thread_block_tile<team_size> team, Key newKey, Val newVal){
+		__device__ inline void insert(cg::thread_block_tile<team_size> team, Key newKey, Val newVal){
 
 			uint64_t my_slot;
 			block_type * my_block;
@@ -347,7 +347,7 @@ namespace data_structs {
 			return;
 		}
 
-		__device__ bool query(cg::thread_block_tile<team_size> team, Key queryKey, Val & returnVal){
+		__device__ inline bool query(cg::thread_block_tile<team_size> team, Key queryKey, Val & returnVal){
 
 			uint64_t my_slot = gallatin::hashers::MurmurHash64A(&queryKey, sizeof(Key), seed) % nblocks;
 
@@ -370,7 +370,7 @@ namespace data_structs {
 
 
 
-		__host__ void print_chain_stats(){
+		__host__ inline void print_chain_stats(){
 
 			my_type * host_version = gallatin::utils::copy_to_host<my_type>(this);
 

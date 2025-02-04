@@ -149,7 +149,7 @@ __device__ inline void *ldca(void *const *p) {
 
 //given a target and new pointer, make target point to new.
 template <typename T>
-__device__ void swap_to_new_array(T *& target, T *& new_ptr){
+__device__ inline void swap_to_new_array(T *& target, T *& new_ptr){
 
   atomicExch((unsigned long long int *)&target, (unsigned long long int)new_ptr);
 
@@ -185,7 +185,7 @@ __device__ inline uint64_t get_clock_time() {
   return res;
 }
 
-__device__ uint get_smid() {
+__device__ inline uint get_smid() {
   uint ret;
 
   asm("mov.u32 %0, %smid;" : "=r"(ret));
@@ -193,7 +193,7 @@ __device__ uint get_smid() {
   return ret;
 }
 
-__host__ int get_num_streaming_multiprocessors(int which_device) {
+__host__ inline int get_num_streaming_multiprocessors(int which_device) {
   cudaDeviceProp prop;
   cudaGetDeviceProperties(&prop, which_device);
   int mp = prop.multiProcessorCount;
@@ -203,7 +203,7 @@ __host__ int get_num_streaming_multiprocessors(int which_device) {
 
 // for a given template family, how many chunks do they need?
 template <uint64_t bytes_per_chunk>
-__host__ uint64_t get_max_chunks() {
+__host__ inline uint64_t get_max_chunks() {
   size_t mem_total;
   size_t mem_free;
   cudaMemGetInfo(&mem_free, &mem_total);
@@ -211,7 +211,7 @@ __host__ uint64_t get_max_chunks() {
   return mem_total / bytes_per_chunk;
 }
 
-__host__ void print_mem_in_use() {
+__host__ inline void print_mem_in_use() {
   size_t mem_total;
   size_t mem_free;
   cudaMemGetInfo(&mem_free, &mem_total);
@@ -221,12 +221,12 @@ __host__ void print_mem_in_use() {
 }
 
 template <uint64_t bytes_per_chunk>
-__host__ uint64_t get_max_chunks(uint64_t max_bytes) {
+__host__ inline uint64_t get_max_chunks(uint64_t max_bytes) {
   return max_bytes / bytes_per_chunk;
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *get_host_version() {
+__host__ inline Struct_Type *get_host_version() {
   Struct_Type *host_version;
 
   cudaMallocHost((void **)&host_version, sizeof(Struct_Type));
@@ -235,7 +235,7 @@ __host__ Struct_Type *get_host_version() {
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *get_host_version(uint64_t num_copies) {
+__host__ inline Struct_Type *get_host_version(uint64_t num_copies) {
   Struct_Type *host_version;
 
   cudaMallocHost((void **)&host_version, num_copies * sizeof(Struct_Type));
@@ -244,7 +244,7 @@ __host__ Struct_Type *get_host_version(uint64_t num_copies) {
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *get_device_version() {
+__host__ inline Struct_Type *get_device_version() {
   Struct_Type *dev_version;
 
   cudaMalloc((void **)&dev_version, sizeof(Struct_Type));
@@ -253,7 +253,7 @@ __host__ Struct_Type *get_device_version() {
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *get_device_version(uint64_t num_copies) {
+__host__ inline Struct_Type *get_device_version(uint64_t num_copies) {
   Struct_Type *dev_version;
 
   cudaMalloc((void **)&dev_version, num_copies * sizeof(Struct_Type));
@@ -262,7 +262,7 @@ __host__ Struct_Type *get_device_version(uint64_t num_copies) {
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *move_to_device(Struct_Type *host_version) {
+__host__ inline Struct_Type *move_to_device(Struct_Type *host_version) {
   Struct_Type *dev_version = get_device_version<Struct_Type>();
 
   cudaMemcpy(dev_version, host_version, sizeof(Struct_Type),
@@ -276,7 +276,7 @@ __host__ Struct_Type *move_to_device(Struct_Type *host_version) {
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *move_to_host(Struct_Type *dev_version) {
+__host__ inline Struct_Type *move_to_host(Struct_Type *dev_version) {
   Struct_Type *host_version = get_host_version<Struct_Type>();
 
   cudaMemcpy(host_version, dev_version, sizeof(Struct_Type),
@@ -290,7 +290,7 @@ __host__ Struct_Type *move_to_host(Struct_Type *dev_version) {
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *move_to_device(Struct_Type *host_version,
+__host__ inline Struct_Type *move_to_device(Struct_Type *host_version,
                                      uint64_t num_copies) {
   // printf("Starting copy\n");
 
@@ -309,7 +309,7 @@ __host__ Struct_Type *move_to_device(Struct_Type *host_version,
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *move_to_host(Struct_Type *dev_version,
+__host__ inline Struct_Type *move_to_host(Struct_Type *dev_version,
                                    uint64_t num_copies) {
   Struct_Type *host_version = get_host_version<Struct_Type>(num_copies);
 
@@ -324,7 +324,7 @@ __host__ Struct_Type *move_to_host(Struct_Type *dev_version,
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *move_to_device_nowait(Struct_Type *host_version) {
+__host__ inline Struct_Type *move_to_device_nowait(Struct_Type *host_version) {
   Struct_Type *dev_version = get_device_version<Struct_Type>();
 
   cudaMemcpy(dev_version, host_version, sizeof(Struct_Type),
@@ -337,7 +337,7 @@ __host__ Struct_Type *move_to_device_nowait(Struct_Type *host_version) {
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *move_to_device_nowait(Struct_Type *host_version,
+__host__ inline Struct_Type *move_to_device_nowait(Struct_Type *host_version,
                                      uint64_t num_copies) {
   // printf("Starting copy\n");
 
@@ -355,7 +355,7 @@ __host__ Struct_Type *move_to_device_nowait(Struct_Type *host_version,
 
 
 template <typename Struct_Type>
-__host__ Struct_Type *copy_to_host(Struct_Type *dev_version,
+__host__ inline Struct_Type *copy_to_host(Struct_Type *dev_version,
                                    uint64_t num_copies) {
   Struct_Type *host_version = get_host_version<Struct_Type>(num_copies);
 
@@ -368,7 +368,7 @@ __host__ Struct_Type *copy_to_host(Struct_Type *dev_version,
 }
 
 template <typename Struct_Type>
-__host__ Struct_Type *copy_to_host(Struct_Type *dev_version) {
+__host__ inline Struct_Type *copy_to_host(Struct_Type *dev_version) {
   Struct_Type *host_version = get_host_version<Struct_Type>();
 
   cudaMemcpy(host_version, dev_version, sizeof(Struct_Type),
@@ -379,7 +379,7 @@ __host__ Struct_Type *copy_to_host(Struct_Type *dev_version) {
   return host_version;
 }
 
-static __host__ __device__ int get_first_bit_bigger(uint64_t counter) {
+static __host__ __device__ inline int get_first_bit_bigger(uint64_t counter) {
   //	if (__builtin_popcountll(counter) == 1){
 
   // 0th bit would give 63
@@ -397,13 +397,13 @@ static __host__ __device__ int get_first_bit_bigger(uint64_t counter) {
 #endif
 }
 
-__device__ uint64_t get_tid() {
+__device__ inline uint64_t get_tid() {
   return ((uint64_t)threadIdx.x) + ((uint64_t)blockIdx.x) * ((uint64_t) blockDim.x);
 }
 
 
 template <typename team_type>
-__device__ uint64_t get_tile_tid(team_type team) {
+__device__ inline uint64_t get_tile_tid(team_type team) {
 
 
   return ((uint64_t) team.meta_group_rank()) + ((uint64_t)blockIdx.x) * ((uint64_t) team.meta_group_size());
@@ -411,7 +411,7 @@ __device__ uint64_t get_tile_tid(team_type team) {
 }
 
 template <uint team_size>
-__device__ uint64_t get_team_tid(cg::thread_block_tile<team_size> team) {
+__device__ inline uint64_t get_team_tid(cg::thread_block_tile<team_size> team) {
 
   uint64_t block_id = blockIdx.x;
 
@@ -423,21 +423,21 @@ __device__ uint64_t get_team_tid(cg::thread_block_tile<team_size> team) {
 
 }
 
-__device__ void cooperative_copy(char *dst, char *src, uint64_t num_bytes) {
+__device__ inline void cooperative_copy(char *dst, char *src, uint64_t num_bytes) {
   for (uint64_t i = threadIdx.x; i < num_bytes; i += blockDim.x) {
     dst[i] = src[i];
   }
 }
 
 template <typename T>
-__device__ void cooperative_copy(T *dst, T *src) {
+__device__ inline void cooperative_copy(T *dst, T *src) {
   return cooperative_copy((char *)dst, (char *)src, sizeof(T));
 }
 
 
 //count first contiguous - ll variant
 //return # of contiguous 1s present in lower order bits
-__device__ int __cfcll(uint64_t bits){
+__device__ inline int __cfcll(uint64_t bits){
 
 
   int popc = __popcll(bits);
@@ -456,7 +456,7 @@ __device__ int __cfcll(uint64_t bits){
 
 #if GALLATIN_USING_DYNAMIC_PARALLELISM
 
-__device__ void clear_memory_per_thread(void * memory, uint64_t num_bytes, uint64_t n_threads, uint64_t tid){
+__device__ inline void clear_memory_per_thread(void * memory, uint64_t num_bytes, uint64_t n_threads, uint64_t tid){
 
   uint64_t bytes_per_thread = (num_bytes-1)/n_threads+1;
 
@@ -479,7 +479,7 @@ __device__ void clear_memory_per_thread(void * memory, uint64_t num_bytes, uint6
 }
 
 
-__global__ void clear_memory_kernel(void * memory, uint64_t num_bytes, uint64_t num_threads){
+__global__ inline void clear_memory_kernel(void * memory, uint64_t num_bytes, uint64_t num_threads){
 
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -490,13 +490,13 @@ __global__ void clear_memory_kernel(void * memory, uint64_t num_bytes, uint64_t 
 
 
 // template <typename gallatin_template_type>
-// __global__ void calloc_return_block 
+// __global__ inline void calloc_return_block 
 
 
 // //two templates for dynamic parallelism - these are launched by an internal func in Gallatin
 // // and sidestep the regular free for callocs.
 // template <typename gallatin_template_type>
-// __global__ void gallatin_clear_block(void * memory, uint64_t num_bytes, uint64_t n_threads, gallatin_template_type * allocator){
+// __global__ inline void gallatin_clear_block(void * memory, uint64_t num_bytes, uint64_t n_threads, gallatin_template_type * allocator){
 
 //   uint64_t tid = gallatin::utils::get_tid();
 
@@ -507,7 +507,7 @@ __global__ void clear_memory_kernel(void * memory, uint64_t num_bytes, uint64_t 
 // }
 
 template <typename gallatin_template_type, typename block_type>
-__global__ void calloc_return_block(gallatin_template_type * allocator, block_type * block_to_free, uint64_t segment, uint16_t tree){
+__global__ inline void calloc_return_block(gallatin_template_type * allocator, block_type * block_to_free, uint64_t segment, uint16_t tree){
 
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -520,7 +520,7 @@ __global__ void calloc_return_block(gallatin_template_type * allocator, block_ty
 
 
 //template <typename gallatin_template_type>
-__global__ void test_kernel (int test_value) {
+__global__ inline void test_kernel (int test_value) {
 
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -534,7 +534,7 @@ __global__ void test_kernel (int test_value) {
 //two templates for dynamic parallelism - these are launched by an internal func in Gallatin
 // and sidestep the regular free for callocs.
 template <typename gallatin_template_type, typename block_type>
-__global__ void gallatin_clear_block(block_type * block, void * memory, uint64_t num_bytes, uint64_t num_threads, gallatin_template_type * allocator, uint64_t segment, uint16_t tree){
+__global__ inline void gallatin_clear_block(block_type * block, void * memory, uint64_t num_bytes, uint64_t num_threads, gallatin_template_type * allocator, uint64_t segment, uint16_t tree){
 
 
 
@@ -559,7 +559,7 @@ __global__ void gallatin_clear_block(block_type * block, void * memory, uint64_t
 
 
 template <typename gallatin_template_type>
-__global__ void calloc_return_segment(gallatin_template_type * allocator, uint64_t segment, uint16_t size, uint16_t tree_id){
+__global__ inline void calloc_return_segment(gallatin_template_type * allocator, uint64_t segment, uint16_t size, uint16_t tree_id){
 
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -574,7 +574,7 @@ __global__ void calloc_return_segment(gallatin_template_type * allocator, uint64
 //two templates for dynamic parallelism - these are launched by an internal func in Gallatin
 // and sidestep the regular free for callocs.
 template <typename gallatin_template_type>
-__global__ void gallatin_clear_segment(void * memory, uint64_t num_bytes, uint64_t num_threads, gallatin_template_type * allocator, uint64_t segment, uint16_t size, uint16_t tree_id){
+__global__ inline void gallatin_clear_segment(void * memory, uint64_t num_bytes, uint64_t num_threads, gallatin_template_type * allocator, uint64_t segment, uint16_t size, uint16_t tree_id){
 
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -595,7 +595,7 @@ __global__ void gallatin_clear_segment(void * memory, uint64_t num_bytes, uint64
 
   
 //use dynamic parallelism to clear memory
-__device__ void memclear_generic(void * memory, uint64_t num_bytes, uint64_t num_threads){
+__device__ inline void memclear_generic(void * memory, uint64_t num_bytes, uint64_t num_threads){
 
   clear_memory_kernel<<<((num_threads-1)/512 +1), 512>>>(memory, num_bytes, num_threads);
 
@@ -603,7 +603,7 @@ __device__ void memclear_generic(void * memory, uint64_t num_bytes, uint64_t num
 
 
 template <typename T>
-__device__ void memclear(T * memory, uint64_t nitems, uint64_t nthreads){
+__device__ inline void memclear(T * memory, uint64_t nitems, uint64_t nthreads){
 
   memclear_generic((void *)memory, sizeof(T)*nitems, nthreads);
 }
@@ -617,7 +617,7 @@ constexpr uint64_t numberOfBits(uint64_t x)
 }
 
 
-__device__ void clear_host_memory_per_thread(void * memory, uint64_t num_bytes, uint64_t n_threads, uint64_t tid){
+__device__ inline void clear_host_memory_per_thread(void * memory, uint64_t num_bytes, uint64_t n_threads, uint64_t tid){
 
   uint64_t bytes_per_thread = (num_bytes-1)/n_threads+1;
 
@@ -640,7 +640,7 @@ __device__ void clear_host_memory_per_thread(void * memory, uint64_t num_bytes, 
 }
 
 
-__global__ void clear_host_memory_kernel(void * memory, uint64_t num_bytes, uint64_t num_threads){
+__global__ inline void clear_host_memory_kernel(void * memory, uint64_t num_bytes, uint64_t num_threads){
 
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -649,7 +649,7 @@ __global__ void clear_host_memory_kernel(void * memory, uint64_t num_bytes, uint
 }
 
 
-__host__ void clear_device_host_memory(void * ptr, uint64_t num_bytes){
+__host__ inline void clear_device_host_memory(void * ptr, uint64_t num_bytes){
 
   uint64_t num_threads = (num_bytes-1)/16+1;
 

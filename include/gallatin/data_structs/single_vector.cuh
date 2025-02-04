@@ -17,7 +17,7 @@ namespace data_structs {
 
 
 	template <typename svec>
-	__global__ void svec_init_with_realloc(svec * new_vector, uint64_t nslots){
+	__global__ inline void svec_init_with_realloc(svec * new_vector, uint64_t nslots){
 
 
 		uint64_t tid = gallatin::utils::get_tid();
@@ -30,7 +30,7 @@ namespace data_structs {
 	}
 
 	template <typename svec, typename T>
-	__global__ void svec_set_items(svec * new_vector, T * ext_data, uint64_t nslots){
+	__global__ inline void svec_set_items(svec * new_vector, T * ext_data, uint64_t nslots){
 
 		uint64_t tid = gallatin::utils::get_tid();
 
@@ -60,7 +60,7 @@ namespace data_structs {
 
 
 
-		__device__ svector(uint64_t starting_count){
+		__device__ inline svector(uint64_t starting_count){
 
 
 			uint64_t first_bit_bigger = gallatin::utils::get_first_bit_bigger(starting_count);
@@ -76,14 +76,14 @@ namespace data_structs {
 
 		//delete memory used by this vector.
 		//atm not really threadsafe so only do it if you're sure.
-		__device__ void free_vector(){
+		__device__ inline void free_vector(){
 
 			gallatin::allocators::global_free(data);
 
 		}
 
 
-		__device__ void upsize(){
+		__device__ inline void upsize(){
 
 			uint64_t new_backing_size = backing_size*2;
 
@@ -105,7 +105,7 @@ namespace data_structs {
 
 		}
 
-		__device__ void downsize(){
+		__device__ inline void downsize(){
 
 			uint64_t new_backing_size = backing_size/2;
 
@@ -129,7 +129,7 @@ namespace data_structs {
 
 		}
 
-		__device__ void push_back(T new_item){
+		__device__ inline void push_back(T new_item){
 
 			uint64_t my_slot = size;
 
@@ -142,7 +142,7 @@ namespace data_structs {
 
 		}
 
-		__device__ void insert(T new_item, uint64_t index){
+		__device__ inline void insert(T new_item, uint64_t index){
 
 			for (uint64_t i = index+1; i < size; i++){
 				data[i-1] = data[i];
@@ -156,7 +156,7 @@ namespace data_structs {
 
 		}
 
-		__device__ void remove(uint64_t index){
+		__device__ inline void remove(uint64_t index){
 
 			for (uint64_t i = index+1; i < size; i++){
 				data[i-1] = data[i];
@@ -170,7 +170,7 @@ namespace data_structs {
 
 		}
 
-		__device__ void realloc(uint64_t new_nslots){
+		__device__ inline void realloc(uint64_t new_nslots){
 
 			//shortcut if already at correct size.
 			if (new_nslots == backing_size) return;
@@ -200,7 +200,7 @@ namespace data_structs {
 
 		}
 
-		__device__ T& operator[](uint64_t index)
+		__device__ inline T& operator[](uint64_t index)
 		{
 
 		   return data[index];
@@ -209,7 +209,7 @@ namespace data_structs {
 
 
 		//copy host vector to device
-		static __host__ my_type * copy_to_device(std::vector<T> external_vector){
+		static __host__ inline my_type * copy_to_device(std::vector<T> external_vector){
 
 			uint64_t size = external_vector.size();
 
@@ -238,7 +238,7 @@ namespace data_structs {
 
 		}
 
-		static __host__ my_type * copy_to_device(const T * external_array, uint64_t size){
+		static __host__ inline my_type * copy_to_device(const T * external_array, uint64_t size){
 
 			my_type * host_version = gallatin::utils::get_host_version<my_type>();
 
@@ -266,7 +266,7 @@ namespace data_structs {
 		}
 
 
-		//static __host__ my_type * move_to_device
+		//static __host__ inline my_type * move_to_device
 
 	};
 

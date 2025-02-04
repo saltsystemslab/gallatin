@@ -40,12 +40,12 @@ namespace allocators {
 
 using global_allocator_type = gallatin::allocators::Gallatin<16ULL*1024*1024, 16ULL, 4096ULL>;
 
-__device__ global_allocator_type * global_gallatin;
+__device__ inline global_allocator_type * global_gallatin;
 
-__device__ global_allocator_type * global_host_gallatin;
+__device__ inline global_allocator_type * global_host_gallatin;
 
 
-__host__ void init_global_allocator(uint64_t num_bytes, uint64_t seed, bool print_info=true, bool running_calloc=false){
+__host__ inline void init_global_allocator(uint64_t num_bytes, uint64_t seed, bool print_info=true, bool running_calloc=false){
 
   global_allocator_type * local_copy = global_allocator_type::generate_on_device(num_bytes, seed, print_info, running_calloc);
 
@@ -56,7 +56,7 @@ __host__ void init_global_allocator(uint64_t num_bytes, uint64_t seed, bool prin
 }
 
 
-__host__ void free_global_allocator(){
+__host__ inline void free_global_allocator(){
 
 
   global_allocator_type * local_copy;
@@ -69,13 +69,13 @@ __host__ void free_global_allocator(){
 
 }
 
-__device__ void * global_malloc(uint64_t num_bytes){
+__device__ inline void * global_malloc(uint64_t num_bytes){
 
   return global_gallatin->malloc(num_bytes);
 
 }
 
-__device__ void global_free(void * ptr){
+__device__ inline void global_free(void * ptr){
 
   global_gallatin->free(ptr);
 
@@ -83,7 +83,7 @@ __device__ void global_free(void * ptr){
 
 
 
-__host__ void print_global_stats(){
+__host__ inline void print_global_stats(){
 
   global_allocator_type * local_copy;
 
@@ -97,7 +97,7 @@ __host__ void print_global_stats(){
 }
 
 //host_init
-__host__ void init_global_allocator_host(uint64_t num_bytes, uint64_t seed, bool print_info=true, bool running_calloc=false){
+__host__ inline void init_global_allocator_host(uint64_t num_bytes, uint64_t seed, bool print_info=true, bool running_calloc=false){
 
   global_allocator_type * local_copy = global_allocator_type::generate_on_device_host(num_bytes, seed, print_info, running_calloc);
 
@@ -108,7 +108,7 @@ __host__ void init_global_allocator_host(uint64_t num_bytes, uint64_t seed, bool
 }
 
 
-__host__ void free_global_allocator_host(){
+__host__ inline void free_global_allocator_host(){
 
 
   global_allocator_type * local_copy;
@@ -121,13 +121,13 @@ __host__ void free_global_allocator_host(){
 
 }
 
-__device__ void * global_malloc_host(uint64_t num_bytes){
+__device__ inline void * global_malloc_host(uint64_t num_bytes){
 
   return global_host_gallatin->malloc(num_bytes);
 
 }
 
-__device__ void global_free_host(void * ptr){
+__device__ inline void global_free_host(void * ptr){
 
   global_host_gallatin->free(ptr);
 
@@ -135,7 +135,7 @@ __device__ void global_free_host(void * ptr){
 
 
 
-__host__ void print_global_stats_host(){
+__host__ inline void print_global_stats_host(){
 
   global_allocator_type * local_copy;
 
@@ -151,7 +151,7 @@ __host__ void print_global_stats_host(){
 
 
 //mixed malloc init
-__host__ void init_global_allocator_combined(uint64_t num_bytes, uint64_t host_bytes, uint64_t seed, bool print_info=true, bool running_calloc=false){
+__host__ inline void init_global_allocator_combined(uint64_t num_bytes, uint64_t host_bytes, uint64_t seed, bool print_info=true, bool running_calloc=false){
 
   init_global_allocator(num_bytes, seed, print_info, running_calloc);
   init_global_allocator_host(host_bytes, seed, print_info, running_calloc);
@@ -160,14 +160,14 @@ __host__ void init_global_allocator_combined(uint64_t num_bytes, uint64_t host_b
 }
 
 
-__host__ void free_global_allocator_combined(){
+__host__ inline void free_global_allocator_combined(){
 
   free_global_allocator();
   free_global_allocator_host();
 
 }
 
-__device__ void * global_malloc_combined(uint64_t num_bytes, bool on_host=false){
+__device__ inline void * global_malloc_combined(uint64_t num_bytes, bool on_host=false){
 
   if (on_host){
     return global_malloc_host(num_bytes);
@@ -177,7 +177,7 @@ __device__ void * global_malloc_combined(uint64_t num_bytes, bool on_host=false)
 
 }
 
-__device__ void global_free_combined(void * ptr, bool on_host=false){
+__device__ inline void global_free_combined(void * ptr, bool on_host=false){
 
   if (on_host){
     return global_free_host(ptr);
@@ -192,7 +192,7 @@ __device__ void global_free_combined(void * ptr, bool on_host=false){
 //then fall back to host on failure
 //this allows for a data structure to expand cleanly to host
 // this does NOT perform caching - pointers are stable until free is called.
-__device__ void * global_malloc_fused(uint64_t num_bytes){
+__device__ inline void * global_malloc_fused(uint64_t num_bytes){
 
   void * alloc = global_malloc(num_bytes);
 
@@ -204,7 +204,7 @@ __device__ void * global_malloc_fused(uint64_t num_bytes){
 
 }
 
-__device__ void global_free_fused(void * ptr){
+__device__ inline void global_free_fused(void * ptr){
 
   if (global_gallatin->owns_allocation(ptr)){
     global_free(ptr);
@@ -220,7 +220,7 @@ __device__ void global_free_fused(void * ptr){
 
 
 
-__host__ void print_global_stats_combined(){
+__host__ inline void print_global_stats_combined(){
 
   printf("Device Allocator:\n");
 
@@ -237,7 +237,7 @@ __host__ void print_global_stats_combined(){
 
 //writes poison directly before and after the region.
 //TODO - add check and fill in extra with poison.
-__device__ void * global_malloc_poison(uint64_t bytes_needed){
+__device__ inline void * global_malloc_poison(uint64_t bytes_needed){
 
   //need to promote this to power of 2.
   //if (bytes_needed < 16) bytes_needed = 16;
@@ -277,7 +277,7 @@ __device__ void * global_malloc_poison(uint64_t bytes_needed){
 
 }
 
-__device__ bool global_check_poison(void * allocation){
+__device__ inline bool global_check_poison(void * allocation){
 
   if (allocation == nullptr){
     printf("Poison violated 0\n");
@@ -344,7 +344,7 @@ __device__ bool global_check_poison(void * allocation){
 }
 
 
-__device__ void global_free_poison(void * allocation){
+__device__ inline void global_free_poison(void * allocation){
 
   global_check_poison(allocation);
 

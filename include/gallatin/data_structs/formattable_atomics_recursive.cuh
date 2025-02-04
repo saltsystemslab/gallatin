@@ -42,7 +42,7 @@ namespace data_structs {
 		//if resizing, 
 		//perform global reads until new keys, vals are available.
 
-		__device__ formattable_atomic_recursive(uint64_t nitems): needs_flushed((nitems-1)/64+1), is_flushed((nitems-1)/64+1){
+		__device__ inline formattable_atomic_recursive(uint64_t nitems): needs_flushed((nitems-1)/64+1), is_flushed((nitems-1)/64+1){
 
 			uint64_t total_bytes = nitems*sizeof(T);
 
@@ -89,7 +89,7 @@ namespace data_structs {
 
 		}
 
-		__device__ void print_calloc_status(uint64_t index){
+		__device__ inline void print_calloc_status(uint64_t index){
 
 			uint64_t bit = index;
 
@@ -128,7 +128,7 @@ namespace data_structs {
 		//returns true if you are the EXCLUSIVE
 		//writer for your index
 		//all other threads must stall
-		__device__ bool check_if_need_calloc(uint64_t index){
+		__device__ inline bool check_if_need_calloc(uint64_t index){
 
 			uint64_t bit = index;
 
@@ -222,7 +222,7 @@ namespace data_structs {
 		}
 
 
-		__device__ void mark_index_calloced(uint64_t index){
+		__device__ inline void mark_index_calloced(uint64_t index){
 
 			uint64_t high = index / 64;
 
@@ -244,7 +244,7 @@ namespace data_structs {
 
 
 		//write STRIDE*sizeof(T) bytes of memory to 0, based on the region bit.
-		__device__ void calloc_region(uint64_t region_bit){
+		__device__ inline void calloc_region(uint64_t region_bit){
 
 			// char * byte_start = (char *) &data[region_bit*stride];
 
@@ -279,7 +279,7 @@ namespace data_structs {
 		}
 
 		//deference operator - double check that memory has been cleared before giving back.
-		__device__ T& operator[](uint64_t index)
+		__device__ inline T& operator[](uint64_t index)
 		{
 		    bool check_if_need_load = check_if_need_calloc(index);
 
@@ -305,7 +305,7 @@ namespace data_structs {
 		}
 
 
-		__device__ T wrappedAtomicExch(uint64_t index, T exchange){
+		__device__ inline T wrappedAtomicExch(uint64_t index, T exchange){
 
 			bool check_if_need_load = check_if_need_calloc(index);
 
@@ -327,7 +327,7 @@ namespace data_structs {
 
 
 		//set of helper atomic functions 
-		__device__ T wrappedAtomicAnd(uint64_t index, T bits){
+		__device__ inline T wrappedAtomicAnd(uint64_t index, T bits){
 
 
 			bool check_if_need_load = check_if_need_calloc(index);
@@ -349,7 +349,7 @@ namespace data_structs {
 
 		}
 
-		__device__ T wrappedAtomicOr(uint64_t index, T bits){
+		__device__ inline T wrappedAtomicOr(uint64_t index, T bits){
 
 			bool check_if_need_load = check_if_need_calloc(index);
 
@@ -369,7 +369,7 @@ namespace data_structs {
 
 		}
 
-		__device__ T wrappedAtomicAdd(uint64_t index, T value_to_add){
+		__device__ inline T wrappedAtomicAdd(uint64_t index, T value_to_add){
 
 			bool check_if_need_load = check_if_need_calloc(index);
 
@@ -389,7 +389,7 @@ namespace data_structs {
 
 		}
 
-		__device__ T wrappedAtomicCAS(uint64_t index, T expected, T replace){
+		__device__ inline T wrappedAtomicCAS(uint64_t index, T expected, T replace){
 
 			bool check_if_need_load = check_if_need_calloc(index);
 
@@ -422,7 +422,7 @@ namespace data_structs {
 		//set memory just to assert that calloc works.
 		//this may be messing things up by touching the memory early?
 		//without this can get guarantee that memory has not been touched since it was allocated
-		__device__ void debug_set_memory(uint64_t index, T item){
+		__device__ inline void debug_set_memory(uint64_t index, T item){
 
 
 			return;
@@ -435,7 +435,7 @@ namespace data_structs {
 
 
 		//move constructor
-		__device__ formattable_atomic_recursive(formattable_atomic_recursive&& other){
+		__device__ inline formattable_atomic_recursive(formattable_atomic_recursive&& other){
 
 			//move pointers
 			data = other.data;
@@ -449,7 +449,7 @@ namespace data_structs {
 
 		}
 
-		__device__ formattable_atomic_recursive operator=(const formattable_atomic_recursive & first){
+		__device__ inline formattable_atomic_recursive operator=(const formattable_atomic_recursive & first){
 
 			data = first.data;
 
@@ -459,7 +459,7 @@ namespace data_structs {
 
 		}
 
-		__device__ void free_memory(){
+		__device__ inline void free_memory(){
 
 			gallatin::allocators::global_free(data);
 
@@ -471,7 +471,7 @@ namespace data_structs {
 		}
 
 
-		__device__ static my_type * get_pointer(uint64_t nitems){
+		__device__ inline static my_type * get_pointer(uint64_t nitems){
 
 			my_type * memory = (my_type *) gallatin::allocators::global_malloc(sizeof(my_type));
 
@@ -499,7 +499,7 @@ namespace data_structs {
 		//if resizing, 
 		//perform global reads until new keys, vals are available.
 
-		__device__ formattable_atomic_recursive(uint64_t nitems){
+		__device__ inline formattable_atomic_recursive(uint64_t nitems){
 
 			uint64_t total_bytes = nitems*sizeof(T);
 
@@ -546,7 +546,7 @@ namespace data_structs {
 
 		}
 
-		__device__ void print_calloc_status(uint64_t index){
+		__device__ inline void print_calloc_status(uint64_t index){
 
 			uint64_t bit = index;
 
@@ -585,7 +585,7 @@ namespace data_structs {
 		//returns true if you are the EXCLUSIVE
 		//writer for your index
 		//all other threads must stall
-		__device__ bool check_if_need_calloc(uint64_t index){
+		__device__ inline bool check_if_need_calloc(uint64_t index){
 
 			uint64_t bit = index;
 
@@ -676,7 +676,7 @@ namespace data_structs {
 		}
 
 
-		__device__ void mark_index_calloced(uint64_t index){
+		__device__ inline void mark_index_calloced(uint64_t index){
 
 			uint64_t high = index / 64;
 
@@ -698,7 +698,7 @@ namespace data_structs {
 
 
 		//write STRIDE*sizeof(T) bytes of memory to 0, based on the region bit.
-		__device__ void calloc_region(uint64_t region_bit){
+		__device__ inline void calloc_region(uint64_t region_bit){
 
 			// char * byte_start = (char *) &data[region_bit*stride];
 
@@ -733,7 +733,7 @@ namespace data_structs {
 		}
 
 		//deference operator - double check that memory has been cleared before giving back.
-		__device__ T& operator[](uint64_t index)
+		__device__ inline T& operator[](uint64_t index)
 		{
 		    bool check_if_need_load = check_if_need_calloc(index);
 
@@ -759,7 +759,7 @@ namespace data_structs {
 		}
 
 
-		__device__ T wrappedAtomicExch(uint64_t index, T exchange){
+		__device__ inline T wrappedAtomicExch(uint64_t index, T exchange){
 
 			bool check_if_need_load = check_if_need_calloc(index);
 
@@ -781,7 +781,7 @@ namespace data_structs {
 
 
 		//set of helper atomic functions 
-		__device__ T wrappedAtomicAnd(uint64_t index, T bits){
+		__device__ inline T wrappedAtomicAnd(uint64_t index, T bits){
 
 
 			bool check_if_need_load = check_if_need_calloc(index);
@@ -803,7 +803,7 @@ namespace data_structs {
 
 		}
 
-		__device__ T wrappedAtomicOr(uint64_t index, T bits){
+		__device__ inline T wrappedAtomicOr(uint64_t index, T bits){
 
 			bool check_if_need_load = check_if_need_calloc(index);
 
@@ -823,7 +823,7 @@ namespace data_structs {
 
 		}
 
-		__device__ T wrappedAtomicAdd(uint64_t index, T value_to_add){
+		__device__ inline T wrappedAtomicAdd(uint64_t index, T value_to_add){
 
 			bool check_if_need_load = check_if_need_calloc(index);
 
@@ -843,7 +843,7 @@ namespace data_structs {
 
 		}
 
-		__device__ T wrappedAtomicCAS(uint64_t index, T expected, T replace){
+		__device__ inline T wrappedAtomicCAS(uint64_t index, T expected, T replace){
 
 			bool check_if_need_load = check_if_need_calloc(index);
 
@@ -876,7 +876,7 @@ namespace data_structs {
 		//set memory just to assert that calloc works.
 		//this may be messing things up by touching the memory early?
 		//without this can get guarantee that memory has not been touched since it was allocated
-		__device__ void debug_set_memory(uint64_t index, T item){
+		__device__ inline void debug_set_memory(uint64_t index, T item){
 
 
 			return;
@@ -889,7 +889,7 @@ namespace data_structs {
 
 
 		//move constructor
-		__device__ formattable_atomic_recursive(formattable_atomic_recursive&& other){
+		__device__ inline formattable_atomic_recursive(formattable_atomic_recursive&& other){
 
 			//move pointers
 			data = other.data;
@@ -903,7 +903,7 @@ namespace data_structs {
 
 		}
 
-		__device__ formattable_atomic_recursive operator=(const formattable_atomic_recursive & first){
+		__device__ inline formattable_atomic_recursive operator=(const formattable_atomic_recursive & first){
 
 			data = first.data;
 
@@ -913,7 +913,7 @@ namespace data_structs {
 
 		}
 
-		__device__ void free_memory(){
+		__device__ inline void free_memory(){
 
 			gallatin::allocators::global_free(data);
 			gallatin::allocators::global_free(is_flushed);
@@ -922,7 +922,7 @@ namespace data_structs {
 		}
 
 
-		__device__ static my_type * get_pointer(uint64_t nitems){
+		__device__ inline static my_type * get_pointer(uint64_t nitems){
 
 			my_type * memory = (my_type *) gallatin::allocators::global_malloc(sizeof(my_type));
 

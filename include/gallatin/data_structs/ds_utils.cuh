@@ -22,7 +22,7 @@ namespace utils {
 //don't call these on stack variables
 
 template<typename T>
-__device__ __inline__ bool typed_atomic_write(T * backing, T item, T replace){
+__device__ inline __inline__ bool typed_atomic_write(T * backing, T item, T replace){
 
 
   //atomic CAS first bit
@@ -52,14 +52,14 @@ __device__ __inline__ bool typed_atomic_write(T * backing, T item, T replace){
 
 
 template<>
-__device__ __inline__ bool typed_atomic_write<uint16_t>(uint16_t * backing, uint16_t item, uint16_t replace){
+__device__ inline __inline__ bool typed_atomic_write<uint16_t>(uint16_t * backing, uint16_t item, uint16_t replace){
 
 
   return (atomicCAS((unsigned short int *) backing, (unsigned short int) item, (unsigned short int) replace) == item);
 
 }
 
-// __device__ __inline__ bool typed_atomic_write<unsigned short>(unsigned short * backing, unsigned short item, unsigned short replace){
+// __device__ inline __inline__ bool typed_atomic_write<unsigned short>(unsigned short * backing, unsigned short item, unsigned short replace){
 
 
 //  return (atomicCAS((unsigned short int *) backing, (unsigned short int) item, (unsigned short int) replace) == item);
@@ -69,7 +69,7 @@ __device__ __inline__ bool typed_atomic_write<uint16_t>(uint16_t * backing, uint
 
 
 template<>
-__device__ __inline__ bool typed_atomic_write<uint32_t>(uint32_t * backing, uint32_t item, uint32_t replace){
+__device__ inline __inline__ bool typed_atomic_write<uint32_t>(uint32_t * backing, uint32_t item, uint32_t replace){
 
 
   return (atomicCAS((unsigned int *) backing, (unsigned int) item, (unsigned int) replace) == item);
@@ -77,7 +77,7 @@ __device__ __inline__ bool typed_atomic_write<uint32_t>(uint32_t * backing, uint
 }
 
 template<>
-__device__ __inline__ bool typed_atomic_write<uint64_t>(uint64_t * backing, uint64_t item, uint64_t replace){
+__device__ inline __inline__ bool typed_atomic_write<uint64_t>(uint64_t * backing, uint64_t item, uint64_t replace){
 
   //printf("Uint64_t call being accessed\n");
 
@@ -88,7 +88,7 @@ __device__ __inline__ bool typed_atomic_write<uint64_t>(uint64_t * backing, uint
 
 
 template<typename T>
-__device__ __inline__ T typed_atomic_CAS(T * backing, T item, T replace){
+__device__ inline __inline__ T typed_atomic_CAS(T * backing, T item, T replace){
 
 
   //atomic CAS first bit
@@ -122,7 +122,7 @@ __device__ __inline__ T typed_atomic_CAS(T * backing, T item, T replace){
 
 
 template<>
-__device__ __inline__ uint16_t typed_atomic_CAS<uint16_t>(uint16_t * backing, uint16_t item, uint16_t replace){
+__device__ inline __inline__ uint16_t typed_atomic_CAS<uint16_t>(uint16_t * backing, uint16_t item, uint16_t replace){
 
   uint16_t result = atomicCAS((unsigned short int *) backing, (unsigned short int) item, (unsigned short int) replace);
 
@@ -132,7 +132,7 @@ __device__ __inline__ uint16_t typed_atomic_CAS<uint16_t>(uint16_t * backing, ui
 
 
 template<>
-__device__ __inline__ uint32_t typed_atomic_CAS<uint32_t>(uint32_t * backing, uint32_t item, uint32_t replace){
+__device__ inline __inline__ uint32_t typed_atomic_CAS<uint32_t>(uint32_t * backing, uint32_t item, uint32_t replace){
 
 
   return atomicCAS((unsigned int *) backing, (unsigned int) item, (unsigned int) replace);
@@ -140,7 +140,7 @@ __device__ __inline__ uint32_t typed_atomic_CAS<uint32_t>(uint32_t * backing, ui
 }
 
 template<>
-__device__ __inline__ uint64_t typed_atomic_CAS<uint64_t>(uint64_t * backing, uint64_t item, uint64_t replace){
+__device__ inline __inline__ uint64_t typed_atomic_CAS<uint64_t>(uint64_t * backing, uint64_t item, uint64_t replace){
 
   //printf("Uint64_t call being accessed\n");
 
@@ -150,7 +150,7 @@ __device__ __inline__ uint64_t typed_atomic_CAS<uint64_t>(uint64_t * backing, ui
 
 
 template<typename T>
-__device__ __inline__ T typed_atomic_exchange(T * backing, T replace){
+__device__ inline __inline__ T typed_atomic_exchange(T * backing, T replace){
 
 
   //atomic CAS first bit
@@ -174,7 +174,7 @@ __device__ __inline__ T typed_atomic_exchange(T * backing, T replace){
 
 
 // template<>
-// __device__ __inline__ uint16_t typed_atomic_exchange<uint16_t>(uint16_t * backing, uint16_t replace){
+// __device__ inline __inline__ uint16_t typed_atomic_exchange<uint16_t>(uint16_t * backing, uint16_t replace){
 
 //   uint16_t result = atomicExch((unsigned short int *) backing, (unsigned short int) replace);
 
@@ -184,7 +184,7 @@ __device__ __inline__ T typed_atomic_exchange(T * backing, T replace){
 
 
 template<>
-__device__ __inline__ uint32_t typed_atomic_exchange<uint32_t>(uint32_t * backing, uint32_t replace){
+__device__ inline __inline__ uint32_t typed_atomic_exchange<uint32_t>(uint32_t * backing, uint32_t replace){
 
 
   return atomicExch((unsigned int *) backing, (unsigned int) replace);
@@ -192,7 +192,7 @@ __device__ __inline__ uint32_t typed_atomic_exchange<uint32_t>(uint32_t * backin
 }
 
 template<>
-__device__ __inline__ uint64_t typed_atomic_exchange<uint64_t>(uint64_t * backing, uint64_t replace){
+__device__ inline __inline__ uint64_t typed_atomic_exchange<uint64_t>(uint64_t * backing, uint64_t replace){
 
   //printf("Uint64_t call being accessed\n");
 
@@ -201,7 +201,7 @@ __device__ __inline__ uint64_t typed_atomic_exchange<uint64_t>(uint64_t * backin
 }
 
 template<>
-__device__ __inline__ float typed_atomic_exchange<float>(float * backing, float replace){
+__device__ inline __inline__ float typed_atomic_exchange<float>(float * backing, float replace){
 
   //printf("Uint64_t call being accessed\n");
 
@@ -210,7 +210,7 @@ __device__ __inline__ float typed_atomic_exchange<float>(float * backing, float 
 }
 
 template<>
-__device__ __inline__ int typed_atomic_exchange<int>(int * backing, int replace){
+__device__ inline __inline__ int typed_atomic_exchange<int>(int * backing, int replace){
 
   //printf("Uint64_t call being accessed\n");
 
@@ -222,7 +222,7 @@ __device__ __inline__ int typed_atomic_exchange<int>(int * backing, int replace)
 //start of atomicAnd
 
 template<typename T>
-__device__ __inline__ T typed_atomic_and(T * backing, T replace){
+__device__ inline __inline__ T typed_atomic_and(T * backing, T replace){
 
 
   //atomic CAS first bit
@@ -246,7 +246,7 @@ __device__ __inline__ T typed_atomic_and(T * backing, T replace){
 
 
 // template<>
-// __device__ __inline__ uint16_t typed_atomic_exchange<uint16_t>(uint16_t * backing, uint16_t replace){
+// __device__ inline __inline__ uint16_t typed_atomic_exchange<uint16_t>(uint16_t * backing, uint16_t replace){
 
 //   uint16_t result = atomicExch((unsigned short int *) backing, (unsigned short int) replace);
 
@@ -256,7 +256,7 @@ __device__ __inline__ T typed_atomic_and(T * backing, T replace){
 
 
 template<>
-__device__ __inline__ uint32_t typed_atomic_and<uint32_t>(uint32_t * backing, uint32_t replace){
+__device__ inline __inline__ uint32_t typed_atomic_and<uint32_t>(uint32_t * backing, uint32_t replace){
 
 
   return atomicAnd((unsigned int *) backing, (unsigned int) replace);
@@ -264,7 +264,7 @@ __device__ __inline__ uint32_t typed_atomic_and<uint32_t>(uint32_t * backing, ui
 }
 
 template<>
-__device__ __inline__ uint64_t typed_atomic_and<uint64_t>(uint64_t * backing, uint64_t replace){
+__device__ inline __inline__ uint64_t typed_atomic_and<uint64_t>(uint64_t * backing, uint64_t replace){
 
   //printf("Uint64_t call being accessed\n");
 
@@ -278,7 +278,7 @@ __device__ __inline__ uint64_t typed_atomic_and<uint64_t>(uint64_t * backing, ui
 //start of atomicOr
 
 template<typename T>
-__device__ __inline__ T typed_atomic_or(T * backing, T replace){
+__device__ inline __inline__ T typed_atomic_or(T * backing, T replace){
 
 
   //atomic CAS first bit
@@ -302,7 +302,7 @@ __device__ __inline__ T typed_atomic_or(T * backing, T replace){
 
 
 // template<>
-// __device__ __inline__ uint16_t typed_atomic_exchange<uint16_t>(uint16_t * backing, uint16_t replace){
+// __device__ inline __inline__ uint16_t typed_atomic_exchange<uint16_t>(uint16_t * backing, uint16_t replace){
 
 //   uint16_t result = atomicExch((unsigned short int *) backing, (unsigned short int) replace);
 
@@ -312,7 +312,7 @@ __device__ __inline__ T typed_atomic_or(T * backing, T replace){
 
 
 template<>
-__device__ __inline__ uint32_t typed_atomic_or<uint32_t>(uint32_t * backing, uint32_t replace){
+__device__ inline __inline__ uint32_t typed_atomic_or<uint32_t>(uint32_t * backing, uint32_t replace){
 
 
   return atomicOr((unsigned int *) backing, (unsigned int) replace);
@@ -320,7 +320,7 @@ __device__ __inline__ uint32_t typed_atomic_or<uint32_t>(uint32_t * backing, uin
 }
 
 template<>
-__device__ __inline__ uint64_t typed_atomic_or<uint64_t>(uint64_t * backing, uint64_t replace){
+__device__ inline __inline__ uint64_t typed_atomic_or<uint64_t>(uint64_t * backing, uint64_t replace){
 
   //printf("Uint64_t call being accessed\n");
 
@@ -333,7 +333,7 @@ __device__ __inline__ uint64_t typed_atomic_or<uint64_t>(uint64_t * backing, uin
 //start of atomicAdd
 
 template<typename T>
-__device__ __inline__ T typed_atomic_add(T * backing, T replace){
+__device__ inline __inline__ T typed_atomic_add(T * backing, T replace){
 
 
   //atomic CAS first bit
@@ -357,7 +357,7 @@ __device__ __inline__ T typed_atomic_add(T * backing, T replace){
 
 
 // template<>
-// __device__ __inline__ uint16_t typed_atomic_exchange<uint16_t>(uint16_t * backing, uint16_t replace){
+// __device__ inline __inline__ uint16_t typed_atomic_exchange<uint16_t>(uint16_t * backing, uint16_t replace){
 
 //   uint16_t result = atomicExch((unsigned short int *) backing, (unsigned short int) replace);
 
@@ -367,7 +367,7 @@ __device__ __inline__ T typed_atomic_add(T * backing, T replace){
 
 
 template<>
-__device__ __inline__ uint32_t typed_atomic_add<uint32_t>(uint32_t * backing, uint32_t replace){
+__device__ inline __inline__ uint32_t typed_atomic_add<uint32_t>(uint32_t * backing, uint32_t replace){
 
 
   return atomicAdd((unsigned int *) backing, (unsigned int) replace);
@@ -375,7 +375,7 @@ __device__ __inline__ uint32_t typed_atomic_add<uint32_t>(uint32_t * backing, ui
 }
 
 template<>
-__device__ __inline__ uint64_t typed_atomic_add<uint64_t>(uint64_t * backing, uint64_t replace){
+__device__ inline __inline__ uint64_t typed_atomic_add<uint64_t>(uint64_t * backing, uint64_t replace){
 
   //printf("Uint64_t call being accessed\n");
 
@@ -384,7 +384,7 @@ __device__ __inline__ uint64_t typed_atomic_add<uint64_t>(uint64_t * backing, ui
 }
 
 template<>
-__device__ __inline__ int typed_atomic_add<int>(int * backing, int replace){
+__device__ inline __inline__ int typed_atomic_add<int>(int * backing, int replace){
 
 
   return atomicAdd((int *) backing, (int) replace);
@@ -395,7 +395,7 @@ __device__ __inline__ int typed_atomic_add<int>(int * backing, int replace){
 
 
 template<typename T>
-__device__ __inline__ T typed_global_read(T * backing){
+__device__ inline __inline__ T typed_global_read(T * backing){
 
 
   //atomic CAS first bit
@@ -417,7 +417,7 @@ __device__ __inline__ T typed_global_read(T * backing){
 
 
 template<>
-__device__ __inline__ uint16_t typed_global_read<uint16_t>(uint16_t * backing){
+__device__ inline __inline__ uint16_t typed_global_read<uint16_t>(uint16_t * backing){
 
   uint16_t result = gallatin::utils::global_read_uint16_t(backing);
 
@@ -427,7 +427,7 @@ __device__ __inline__ uint16_t typed_global_read<uint16_t>(uint16_t * backing){
 
 
 template<>
-__device__ __inline__ uint32_t typed_global_read<uint32_t>(uint32_t * backing){
+__device__ inline __inline__ uint32_t typed_global_read<uint32_t>(uint32_t * backing){
 
   uint32_t result = gallatin::utils::ldca((uint *) backing);
 
@@ -435,7 +435,7 @@ __device__ __inline__ uint32_t typed_global_read<uint32_t>(uint32_t * backing){
 }
 
 template<>
-__device__ __inline__ int typed_global_read<int>(int * backing){
+__device__ inline __inline__ int typed_global_read<int>(int * backing){
 
   int result = (int) gallatin::utils::ldca((uint *) backing);
 
@@ -443,7 +443,7 @@ __device__ __inline__ int typed_global_read<int>(int * backing){
 }
 
 template<>
-__device__ __inline__ uint64_t typed_global_read<uint64_t>(uint64_t * backing){
+__device__ inline __inline__ uint64_t typed_global_read<uint64_t>(uint64_t * backing){
 
   //printf("Uint64_t call being accessed\n");
 

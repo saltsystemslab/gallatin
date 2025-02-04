@@ -29,7 +29,7 @@ namespace data_structs {
 
 		//given a section of memory, initialize the hash segment.
 		//this zeros out the memory.
-		__device__ static my_type * init(void * memory, uint64_t seed, uint64_t num_bytes){
+		__device__ inline static my_type * init(void * memory, uint64_t seed, uint64_t num_bytes){
 
 			my_type * segment = (my_type *) memory;
 
@@ -43,7 +43,7 @@ namespace data_structs {
 
 		}
 
-		static __host__ __device__ const uint get_stride(){
+		static __host__ __device__ inline const uint get_stride(){
 
 			return gallatin::utils::rounded_size<Key, Val>::size;
 
@@ -52,7 +52,7 @@ namespace data_structs {
 
 		}
 
-		__device__ Key * get_key_addr(uint64_t slot){
+		__device__ inline Key * get_key_addr(uint64_t slot){
 
 			const uint stride = my_type::get_stride();
 
@@ -62,7 +62,7 @@ namespace data_structs {
 
 		}
 
-		__device__ void insert(Key key, Val val){
+		__device__ inline void insert(Key key, Val val){
 
 			gallatin::hashers::murmurHasher hash_func;
 			hash_func.init(seed);
@@ -71,7 +71,7 @@ namespace data_structs {
 
 		}
 
-		__device__ bool query(Key key, Val & val){
+		__device__ inline bool query(Key key, Val & val){
 			
 		}
 
@@ -103,7 +103,7 @@ namespace data_structs {
 
 		//instantiate a queue on device.
 		//currently does not pull from the allocator, but it totally should
-		static __host__ my_type * generate_on_device(allocator * backing_allocator){
+		static __host__ inline my_type * generate_on_device(allocator * backing_allocator){
 
 			my_type * host_version = gallatin::utils::get_host_version<my_type>();
 
@@ -114,13 +114,13 @@ namespace data_structs {
 
 		}
 
-		__device__ void init(allocator * backing_allocator){
+		__device__ inline void init(allocator * backing_allocator){
 			my_backing_allocator = backing_allocator;
 			head = nullptr;
 			tail = nullptr;
 		}
 
-		__device__ void enqueue(T new_item){
+		__device__ inline void enqueue(T new_item){
 
 			queue_node<T> * new_node = (queue_node<T> *) my_backing_allocator->malloc(sizeof(queue_node<T>));
 
@@ -171,7 +171,7 @@ namespace data_structs {
 
 		//valid to make optional type?
 
-		__device__ bool dequeue(T & return_val){
+		__device__ inline bool dequeue(T & return_val){
 
 			//do these reads need to be atomic? 
 			//I don't think so as these values don't change.

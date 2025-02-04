@@ -35,7 +35,7 @@ namespace data_structs {
 	//helper kernel
 	//each resize triggers a new kernel to insert items. 
 	template <typename key_arr_type, typename val_arr_type, typename Table>
-	__global__ void reinsert_old_keys(key_arr_type * old_keys, val_arr_type * old_vals, uint64_t nslots, Table * ext_table){
+	__global__ inline void reinsert_old_keys(key_arr_type * old_keys, val_arr_type * old_vals, uint64_t nslots, Table * ext_table){
 
 		uint64_t tid = gallatin::utils::get_tid();
 
@@ -129,7 +129,7 @@ namespace data_structs {
 		//if resizing, 
 		//perform global reads until new keys, vals are available.
 
-		__device__ void init(uint64_t initial_nslots=100, uint64_t ext_seed=4095, double ext_resize_ratio=.77){
+		__device__ inline void init(uint64_t initial_nslots=100, uint64_t ext_seed=4095, double ext_resize_ratio=.77){
 
 
 			uint init_bits = gallatin::utils::get_first_bit_bigger(initial_nslots);
@@ -185,17 +185,17 @@ namespace data_structs {
 		}
 
 
-		__device__ uint64_t get_nslots(uint bits){
+		__device__ inline uint64_t get_nslots(uint bits){
 			return 1ULL << bits;
 		}
 
-		__device__ uint64_t get_fill(uint64_t counter){
+		__device__ inline uint64_t get_fill(uint64_t counter){
 
 			return counter & BITMASK(50);
 
 		}
 
-		__device__ uint get_bits(uint64_t counter){
+		__device__ inline uint get_bits(uint64_t counter){
 
 			return counter >> 50;
 
@@ -206,7 +206,7 @@ namespace data_structs {
 		//assumes as a precondition table is large enough
 		//this returns true if success,
 		//false if probe depth exceeded
-		__device__ int internal_insert_key_val_pair(key_arr_type * ext_keys, val_arr_type * ext_vals, uint64_t ext_nslots, Key key, Val val){
+		__device__ inline int internal_insert_key_val_pair(key_arr_type * ext_keys, val_arr_type * ext_vals, uint64_t ext_nslots, Key key, Val val){
 
 
 			uint64_t hash = gallatin::hashers::MurmurHash64A(&key, sizeof(Key), seed);
@@ -238,7 +238,7 @@ namespace data_structs {
 		}
 
 		//perform insertion, and then back up table if something happened.
-		__device__ void insert(Key key, Val val){
+		__device__ inline void insert(Key key, Val val){
 
 
 
@@ -419,7 +419,7 @@ namespace data_structs {
 
 
 		//can get away with one read to old state ?
-		__device__ bool query(Key key, Val & val){
+		__device__ inline bool query(Key key, Val & val){
 
 
 			//uint64_t merged_counter = atomicAdd((unsigned long long int *)&insert_size_counters, 1ULL);

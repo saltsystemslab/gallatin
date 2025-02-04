@@ -69,7 +69,7 @@ namespace allocators {
 #define SET_BIT_MASK(index) ((1ULL << index))
 
 // cudaMemset is being weird
-__global__ void init_bits(uint64_t *bits, uint64_t items_in_universe) {
+__global__ inline void init_bits(uint64_t *bits, uint64_t items_in_universe) {
   uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
 
   if (tid >= items_in_universe) return;
@@ -84,7 +84,7 @@ __global__ void init_bits(uint64_t *bits, uint64_t items_in_universe) {
 }
 
 template <typename veb_tree_kernel_type>
-__global__ void veb_report_fill_kernel(veb_tree_kernel_type *tree,
+__global__ inline void veb_report_fill_kernel(veb_tree_kernel_type *tree,
                                        uint64_t num_threads,
                                        uint64_t *fill_count) {
   uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -114,7 +114,7 @@ struct layer {
   // int * max;
   // int * min;
 
-  __host__ static layer *generate_on_device(uint64_t items_in_universe) {
+  __host__ inline static layer *generate_on_device(uint64_t items_in_universe) {
     uint64_t ext_num_blocks = (items_in_universe - 1) / 64 + 1;
 
     // printf("Universe of %lu items in %lu bytes\n", items_in_universe,
@@ -159,7 +159,7 @@ struct layer {
   //special init function for Gallatin
   //tree is not guaranteed to be initialized until a synchronize is called
   //This function allows for multiple layers to be initialized simultaneously.
-  __host__ static layer *generate_on_device_nowait(uint64_t items_in_universe) {
+  __host__ inline static layer *generate_on_device_nowait(uint64_t items_in_universe) {
     uint64_t ext_num_blocks = (items_in_universe - 1) / 64 + 1;
 
     // printf("Universe of %lu items in %lu bytes\n", items_in_universe,
@@ -202,16 +202,16 @@ struct layer {
   }
 
 
-  __device__ static uint64_t get_num_blocks(uint64_t items_in_universe) {
+  __device__ inline static uint64_t get_num_blocks(uint64_t items_in_universe) {
     return (items_in_universe - 1) / 64 + 1;
   }
 
-  __device__ static uint64_t get_size_bytes(uint items_in_universe) {
+  __device__ inline static uint64_t get_size_bytes(uint items_in_universe) {
     return get_num_blocks(items_in_universe) * sizeof(uint64_t);
   }
 
   // given a device layer initialize.
-  __device__ void init_from_array(uint64_t items_in_universe, uint64_t *array) {
+  __device__ inline void init_from_array(uint64_t items_in_universe, uint64_t *array) {
     universe_size = items_in_universe;
 
     num_blocks = get_num_blocks(items_in_universe);
@@ -225,7 +225,7 @@ struct layer {
     return;
   }
 
-  __host__ static void free_on_device(layer *dev_layer) {
+  __host__ inline static void free_on_device(layer *dev_layer) {
     layer *host_layer;
 
     cudaMallocHost((void **)&host_layer, sizeof(layer));
@@ -239,15 +239,15 @@ struct layer {
     cudaFreeHost(host_layer);
   }
 
-  __device__ uint64_t insert(uint64_t high, int low) {
+  __device__ inline uint64_t insert(uint64_t high, int low) {
     return atomicOr((unsigned long long int *)&bits[high], SET_BIT_MASK(low));
   }
 
-  __device__ uint64_t remove(uint64_t high, int low) {
+  __device__ inline uint64_t remove(uint64_t high, int low) {
     return atomicAnd((unsigned long long int *)&bits[high], ~SET_BIT_MASK(low));
   }
 
-  __device__ int inline find_next(uint64_t high, int low) {
+  __device__ inline int find_next(uint64_t high, int low) {
     // printf("High is %lu, num blocks is %lu\n", high, num_blocks);
     if (bits == nullptr) {
 
@@ -274,10 +274,10 @@ struct layer {
     return __ffsll(bits[high] & ~BITMASK(low + 1)) - 1;
   }
 
-  //__device__ int inline
+  //__device__ inline int
 
   // returns true if item in bitmask.
-  __device__ bool query(uint64_t high, int low) {
+  __device__ inline bool query(uint64_t high, int low) {
 #if VEB_GLOBAL_LOAD
     gallatin::utils::ldca(&bits[high]);
 #endif
@@ -285,7 +285,7 @@ struct layer {
     return (bits[high] & SET_BIT_MASK(low));
   }
 
-  __device__ void set_new_universe(uint64_t items_in_universe) {
+  __device__ inline void set_new_universe(uint64_t items_in_universe) {
     universe_size = items_in_universe;
     num_blocks = get_num_blocks(items_in_universe);
 
@@ -302,7 +302,7 @@ struct layer {
   }
 
   //if a failure occurs, rollback previously acquired segments!
-  __device__ void rollback(uint64_t start_block, uint64_t bits_to_set){
+  __device__ inline void rollback(uint64_t start_block, uint64_t bits_to_set){
 
     while (bits_to_set > 64){
 
@@ -320,7 +320,7 @@ struct layer {
 
   }
 
-  __device__ uint64_t gather_multiple(uint64_t num_contiguous){
+  __device__ inline uint64_t gather_multiple(uint64_t num_contiguous){
 
     uint64_t start_block = num_blocks-1;
 
@@ -454,7 +454,7 @@ struct layer {
 
   //forcefully clean up indices
   //only occurs when lower layers fully allocated with gather_multiple.
-  __device__ void remove_contiguous(uint64_t start_index, uint64_t num_indices){
+  __device__ inline void remove_contiguous(uint64_t start_index, uint64_t num_indices){
 
 
     uint64_t block_index = start_index/64;
@@ -492,7 +492,7 @@ struct layer {
 
   //add back multiple bits in a contiguous band
   //accounts for starting and ending in the middle of a segment!
-  __device__ void return_multiple(uint64_t start_index, uint64_t num_indices){
+  __device__ inline void return_multiple(uint64_t start_index, uint64_t num_indices){
 
 
     uint64_t block_index = start_index/64;
@@ -535,7 +535,7 @@ struct veb_tree {
 
 
   // don't think this calculation is correct
-  __host__ static veb_tree *generate_on_device(uint64_t universe,
+  __host__ inline static veb_tree *generate_on_device(uint64_t universe,
                                                uint64_t ext_seed) {
     veb_tree *host_tree;
 
@@ -592,7 +592,7 @@ struct veb_tree {
   }
 
 
-  __host__ static veb_tree *generate_on_device_nowait(uint64_t universe,
+  __host__ inline static veb_tree *generate_on_device_nowait(uint64_t universe,
                                                uint64_t ext_seed) {
     veb_tree *host_tree;
 
@@ -652,14 +652,14 @@ struct veb_tree {
   // how big are we?
   // This is the number of bytes required for both the main object
   // and all layer pointers.
-  //  static __host__ uint64_t get_size_bytes_noarray(){
+  //  static __host__ inline uint64_t get_size_bytes_noarray(){
 
   // 	uint64_t bytes = sizof(my_type)
 
   // }
 
   // always free from the layers we started with.
-  __host__ static void free_on_device(veb_tree *dev_tree) {
+  __host__ inline static void free_on_device(veb_tree *dev_tree) {
     veb_tree *host_tree;
 
     cudaMallocHost((void **)&host_tree, sizeof(veb_tree));
@@ -694,7 +694,7 @@ struct veb_tree {
     cudaFree(dev_tree);
   }
 
-  __device__ bool float_up(int &layer, uint64_t &high, int &low) {
+  __device__ inline bool float_up(int &layer, uint64_t &high, int &low) {
     layer -= 1;
 
     low = high & BITMASK(6);
@@ -703,7 +703,7 @@ struct veb_tree {
     return (layer >= 0);
   }
 
-  __device__ bool float_down(int &layer, uint64_t &high, int &low) {
+  __device__ inline bool float_down(int &layer, uint64_t &high, int &low) {
     layer += 1;
     high = (high << 6) + low;
     low = -1;
@@ -711,7 +711,7 @@ struct veb_tree {
     return (layer < num_layers);
   }
 
-  __device__ void init_new_universe(uint64_t items_in_universe) {
+  __device__ inline void init_new_universe(uint64_t items_in_universe) {
     uint64_t ext_universe_size = items_in_universe;
 
     int max_height = 64 - __builtin_clzll(items_in_universe);
@@ -734,7 +734,7 @@ struct veb_tree {
   }
 
   // base setup - only works with lowest level
-  __device__ bool remove(uint64_t delete_val) {
+  __device__ inline bool remove(uint64_t delete_val) {
     uint64_t high = delete_val >> 6;
 
     int low = delete_val & BITMASK(6);
@@ -754,7 +754,7 @@ struct veb_tree {
     // assert (high == delete_val/64);
   }
 
-  __device__ bool insert(uint64_t insert_val) {
+  __device__ inline bool insert(uint64_t insert_val) {
     uint64_t high = insert_val >> 6;
 
     int low = insert_val & BITMASK(6);
@@ -772,7 +772,7 @@ struct veb_tree {
     return true;
   }
 
-  __device__ bool insert_force_update(uint64_t insert_val) {
+  __device__ inline bool insert_force_update(uint64_t insert_val) {
     uint64_t high = insert_val >> 6;
 
     int low = insert_val & BITMASK(6);
@@ -800,7 +800,7 @@ struct veb_tree {
   // insert, but we're not running probabilistically.
   // inserting into a block *must* force it to make changes visible at the
   // highest level
-  //  __device__ bool insert_force_update(uint64_t insert_val){
+  //  __device__ inline bool insert_force_update(uint64_t insert_val){
 
   // 	uint64_t high = insert_val >> 6;
 
@@ -821,19 +821,19 @@ struct veb_tree {
   // }
 
   // non atomic
-  __device__ bool query(uint64_t query_val) {
+  __device__ inline bool query(uint64_t query_val) {
     uint64_t high = query_val >> 6;
     int low = query_val & BITMASK(6);
 
     return layers[num_layers - 1]->query(high, low);
   }
 
-  __device__ __host__ static uint64_t fail() { return ~0ULL; }
+  __device__ __host__ inline static uint64_t fail() { return ~0ULL; }
 
   // finds the next one
   // this does one float up/ float down attempt
   // which gathers ~80% of items from testing.
-  __device__ uint64_t successor(uint64_t query_val) {
+  __device__ inline uint64_t successor(uint64_t query_val) {
     // debugging
     // this doesn't trigger so not the cause.
 
@@ -875,7 +875,7 @@ struct veb_tree {
   // allow for multiple loops
   // this is obviously slower / more divergent, but can help on small trees
   // guarantee that all items can be retreived is probabilistic
-  __device__ uint64_t successor_thorough(uint64_t query_val) {
+  __device__ inline uint64_t successor_thorough(uint64_t query_val) {
     uint64_t high = query_val >> 6;
     int low = query_val & BITMASK(6);
 
@@ -915,7 +915,7 @@ struct veb_tree {
     }
   }
 
-  __device__ uint64_t lock_offset(uint64_t start) {
+  __device__ inline uint64_t lock_offset(uint64_t start) {
     // temporarily clipped for debugging
     if (query(start) && remove(start)) {
       return start;
@@ -937,13 +937,13 @@ struct veb_tree {
   }
 
   // find the first index
-  __device__ uint64_t find_first_valid_index() {
+  __device__ inline uint64_t find_first_valid_index() {
     if (query(0)) return 0;
 
     return successor_thorough(0);
   }
 
-  __device__ uint64_t find_random_valid_index(){
+  __device__ inline uint64_t find_random_valid_index(){
 
     uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -976,7 +976,7 @@ struct veb_tree {
 
   }
 
-  __device__ uint64_t malloc_first() {
+  __device__ inline uint64_t malloc_first() {
     int attempts = 0;
 
     while (attempts < VEB_MAX_ATTEMPTS) {
@@ -990,7 +990,7 @@ struct veb_tree {
     return veb_tree::fail();
   }
 
-  __device__ uint64_t malloc() {
+  __device__ inline uint64_t malloc() {
     // make several attempts at malloc?
 
     uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -1031,9 +1031,9 @@ struct veb_tree {
     return lock_offset(0);
   }
 
-  __device__ uint64_t get_largest_allocation() { return total_universe; }
+  __device__ inline uint64_t get_largest_allocation() { return total_universe; }
 
-  __host__ uint64_t host_get_universe() {
+  __host__ inline uint64_t host_get_universe() {
     veb_tree *host_version;
 
     cudaMallocHost((void **)&host_version, sizeof(veb_tree));
@@ -1049,7 +1049,7 @@ struct veb_tree {
     return ret_value;
   }
 
-  __host__ uint64_t report_fill() {
+  __host__ inline uint64_t report_fill() {
     uint64_t *fill_count;
 
     cudaMallocManaged((void **)&fill_count, sizeof(uint64_t));
@@ -1076,13 +1076,13 @@ struct veb_tree {
     return return_val;
   }
 
-  __host__ uint64_t report_max() {
+  __host__ inline uint64_t report_max() {
     // return 1;
     return host_get_universe();
   }
 
 
-  __device__ uint64_t calculate_overhead(){
+  __device__ inline uint64_t calculate_overhead(){
 
     uint64_t overhead = sizeof(veb_tree);
 
@@ -1097,7 +1097,7 @@ struct veb_tree {
   }
 
 
-  __device__ uint64_t maybe_remove_layer_bits(int layer, uint64_t start_bit, uint64_t bits_to_check){
+  __device__ inline uint64_t maybe_remove_layer_bits(int layer, uint64_t start_bit, uint64_t bits_to_check){
 
 
     uint64_t working_bit = start_bit;
@@ -1125,7 +1125,7 @@ struct veb_tree {
 
   }
 
-  __device__ uint64_t maybe_return_layer_bits(int layer, uint64_t start_bit, uint64_t bits_to_check){
+  __device__ inline uint64_t maybe_return_layer_bits(int layer, uint64_t start_bit, uint64_t bits_to_check){
 
 
     uint64_t working_bit = start_bit;
@@ -1157,7 +1157,7 @@ struct veb_tree {
   //this algorithm works by generating masks and attempting to apply them
   //for each segment - determine if there is a valid section at the start using ffs
   //then work backwords!
-  __device__ uint64_t gather_multiple(uint64_t num_contiguous){
+  __device__ inline uint64_t gather_multiple(uint64_t num_contiguous){
 
 
     //starting from the back, find a section containing
@@ -1195,7 +1195,7 @@ struct veb_tree {
 
   }
 
-  __device__ void return_multiple(uint64_t start_bit, uint64_t num_contiguous){
+  __device__ inline void return_multiple(uint64_t start_bit, uint64_t num_contiguous){
 
     layers[num_layers-1]->return_multiple(start_bit, num_contiguous);
 
@@ -1218,7 +1218,7 @@ struct veb_tree {
   }
 
   // //teams work togther to find new allocations
-  // __device__ uint64_t team_malloc(){
+  // __device__ inline uint64_t team_malloc(){
 
   // 	cg::coalesced_group active_threads = cg::coalesced_threads();
 

@@ -27,7 +27,7 @@ namespace data_structs {
 
 
 	template <typename log_vector>
-	__global__ void free_log_strings(log_vector * logs, uint64_t nitems){
+	__global__ inline void free_log_strings(log_vector * logs, uint64_t nitems){
 
 		uint64_t tid = gallatin::utils::get_tid();
 
@@ -50,7 +50,7 @@ namespace data_structs {
 
 		custring<on_host> message;
 
-		__device__ log_entry(custring<on_host> new_message){
+		__device__ inline log_entry(custring<on_host> new_message){
 
 
 			tid = gallatin::utils::get_tid();
@@ -58,7 +58,7 @@ namespace data_structs {
 
 		}
 
-		__device__ log_entry(uint64_t ext_tid, custring<on_host> new_message){
+		__device__ inline log_entry(uint64_t ext_tid, custring<on_host> new_message){
 
 			tid = ext_tid;
 			message = new_message;
@@ -68,7 +68,7 @@ namespace data_structs {
 		log_entry() = default;
 
 		// template<typename ... Args>
-		// __device__ log_entry(Args...all_args){
+		// __device__ inline log_entry(Args...all_args){
 
 		// 	tid = gallatin::utils::get_tid();
 
@@ -77,7 +77,7 @@ namespace data_structs {
 		// }
 
 		//assumes log host is on host but custring is maybe not.
-		__host__ std::string export_log(){
+		__host__ inline std::string export_log(){
 
 
 			if (on_host){
@@ -136,7 +136,7 @@ namespace data_structs {
 
 
 
-		static __host__ my_type * generate_on_device(){
+		static __host__ inline my_type * generate_on_device(){
 
 			my_type * host_version = gallatin::utils::get_host_version<my_type>();
 
@@ -147,7 +147,7 @@ namespace data_structs {
 
 		}
 
-		static __host__ void free_on_device(my_type * device_log){
+		static __host__ inline void free_on_device(my_type * device_log){
 
 
 			return;
@@ -173,7 +173,7 @@ namespace data_structs {
 
 		
 		template <typename ... Args>
-		__device__ void add_log(Args...all_args){
+		__device__ inline void add_log(Args...all_args){
 
 
 			auto string_message = make_string<on_host, Args...>(all_args...);
@@ -188,7 +188,7 @@ namespace data_structs {
 
 		//dump log to a host vector for easy export.
 		//general steps:
-		static __host__ std::vector<std::string> export_log(my_type * device_version){
+		static __host__ inline std::vector<std::string> export_log(my_type * device_version){
 
 			my_type * host_version = gallatin::utils::move_to_host(device_version);
 
@@ -225,7 +225,7 @@ namespace data_structs {
 
 		//generate output vector and write to host file.
 		//for the moment this uses host buffer.
-		__host__ void dump_to_file(std::string filename){
+		__host__ inline void dump_to_file(std::string filename){
 
 			auto log_strings = my_type::export_log(this);
 

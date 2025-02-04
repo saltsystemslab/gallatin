@@ -61,7 +61,7 @@ struct Block {
   uint malloc_counter;
   uint free_counter;
 
-  __device__ void init() {
+  __device__ inline void init() {
     //f u its gotta be big.
     malloc_counter = 4097UL;
     free_counter = 0UL;
@@ -71,7 +71,7 @@ struct Block {
 
   // frees must succeed - precondition - fail on double free but print error.
   // uint64_t must be clipped ahead of time. 0 - 4096
-  __device__ bool block_free() {
+  __device__ inline bool block_free() {
     uint old = atomicAdd((unsigned int *)&free_counter, 1ULL);
 
 
@@ -84,7 +84,7 @@ struct Block {
     return (old == 4095);
   }
 
-  __device__ bool block_free_multiple(uint num_frees) {
+  __device__ inline bool block_free_multiple(uint num_frees) {
     uint old = atomicAdd((unsigned int *)&free_counter, num_frees);
 
 
@@ -97,7 +97,7 @@ struct Block {
     return (old+num_frees == 4096);
   }
 
-  __device__ uint64_t block_malloc(cg::coalesced_group &active_threads) {
+  __device__ inline uint64_t block_malloc(cg::coalesced_group &active_threads) {
     uint old_count;
 
     if (active_threads.thread_rank() == 0) {
@@ -117,7 +117,7 @@ struct Block {
   }
 
   //allow threads to procure multiple allocations simultaneously
-  __device__ uint64_t block_malloc_multi_size(cg::coalesced_group &active_threads, uint copies_needed){
+  __device__ inline uint64_t block_malloc_multi_size(cg::coalesced_group &active_threads, uint copies_needed){
 
     //calculate exclusive sum - if value is less than that, valid
 
@@ -180,7 +180,7 @@ struct Block {
 
   }
 
-//   __device__ void reset_block() {
+//   __device__ inline void reset_block() {
 //     uint old = atomicExch((unsigned int *)&free_counter, 0ULL);
 
 // #if GALLATIN_BLOCK_DEBUG
@@ -197,7 +197,7 @@ struct Block {
 //   }
 
 
-  __device__ void reset_free(){
+  __device__ inline void reset_free(){
 
     uint old = atomicExch((unsigned int *)&free_counter, 0ULL);
 
@@ -212,7 +212,7 @@ struct Block {
   }
 
   //setting
-  __device__ void init_malloc(uint16_t tree_size){
+  __device__ inline void init_malloc(uint16_t tree_size){
 
 
     //uint big_tree_size = tree_size;
@@ -226,7 +226,7 @@ struct Block {
 
   //atomically increment the counter and add the old value
   //this version accounts for the tree size.
-  __device__ uint block_malloc_tree(cg::coalesced_group &active_threads){
+  __device__ inline uint block_malloc_tree(cg::coalesced_group &active_threads){
 
     uint old_count;
 
@@ -242,7 +242,7 @@ struct Block {
   }
 
    //allow threads to procure multiple allocations simultaneously
-  __device__ uint64_t block_malloc_tree_multi_size(cg::coalesced_group &active_threads, uint group_sum){
+  __device__ inline uint64_t block_malloc_tree_multi_size(cg::coalesced_group &active_threads, uint group_sum){
 
     //calculate exclusive sum - if value is less than that, valid
 
@@ -264,7 +264,7 @@ struct Block {
   }
 
   //secondary correction
-  __device__ void block_correct_frees(cg::coalesced_group &active_threads, uint copies_needed){
+  __device__ inline void block_correct_frees(cg::coalesced_group &active_threads, uint copies_needed){
 
 
     uint excess_allocs = cg::reduce(active_threads, copies_needed, cg::plus<uint>());
@@ -285,7 +285,7 @@ struct Block {
   //does a sanity check that the block is not already in use, which may occur.
   //block comes initialized, so we just need to set malloc counter. 
   //if it fails throw a fit - this shouldn't occur but ya never know.
-  __device__ uint malloc_fill_block(uint16_t tree_size){
+  __device__ inline uint malloc_fill_block(uint16_t tree_size){
 
     // uint old = atomicAdd((unsigned int *)&free_counter, 4095);
 
@@ -340,7 +340,7 @@ struct Block {
   }
 
   //return true if the 
-  __device__ bool check_valid(uint old_count, uint16_t tree_size){
+  __device__ inline bool check_valid(uint old_count, uint16_t tree_size){
 
     uint block_tree_size = (old_count >> GALLATIN_BLOCK_TREE_OFFSET);
 
@@ -356,7 +356,7 @@ struct Block {
 
   }
 
-  __device__ uint64_t extract_count(cg::coalesced_group &active_threads, uint old_count){
+  __device__ inline uint64_t extract_count(cg::coalesced_group &active_threads, uint old_count){
 
     uint true_count = (old_count & BITMASK(GALLATIN_BLOCK_TREE_OFFSET));
 
@@ -370,7 +370,7 @@ struct Block {
 
   }
 
-  __device__ uint64_t extract_count_multi_size(cg::coalesced_group &active_threads, uint old_count, uint group_sum, uint my_size){
+  __device__ inline uint64_t extract_count_multi_size(cg::coalesced_group &active_threads, uint old_count, uint group_sum, uint my_size){
 
     uint true_count = (old_count & BITMASK(GALLATIN_BLOCK_TREE_OFFSET));
 
@@ -388,7 +388,7 @@ struct Block {
   }
 
 
-  __device__ uint64_t clip_count(uint old_count){
+  __device__ inline uint64_t clip_count(uint old_count){
 
     return (old_count & BITMASK(GALLATIN_BLOCK_TREE_OFFSET));
 

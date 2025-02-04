@@ -33,7 +33,7 @@ namespace allocators {
 #define GAL_BLOCK_STORAGE_READ_BLOCK_ATOMIC 0
 
 // should these start initialized? I can try it.
-__global__ void gallatin_set_block_bitarrs(Block **blocks, uint64_t num_blocks) {
+__global__ inline void gallatin_set_block_bitarrs(Block **blocks, uint64_t num_blocks) {
   uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
 
   if (tid >= num_blocks) return;
@@ -52,7 +52,7 @@ struct per_size_pinned_blocks {
 
   Block **blocks;
 
-  static __host__ per_size_pinned_blocks *generate_on_device(
+  static __host__ inline per_size_pinned_blocks *generate_on_device(
       uint64_t num_blocks) {
     if (num_blocks == 0) num_blocks = 1;
 
@@ -78,7 +78,7 @@ struct per_size_pinned_blocks {
   }
 
 
-  static __host__ per_size_pinned_blocks * generate_on_device_nowait(
+  static __host__ inline per_size_pinned_blocks * generate_on_device_nowait(
       uint64_t num_blocks) {
     if (num_blocks == 0) num_blocks = 1;
 
@@ -103,7 +103,7 @@ struct per_size_pinned_blocks {
     return gallatin::utils::move_to_device_nowait<per_size_pinned_blocks>(host_version);
   }
 
-  static __host__ void free_on_device(per_size_pinned_blocks *dev_version) {
+  static __host__ inline void free_on_device(per_size_pinned_blocks *dev_version) {
     per_size_pinned_blocks *host_version =
         gallatin::utils::move_to_host<per_size_pinned_blocks>(dev_version);
 
@@ -116,7 +116,7 @@ struct per_size_pinned_blocks {
     cudaFreeHost(host_version);
   }
 
-  __device__ int get_valid_block_index() {
+  __device__ inline int get_valid_block_index() {
     int my_smid = gallatin::utils::get_smid() % num_blocks;
     int original_smid = my_smid;
 
@@ -133,7 +133,7 @@ struct per_size_pinned_blocks {
     return my_smid;
   }
 
-  __device__ Block *get_my_block(int id) {
+  __device__ inline Block *get_my_block(int id) {
 
     #if GAL_BLOCK_STORAGE_READ_BLOCK_ATOMIC
       return (Block *) gallatin::utils::ldca((uint64_t *)&blocks[id]);
@@ -144,7 +144,7 @@ struct per_size_pinned_blocks {
 
  }
 
-  __device__ Block *get_alt_block() {
+  __device__ inline Block *get_alt_block() {
     int my_smid = gallatin::utils::get_smid();
 
     my_smid = my_smid * my_smid % num_blocks;
@@ -153,13 +153,13 @@ struct per_size_pinned_blocks {
   }
 
   // replace block with nullptr.
-  __device__ bool swap_out_block(int my_smid, Block *block_to_swap) {
+  __device__ inline bool swap_out_block(int my_smid, Block *block_to_swap) {
     return (atomicCAS((unsigned long long int *)&blocks[my_smid],
                       (unsigned long long int)block_to_swap,
                       0ULL) == (unsigned long long int)block_to_swap);
   }
 
-  __device__ bool replace_block(Block *old_block, Block *new_block) {
+  __device__ inline bool replace_block(Block *old_block, Block *new_block) {
     int my_smid = gallatin::utils::get_smid() % num_blocks;
 
     return (atomicCAS((unsigned long long int *)&blocks[my_smid],
@@ -168,12 +168,12 @@ struct per_size_pinned_blocks {
             (unsigned long long int)old_block);
   }
 
-  __device__ bool swap_out_nullptr(int my_smid, Block *block_to_swap) {
+  __device__ inline bool swap_out_nullptr(int my_smid, Block *block_to_swap) {
     return (atomicCAS((unsigned long long int *)&blocks[my_smid], 0ULL,
                       (unsigned long long int)block_to_swap) == 0ULL);
   }
 
-  __device__ bool lock_my_block() {
+  __device__ inline bool lock_my_block() {
     int my_smid = gallatin::utils::get_smid() % num_blocks;
 
     int high = my_smid / 64;
@@ -187,7 +187,7 @@ struct per_size_pinned_blocks {
     return !(old_bits & mask);
   }
 
-  __device__ bool unlock_my_block() {
+  __device__ inline bool unlock_my_block() {
     int my_smid = gallatin::utils::get_smid() % num_blocks;
 
     int high = my_smid / 64;
@@ -202,7 +202,7 @@ struct per_size_pinned_blocks {
     return (old_bits & mask);
   }
 
-  __device__ uint64_t calculate_overhead(){
+  __device__ inline uint64_t calculate_overhead(){
 
     return num_blocks/8+num_blocks*sizeof(Block *);
 
@@ -217,7 +217,7 @@ struct pinned_shared_blocks {
 
   per_size_pinned_blocks **block_containers;
 
-  static __host__ my_type *generate_on_device(uint64_t blocks_per_segment, uint16_t min) {
+  static __host__ inline my_type *generate_on_device(uint64_t blocks_per_segment, uint16_t min) {
     my_type *host_version = gallatin::utils::get_host_version<my_type>();
 
     uint64_t num_trees = gallatin::utils::get_first_bit_bigger(biggest) -
@@ -243,12 +243,12 @@ struct pinned_shared_blocks {
   }
 
 
-  static __host__ my_type *generate_on_device(uint64_t blocks_per_segment){
+  static __host__ inline my_type *generate_on_device(uint64_t blocks_per_segment){
   	return generate_on_device(blocks_per_segment, 1);
   }
 
 
-  static __host__ my_type *generate_on_device_nowait(uint64_t blocks_per_segment, uint16_t min) {
+  static __host__ inline my_type *generate_on_device_nowait(uint64_t blocks_per_segment, uint16_t min) {
     my_type *host_version = gallatin::utils::get_host_version<my_type>();
 
     uint64_t num_trees = gallatin::utils::get_first_bit_bigger(biggest) -
@@ -274,12 +274,12 @@ struct pinned_shared_blocks {
   }
 
 
-  static __host__ my_type *generate_on_device_nowait(uint64_t blocks_per_segment){
+  static __host__ inline my_type *generate_on_device_nowait(uint64_t blocks_per_segment){
     return generate_on_device_nowait(blocks_per_segment, 1);
   }
 
 
-  static __host__ void free_on_device(my_type *dev_version) {
+  static __host__ inline void free_on_device(my_type *dev_version) {
     my_type *host_version = gallatin::utils::move_to_host<my_type>(dev_version);
 
     uint64_t num_trees = gallatin::utils::get_first_bit_bigger(biggest) -
@@ -298,7 +298,7 @@ struct pinned_shared_blocks {
     cudaFreeHost(host_block_containers);
   }
 
-  __device__ per_size_pinned_blocks *get_tree_local_blocks(int tree) {
+  __device__ inline per_size_pinned_blocks *get_tree_local_blocks(int tree) {
     return block_containers[tree];
   }
 };
@@ -308,12 +308,12 @@ struct pinned_shared_blocks {
 
 // struct kernel_init_test {
 
-// 	__device__ kernel_init_test(){
+// 	__device__ inline kernel_init_test(){
 // 		printf("Booting up! controlled by %llu\n",
 // threadIdx.x+blockIdx.x*blockDim.x);
 // 	}
 
-// 	__device__ ~kernel_init_test(){
+// 	__device__ inline ~kernel_init_test(){
 // 		printf("Shutting down! controlled by %llu\n",
 // threadIdx.x+blockIdx.x*blockDim.x);
 // 	}

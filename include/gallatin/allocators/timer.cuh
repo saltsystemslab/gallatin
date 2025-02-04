@@ -53,16 +53,16 @@ struct timer {
     start_timer();
   }
 
-  __host__ double elapsed() {
+  __host__ inline double elapsed() {
     return (duration_cast<duration<double> >(end - start)).count();
   }
 
-  __host__ void start_timer() { start = high_resolution_clock::now(); }
+  __host__ inline void start_timer() { start = high_resolution_clock::now(); }
 
-  __host__ void end_timer() { end = high_resolution_clock::now(); }
+  __host__ inline void end_timer() { end = high_resolution_clock::now(); }
 
   // synchronize with device, end the timer, and report duration
-  __host__ double sync_end() {
+  __host__ inline double sync_end() {
     GPUErrorCheck(cudaDeviceSynchronize());
 
     end_timer();
@@ -70,7 +70,7 @@ struct timer {
     return elapsed();
   }
 
-  __host__ void print_throughput(std::string operation, uint64_t nitems) {
+  __host__ inline void print_throughput(std::string operation, uint64_t nitems) {
     std::cout << operation << " " << nitems << " in " << elapsed()
               << " seconds, throughput " << std::fixed
               << 1.0 * nitems / elapsed() << std::endl;

@@ -19,12 +19,12 @@ namespace gallatin {
 namespace data_structs {
 
 	//not necessary
-	//const __device__ char digits[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9' };
+	//const __device__ inline char digits[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9' };
 	using namespace gallatin::allocators;
 
 	//merge two strings together, putting them in-place in the first string.
 	template <typename custring>
-	__device__ custring combine(custring first, custring second){
+	__device__ inline custring combine(custring first, custring second){
 
 		uint combined_length = first.get_len() + second.get_len();
 
@@ -74,14 +74,14 @@ namespace data_structs {
 		uint length;
 		
 
-		__device__ custring(){
+		__device__ inline custring(){
 
 			length = 0;
 			chars = nullptr;
 
 		}
 
-		__device__ custring (char * ext_string){
+		__device__ inline custring (char * ext_string){
 
 			//calculate length
 			length = 0;
@@ -116,7 +116,7 @@ namespace data_structs {
 		}
 
 
-		__device__ custring (const char * ext_string){
+		__device__ inline custring (const char * ext_string){
 
 			//calculate length
 			length = 0;
@@ -151,7 +151,7 @@ namespace data_structs {
 		}
 
 
-		__device__ custring(uint64_t number){
+		__device__ inline custring(uint64_t number){
 
 
 		    length = 0;
@@ -193,11 +193,11 @@ namespace data_structs {
 		}
 
 
-		__device__ custring(uint number): custring((uint64_t) number){}
+		__device__ inline custring(uint number): custring((uint64_t) number){}
 
 
 		//move constructor.
-		__host__ __device__ custring(custring&& other){
+		__host__ __device__ inline custring(custring&& other){
 
 			set_len(other.get_len());
 			set_str(other.data());
@@ -208,7 +208,7 @@ namespace data_structs {
 		}
 
 		//copy constructor
-		__host__ __device__ custring(custring & other){
+		__host__ __device__ inline custring(custring & other){
 
 
 			#ifdef  __CUDA_ARCH__
@@ -245,7 +245,7 @@ namespace data_structs {
 		}
 
 		//copy constructor
-		__host__ __device__ custring(const custring & other){
+		__host__ __device__ inline custring(const custring & other){
 
 
 			#ifdef __CUDA_ARCH__
@@ -278,7 +278,7 @@ namespace data_structs {
 		}
 
 
-		__device__ custring(float number, int precision=5){
+		__device__ inline custring(float number, int precision=5){
 
 			chars = (char *) global_malloc_combined(MAX_FLOAT_TRUNCATE, on_host);
 
@@ -328,7 +328,7 @@ namespace data_structs {
 
 		}
 
-		__device__ custring(double number, int precision=5){
+		__device__ inline custring(double number, int precision=5){
 
 			chars = (char *) global_malloc_combined(MAX_FLOAT_TRUNCATE, on_host);
 
@@ -384,7 +384,7 @@ namespace data_structs {
 
 		}
 
-		__device__ void print_info(){
+		__device__ inline void print_info(){
 
 			if (length == 0){
 				printf("String has no length.\n");
@@ -395,7 +395,7 @@ namespace data_structs {
 
 		}
 
-		__device__ void print_string_device(){
+		__device__ inline void print_string_device(){
 
 			for (int i = 0; i < length; i++){
 				printf("%c", chars[i]);
@@ -406,35 +406,35 @@ namespace data_structs {
 		}
 
 
-		__host__ __device__ uint get_len(){
+		__host__ __device__ inline uint get_len(){
 			return length;
 		}
 
-		__host__ __device__ void set_len(uint new_length){
+		__host__ __device__ inline void set_len(uint new_length){
 			length = new_length;
 		}
 
-		__host__ __device__ char * data(){
+		__host__ __device__ inline char * data(){
 			return chars;
 		}
 
-		__host__ __device__ void set_str(char * ext_chars){
+		__host__ __device__ inline void set_str(char * ext_chars){
 			chars = ext_chars;
 		}
 
-		__device__ custring operator+ (const custring & first){
+		__device__ inline custring operator+ (const custring & first){
 
 			return combine<custring>(*this, first);
 
 		}
 
-		__device__ custring operator+(const char * ext_str){
+		__device__ inline custring operator+(const char * ext_str){
 
 			return combine<custring>(*this, custring(ext_str));
 
 		}
 
-		__host__ __device__ custring operator=(const custring & first){
+		__host__ __device__ inline custring operator=(const custring & first){
 
 			length = first.length;
 
@@ -443,7 +443,7 @@ namespace data_structs {
 		}
 
 
-		__device__ ~custring(){
+		__device__ inline ~custring(){
 
 			// if (chars != nullptr){
 			// 	global_free_combined(chars, on_host);
@@ -453,7 +453,7 @@ namespace data_structs {
 			
 		}
 
-		__device__ void release_string(){
+		__device__ inline void release_string(){
 
 			if (chars != nullptr){
 				global_free_combined(chars, on_host);
@@ -464,14 +464,14 @@ namespace data_structs {
 
 
 		//helpers for parameter pack - efficiently deduce type
-		__device__ static uint64_t get_maximum_size(custring alt_string){
+		__device__ inline static uint64_t get_maximum_size(custring alt_string){
 
 			return alt_string.get_len();
 
 		}
 
 		//18446744073709551615 is the max uint size
-		__device__ static uint64_t get_maximum_size(uint64_t big_int){
+		__device__ inline static uint64_t get_maximum_size(uint64_t big_int){
 
 			uint64_t length = 0;
 
@@ -487,7 +487,7 @@ namespace data_structs {
 
 		}
 
-		__device__ static uint64_t get_maximum_size(double number){
+		__device__ inline static uint64_t get_maximum_size(double number){
 
 
 			uint64_t length = 0;
@@ -546,28 +546,28 @@ namespace data_structs {
 
 		}
 
-		__device__ static uint64_t get_maximum_size(float big_double){
+		__device__ inline static uint64_t get_maximum_size(float big_double){
 
 			return get_maximum_size((double) big_double);
 
 		}
 
 		//4294967295	
-		__device__ static uint64_t get_maximum_size(uint my_int){
+		__device__ inline static uint64_t get_maximum_size(uint my_int){
 
 			return get_maximum_size((uint64_t) my_int);
 
 		}
 
 		//-4294967295	
-		__device__ static uint64_t get_maximum_size(int my_int){
+		__device__ inline static uint64_t get_maximum_size(int my_int){
 
 			return get_maximum_size(int64_t (my_int));
 
 		}
 
 		//-18446744073709551615 is the negative of max uint size
-		__device__ static uint64_t get_maximum_size(int64_t big_int){
+		__device__ inline static uint64_t get_maximum_size(int64_t big_int){
 
 
 			if (big_int < 0){
@@ -579,7 +579,7 @@ namespace data_structs {
 
 		}
 
-		__device__ static uint64_t get_maximum_size(const char * ext_string){
+		__device__ inline static uint64_t get_maximum_size(const char * ext_string){
 
 			//calculate length
 			uint64_t length = 0;
@@ -598,7 +598,7 @@ namespace data_structs {
 
 		}
 
-		__device__ static uint64_t get_maximum_size(char * ext_string){
+		__device__ inline static uint64_t get_maximum_size(char * ext_string){
 
 			//calculate length
 			uint64_t length = 0;
@@ -619,7 +619,7 @@ namespace data_structs {
 
 
 		//and helper to construct one large empty string for make_string
-		__device__ static custring make_empty_string(uint64_t max_length){
+		__device__ inline static custring make_empty_string(uint64_t max_length){
 
 			custring empty_string;
 
@@ -637,7 +637,7 @@ namespace data_structs {
 
 
 
-		// __device__ void add_to_string(char * ext_string){
+		// __device__ inline void add_to_string(char * ext_string){
 
 		// 	//calculate length
 
@@ -664,7 +664,7 @@ namespace data_structs {
 		// }
 
 
-		__device__ uint64_t add_to_string (uint64_t starting_length, const char * ext_string){
+		__device__ inline uint64_t add_to_string (uint64_t starting_length, const char * ext_string){
 
 			//calculate length
 
@@ -690,7 +690,7 @@ namespace data_structs {
 		}
 
 
-		__device__ uint64_t add_to_string (uint64_t starting_length, uint64_t number){
+		__device__ inline uint64_t add_to_string (uint64_t starting_length, uint64_t number){
 
 			//calculate length
 
@@ -733,7 +733,7 @@ namespace data_structs {
 		}
 
 
-		__device__ uint64_t add_to_string(uint64_t starting_length, double number){
+		__device__ inline uint64_t add_to_string(uint64_t starting_length, double number){
 
 
 			int precision=5;
@@ -811,19 +811,19 @@ namespace data_structs {
 		}
 
 
-		__device__ uint64_t add_to_string(uint64_t starting_length, float number){
+		__device__ inline uint64_t add_to_string(uint64_t starting_length, float number){
 
 			return add_to_string(starting_length, (double) number);
 
 		}
 
-		__device__ uint64_t add_to_string(uint64_t starting_length, uint number){
+		__device__ inline uint64_t add_to_string(uint64_t starting_length, uint number){
 
 			return add_to_string(starting_length, (uint64_t) number);
 
 		}
 
-		__device__ uint64_t add_to_string(uint64_t starting_length, int number){
+		__device__ inline uint64_t add_to_string(uint64_t starting_length, int number){
 
 			uint64_t new_len = starting_length;
 
@@ -842,7 +842,7 @@ namespace data_structs {
 		}
 
 
-		static __device__ bool is_host_malloc(){
+		static __device__ inline bool is_host_malloc(){
 			return on_host;
 		}
 
@@ -851,28 +851,28 @@ namespace data_structs {
 	};
 
 	template <bool on_host, typename Last>
-	__device__ uint64_t custring_est_size (Last last) {
+	__device__ inline uint64_t custring_est_size (Last last) {
 
 	    return custring<on_host>::get_maximum_size(last);
 
 	}
 
 	template <bool on_host, typename First, typename Second, typename...Rest>
-	__device__ uint64_t custring_est_size(First first_item, Second second_item, Rest...remaining){
+	__device__ inline uint64_t custring_est_size(First first_item, Second second_item, Rest...remaining){
 
 		return custring_est_size<on_host, First>(first_item) + custring_est_size<on_host, Second, Rest...>(second_item, remaining...);
 
 	}
 
 	template <bool on_host, typename Last>
-	__device__ uint64_t add_to_string_variadic(custring<on_host> & target, uint64_t length, Last last){
+	__device__ inline uint64_t add_to_string_variadic(custring<on_host> & target, uint64_t length, Last last){
 
 		return target.add_to_string(length, last);
 
 	}
 
 	template <bool on_host, typename First, typename Second, typename...Rest>
-	__device__ uint64_t add_to_string_variadic(custring<on_host> & target, uint64_t length, First first_item, Second second_item, Rest...remaining){
+	__device__ inline uint64_t add_to_string_variadic(custring<on_host> & target, uint64_t length, First first_item, Second second_item, Rest...remaining){
 
 		uint64_t intermediate_length = add_to_string_variadic(target, length, first_item);
 		return add_to_string_variadic<on_host, Second, Rest...>(target, intermediate_length, second_item, remaining...);
@@ -882,7 +882,7 @@ namespace data_structs {
 	//use parameter pack to efficiently add multiple strings together
 	//procedure - grok size of all 
 	template <bool on_host, typename ... Args>
-	__device__ custring<on_host> make_string(Args...all_args){
+	__device__ inline custring<on_host> make_string(Args...all_args){
 
 		uint64_t size = custring_est_size<on_host, Args...>(all_args...);
 
@@ -903,14 +903,14 @@ namespace data_structs {
 	}
 
 	template <typename ... Args>
-	__device__ custring<false> make_string_device(Args...all_args){
+	__device__ inline custring<false> make_string_device(Args...all_args){
 
 
 		return make_string<false, Args...>(all_args...);
 	}
 
 	template <typename ... Args>
-	__device__ custring<true> make_string_host(Args...all_args){
+	__device__ inline custring<true> make_string_host(Args...all_args){
 
 
 		return make_string<true, Args...>(all_args...);

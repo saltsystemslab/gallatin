@@ -21,7 +21,7 @@ namespace data_structs {
 
 
 	template <typename vector> 
-	__global__ void init_dev_vector(vector * vec){
+	__global__ inline void init_dev_vector(vector * vec){
 
 
 	uint64_t tid = gallatin::utils::get_tid();
@@ -33,7 +33,7 @@ namespace data_structs {
 	}
 
 	template <typename vector> 
-	__global__ void free_dev_vector(vector * vec){
+	__global__ inline void free_dev_vector(vector * vec){
 
 
 	uint64_t tid = gallatin::utils::get_tid();
@@ -45,7 +45,7 @@ namespace data_structs {
 	}
 
 	template <typename T, typename vector>
-	__global__ void copy_vector_to_dev_array(T * dev_array, vector * dev_vector, uint64_t size){
+	__global__ inline void copy_vector_to_dev_array(T * dev_array, vector * dev_vector, uint64_t size){
 
 		uint64_t tid = gallatin::utils::get_tid();
 
@@ -88,7 +88,7 @@ namespace data_structs {
 		uint64_t size;
 
 
-		__device__ bool add_new_backing(uint64_t directory_index){
+		__device__ inline bool add_new_backing(uint64_t directory_index){
 
 
 			if (atomicOr((unsigned long long int *)&locks, (unsigned long long int)SET_BIT_MASK(directory_index)) & SET_BIT_MASK(directory_index)) return false;
@@ -109,7 +109,7 @@ namespace data_structs {
 			return true;
 		}
 
-		__device__ void init(){
+		__device__ inline void init(){
 
 			size = 0;
 
@@ -127,13 +127,13 @@ namespace data_structs {
 
 		}
 
-		__device__ fixed_vector(){
+		__device__ inline fixed_vector(){
 
 			init();
 
 		}
 
-		static __host__ my_type * get_device_vector(){
+		static __host__ inline my_type * get_device_vector(){
 
 			my_type * dev_version = gallatin::utils::get_device_version<my_type>();
 
@@ -145,7 +145,7 @@ namespace data_structs {
 
 		//delete memory used by this vector.
 		//atm not really threadsafe so only do it if you're sure.
-		__device__ void free_vector(){
+		__device__ inline void free_vector(){
 
 
 			for (uint64_t i = 0; i < gallatin::utils::__cfcll(locks); i++){
@@ -159,13 +159,13 @@ namespace data_structs {
 		}
 
 
-		__host__ static void free_device_vector(my_type * dev_version){
+		__host__ inline static void free_device_vector(my_type * dev_version){
 
 			free_dev_vector<<<1,1>>>(dev_version);
 
 		}
 
-		__device__ uint64_t get_directory_index(uint64_t item_index){
+		__device__ inline uint64_t get_directory_index(uint64_t item_index){
 
 			uint64_t index = 0;
 
@@ -191,7 +191,7 @@ namespace data_structs {
 		}
 
 
-		__device__ uint64_t get_local_position(uint64_t clipped_hash, uint64_t index){
+		__device__ inline uint64_t get_local_position(uint64_t clipped_hash, uint64_t index){
 
 			if (index == 0) return clipped_hash;
 
@@ -207,7 +207,7 @@ namespace data_structs {
 
 
 		//reuturns the index written.
-		__device__ uint64_t insert(T item){
+		__device__ inline uint64_t insert(T item){
 
 
 			uint64_t my_index = atomicAdd((unsigned long long int *)&size, 1ULL);
@@ -248,7 +248,7 @@ namespace data_structs {
 
 
 
-		__device__ uint64_t bulk_insert(cg::coalesced_group & active_threads, T item){
+		__device__ inline uint64_t bulk_insert(cg::coalesced_group & active_threads, T item){
 
 
 		    uint64_t my_group_sum = 1;
@@ -307,7 +307,7 @@ namespace data_structs {
 		}
 
 		//deference operator - double check that memory has been cleared before giving back.
-		__device__ T& operator[](uint64_t my_index)
+		__device__ inline T& operator[](uint64_t my_index)
 		{
 
 			uint64_t directory_index = get_directory_index(my_index);
@@ -321,7 +321,7 @@ namespace data_structs {
 		}
 
 
-		// static __host__ std::vector<T> export_to_host_device(my_type * device_version){
+		// static __host__ inline std::vector<T> export_to_host_device(my_type * device_version){
 
 		// 	std::vector<T> host_vector;
 
@@ -391,7 +391,7 @@ namespace data_structs {
 		// }	
 
 		// //host variant
-		// static __host__ std::vector<T> export_to_host_host(my_type * device_version){
+		// static __host__ inline std::vector<T> export_to_host_host(my_type * device_version){
 
 		// 	std::vector<T> host_vector;
 
@@ -469,7 +469,7 @@ namespace data_structs {
 
 		// }
 
-		static __host__ std::vector<T> export_to_host(my_type * device_version){
+		static __host__ inline std::vector<T> export_to_host(my_type * device_version){
 
 
 			

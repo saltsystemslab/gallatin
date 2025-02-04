@@ -40,7 +40,7 @@ namespace data_structs {
 
 
 		//ext_num_slots is slots per queue;
-		static __host__ my_type * generate_on_device(uint64_t ext_num_slots){
+		static __host__ inline my_type * generate_on_device(uint64_t ext_num_slots){
 
 			uint64_t num_smids = gallatin::utils::get_num_streaming_multiprocessors(0);
 
@@ -62,7 +62,7 @@ namespace data_structs {
 
 		}
 
-		static __host__ free_on_device(my_type * dev_version){
+		static __host__ inline free_on_device(my_type * dev_version){
 
 			my_type * host_version = gallatin::utils::move_to_host(dev_version);
 
@@ -92,7 +92,7 @@ namespace data_structs {
 
 		//instantiate a queue on device.
 		//currently does not pull from the allocator, but it totally should
-		static __host__ my_type * generate_on_device(uint64_t ext_num_slots){
+		static __host__ inline my_type * generate_on_device(uint64_t ext_num_slots){
 
 			my_type * host_version = gallatin::utils::get_host_version<my_type>();
 
@@ -118,7 +118,7 @@ namespace data_structs {
 		}
 
 
-		static __host__ void free_on_device(my_type * dev_queue){
+		static __host__ inline void free_on_device(my_type * dev_queue){
 
 			my_type * host_version = gallatin::utils::move_to_host(dev_queue);
 
@@ -127,7 +127,7 @@ namespace data_structs {
 
 		}
 
-		__device__ bool enqueue(T new_item){
+		__device__ inline bool enqueue(T new_item){
 
 
 			while (true){
@@ -172,7 +172,7 @@ namespace data_structs {
 
 		//valid to make optional type?
 
-		__device__ bool dequeue(T & return_val){
+		__device__ inline bool dequeue(T & return_val){
 
 			//do these reads need to be atomic? 
 			//I don't think so as these values don't change.
@@ -232,7 +232,7 @@ namespace data_structs {
 	// 	uint64_t free_counter;
 	// 	queue queue_list[width];
 
-	// 	__host__ __device__ void init(allocator * backing_allocator){
+	// 	__host__ __device__ inline void init(allocator * backing_allocator){
 
 
 	// 		malloc_counter = 0;
@@ -246,7 +246,7 @@ namespace data_structs {
 
 
 	// 	//generate a live version of the queue
-	// 	__host__ my_type * generate_on_device(allocator * backing_allocator){
+	// 	__host__ inline my_type * generate_on_device(allocator * backing_allocator){
 
 	// 		my_type * host_version = gallatin::utils::get_host_version<my_type>();
 
@@ -256,7 +256,7 @@ namespace data_structs {
 
 	// 	}
 
-	// 	__device__ void enqueue(T new_item){
+	// 	__device__ inline void enqueue(T new_item){
 
 	// 		uint64_t my_count = atomicAdd((unsigned long long int *)&malloc_counter, 1ULL) % width;
 
@@ -266,7 +266,7 @@ namespace data_structs {
 	// 	}
 
 
-	// 	__device__ bool dequeue(T & return_val){
+	// 	__device__ inline bool dequeue(T & return_val){
 
 	// 		uint64_t my_count = atomicAdd((unsigned long long int *)&free_counter, 1ULL) % width;
 

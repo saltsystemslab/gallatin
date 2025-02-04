@@ -51,7 +51,7 @@ namespace data_structs {
 
 
 	template<typename ht>
-	__global__ void calculate_ext_ht_fill_kernel(ht * table, uint64_t * fill_count, uint64_t max_items){
+	__global__ inline void calculate_ext_ht_fill_kernel(ht * table, uint64_t * fill_count, uint64_t max_items){
 
 
 		uint64_t tid = gallatin::utils::get_tid();
@@ -77,7 +77,7 @@ namespace data_structs {
 
 
 	template<typename ht>
-	__global__ void free_ext_buckets(ht * table, uint64_t max_items){
+	__global__ inline void free_ext_buckets(ht * table, uint64_t max_items){
 
 		uint64_t tid = gallatin::utils::get_tid();
 
@@ -90,7 +90,7 @@ namespace data_structs {
 	}
 
 	template<typename ht>
-	__global__ void free_ext_directory(ht * table, uint64_t max_items){
+	__global__ inline void free_ext_directory(ht * table, uint64_t max_items){
 
 		uint64_t tid = gallatin::utils::get_tid();
 
@@ -109,7 +109,7 @@ namespace data_structs {
 
 	// 	uint64_t index;
 
-	// 	__device__ bucket_iterator(bucket_type * ext_bucket){
+	// 	__device__ inline bucket_iterator(bucket_type * ext_bucket){
 
 	// 		index = 0;
 
@@ -145,7 +145,7 @@ namespace data_structs {
 		extendible_key_val_pair<Key, Val> slots [num_pairs];
 
 
-		__device__ void init(uint16_t ext_size){
+		__device__ inline void init(uint16_t ext_size){
 
 			size = ext_size;
 
@@ -158,7 +158,7 @@ namespace data_structs {
 			__threadfence();
 		}
 
-		__device__ Key resetPair(uint64_t index){
+		__device__ inline Key resetPair(uint64_t index){
 
 			return typed_atomic_exchange(&slots[index].key, tombstoneKey);
 
@@ -166,14 +166,14 @@ namespace data_structs {
 		}
 
 
-		__device__ bool resetExact(uint64_t index, Key expected_key){
+		__device__ inline bool resetExact(uint64_t index, Key expected_key){
 
 			return typed_atomic_write(&slots[index].key, expected_key, tombstoneKey);
 
 
 		}
 
-		__device__ int insert(Key ext_key, Val ext_val){
+		__device__ inline int insert(Key ext_key, Val ext_val){
 
 
 			//first read size
@@ -235,22 +235,22 @@ namespace data_structs {
 
 		}
 
-		__device__ Key peek_key(uint64_t index){
+		__device__ inline Key peek_key(uint64_t index){
 
 			return gallatin::utils::ldcv(&slots[index].key);
 
 		}
 
-		__device__ Val peek_val(uint64_t index){
+		__device__ inline Val peek_val(uint64_t index){
 			return gallatin::utils::ldcv(&slots[index].val);
 		}
 
 
-		__device__ uint16_t load_size_atomic(){
+		__device__ inline uint16_t load_size_atomic(){
 			return gallatin::utils::ldcv(&size);
 		}
 
-		// __device__ bool query(Key ext_key, Val & ext_val, uint16_t expected_size, bool & other_check_needed){
+		// __device__ inline bool query(Key ext_key, Val & ext_val, uint16_t expected_size, bool & other_check_needed){
 
 		// 	//asserts that query may nnot be in another bucket.
 		// 	uint16_t read_size = gallatin::utils::ldcv(&size);
@@ -283,7 +283,7 @@ namespace data_structs {
 
 		// }
 
-		__device__ bool query(Key ext_key, Val & ext_val){
+		__device__ inline bool query(Key ext_key, Val & ext_val){
 
 			//asserts that query may nnot be in another bucket.
 
@@ -311,14 +311,14 @@ namespace data_structs {
 		//returns expected size if promotion is successful
 		//if this fails someone else is in charge of promoting.
 
-		__device__ uint16_t promote_size(uint16_t expected_size){
+		__device__ inline uint16_t promote_size(uint16_t expected_size){
 
 			return atomicCAS((unsigned short int *)&size, (unsigned short int) expected_size, (unsigned short int) expected_size+1);
 
 		}
 
 
-		__device__ uint16_t stall_lock(){
+		__device__ inline uint16_t stall_lock(){
 
 			while (atomicCAS((unsigned short int *)&lock, (unsigned short int)0, (unsigned short int) 1) != 0){
 				#if HT_PRINT
@@ -329,11 +329,11 @@ namespace data_structs {
 		}
 
 
-		__device__ uint16_t unlock(){
+		__device__ inline uint16_t unlock(){
 			atomicCAS((unsigned short int *)&lock, (unsigned short int)1, (unsigned short int) 0);
 		}
 
-		__device__ bool start_promotion(uint16_t promotion_size){
+		__device__ inline bool start_promotion(uint16_t promotion_size){
 
 			stall_lock();
 
@@ -349,7 +349,7 @@ namespace data_structs {
 		}
 
 
-		__device__ void wait_on_bucket_promote(){
+		__device__ inline void wait_on_bucket_promote(){
 
 
 			while (atomicCAS((unsigned short int *)&lock, (unsigned short int)0, (unsigned short int) 0) != 0){
@@ -361,7 +361,7 @@ namespace data_structs {
 		}
 
 
-		__device__ int get_fill(){
+		__device__ inline int get_fill(){
 
 			int count = 0;
 
@@ -384,7 +384,7 @@ namespace data_structs {
 
 
 	template <typename T>
-	__global__ void init_table_device(T * table){
+	__global__ inline void init_table_device(T * table){
 
 		uint64_t tid = gallatin::utils::get_tid();
 
@@ -395,7 +395,7 @@ namespace data_structs {
 	}
 
 	template <typename T>
-	__global__ void set_table_buckets(T * table, uint64_t num_buckets, uint64_t min_bits){
+	__global__ inline void set_table_buckets(T * table, uint64_t num_buckets, uint64_t min_bits){
 
 		uint64_t tid = gallatin::utils::get_tid();
 
@@ -438,7 +438,7 @@ namespace data_structs {
 		bucket_type ** directory[max_bits-min_bits+1];
 
 
-		static __host__ my_type * generate_on_device(){
+		static __host__ inline my_type * generate_on_device(){
 
 
 			printf("Min bits: %lu, Max bits: %lu, n_directory: %lu, min_items: %lu, max_items: %lu\n", min_bits, max_bits, n_directory, min_items, max_items);
@@ -476,7 +476,7 @@ namespace data_structs {
 		}
 
 
-		static __host__ void free_on_device(my_type * dev_version){
+		static __host__ inline void free_on_device(my_type * dev_version){
 
 			free_ext_buckets<my_type><<<(max_items-1)/256+1, 256>>>(dev_version, max_items);
 			free_ext_directory<my_type><<<(n_directory-1)/256+1, 256>>>(dev_version, n_directory);
@@ -495,7 +495,7 @@ namespace data_structs {
 		//attempt load.
 		//if below what we need, upgrade.
 		//promoting from prev_size->prev_size+1;
-		__device__ bool add_new_backing(uint64_t prev_size){
+		__device__ inline bool add_new_backing(uint64_t prev_size){
 
 			//make this atomic check?
 
@@ -656,7 +656,7 @@ namespace data_structs {
 
 		// }
 
-		__device__ bucket_type * get_new_bucket(uint16_t size){
+		__device__ inline bucket_type * get_new_bucket(uint16_t size){
 
 
 			bucket_type * new_bucket = (bucket_type *) global_malloc(sizeof(bucket_type));
@@ -677,7 +677,7 @@ namespace data_structs {
 		}
 
 
-		__device__ bool attach_bucket(bucket_type * bucket, uint64_t position){
+		__device__ inline bool attach_bucket(bucket_type * bucket, uint64_t position){
 
 
 			uint64_t directory_index = get_directory_index(position);
@@ -698,7 +698,7 @@ namespace data_structs {
 
 		//improve this later
 		//assumes clipped hash in range of table.
-		__device__ uint64_t get_directory_index(uint64_t clipped_hash){
+		__device__ inline uint64_t get_directory_index(uint64_t clipped_hash){
 
 			uint64_t index = 0;
 
@@ -724,7 +724,7 @@ namespace data_structs {
 		}
 
 
-		__device__ uint64_t get_local_position(uint64_t clipped_hash, uint64_t index){
+		__device__ inline uint64_t get_local_position(uint64_t clipped_hash, uint64_t index){
 
 			if (index == 0) return clipped_hash;
 
@@ -739,28 +739,28 @@ namespace data_structs {
 
 
 
-		__device__ uint64_t clip_hash_to_max_size(uint64_t hash){
+		__device__ inline uint64_t clip_hash_to_max_size(uint64_t hash){
 
 
 			return hash % (max_items << 1);
 
 		}
 
-		__device__ uint64_t clip_to_global_level(uint64_t level, uint64_t clipped_hash){
+		__device__ inline uint64_t clip_to_global_level(uint64_t level, uint64_t clipped_hash){
 
 
 			return clipped_hash & BITMASK((level+min_bits));
 
 		}
 
-		__device__ uint64_t get_full_hash(Key key){
+		__device__ inline uint64_t get_full_hash(Key key){
 
 			//todo seed
 			return gallatin::hashers::MurmurHash64A(&key, sizeof(Key), 42);
 		}
 
 
-		__device__ bucket_type * get_bucket_from_index(uint64_t index, bool load_atomic=false){
+		__device__ inline bucket_type * get_bucket_from_index(uint64_t index, bool load_atomic=false){
 
 			uint64_t directory_index = get_directory_index(index);
 
@@ -806,7 +806,7 @@ namespace data_structs {
 		}
 
 
-		__device__ bucket_type * get_bucket_for_fill(uint64_t index, bool load_atomic=false){
+		__device__ inline bucket_type * get_bucket_for_fill(uint64_t index, bool load_atomic=false){
 
 			uint64_t directory_index = get_directory_index(index);
 
@@ -839,7 +839,7 @@ namespace data_structs {
 
 		}
 
-		__device__ bool insert(Key key, Val val){
+		__device__ inline bool insert(Key key, Val val){
 
 
 			#if KEY_IS_HASH
@@ -1115,7 +1115,7 @@ namespace data_structs {
 		//bucket end
 		// prep size is size
 		// true size is size-1 
-		__device__ void move_into_new_bucket(uint64_t start_index, uint64_t alt_index, uint64_t promotion_size, bucket_type * start, bucket_type * end){
+		__device__ inline void move_into_new_bucket(uint64_t start_index, uint64_t alt_index, uint64_t promotion_size, bucket_type * start, bucket_type * end){
 
 			uint64_t moved_keys = 0;
 			//iterate through bucket.
@@ -1208,7 +1208,7 @@ namespace data_structs {
 		}
 
 
-		__device__ void maybe_add_new_bucket(uint64_t index,  uint64_t promotion_size, bucket_type * primary_bucket){
+		__device__ inline void maybe_add_new_bucket(uint64_t index,  uint64_t promotion_size, bucket_type * primary_bucket){
 
 
 			if (promotion_size >= n_directory){
@@ -1288,7 +1288,7 @@ namespace data_structs {
 		//step through levels, looking for key
 		//we must probe at most 2 buckets - this should always be verifiable by stepping down through the buckets
 		//do we need to step up occassionally?
-		__device__ bool query(Key key, Val & val){
+		__device__ inline bool query(Key key, Val & val){
 
 					
 			#if KEY_IS_HASH
@@ -1376,7 +1376,7 @@ namespace data_structs {
 
 		}
 
-		__host__ double calculate_fill(bool max_size=true){
+		__host__ inline double calculate_fill(bool max_size=true){
 
 			uint64_t * items_in_table;
 
@@ -1410,7 +1410,7 @@ namespace data_structs {
 
 		}
 
-		__device__ int get_bucket_fill(uint64_t bucket_id){
+		__device__ inline int get_bucket_fill(uint64_t bucket_id){
 
 			auto bucket = get_bucket_for_fill(bucket_id);
 
@@ -1422,7 +1422,7 @@ namespace data_structs {
 
 		}
 
-		__device__ bool get_bucket_present(uint64_t bucket_id){
+		__device__ inline bool get_bucket_present(uint64_t bucket_id){
 
 			auto bucket = get_bucket_for_fill(bucket_id);
 

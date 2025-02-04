@@ -133,7 +133,7 @@ namespace allocators {
 
 using namespace gallatin::utils;
 
-__global__ void boot_segment_trees(veb_tree **segment_trees,
+__global__ inline void boot_segment_trees(veb_tree **segment_trees,
                                    uint64_t max_chunks, int num_trees) {
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -146,7 +146,7 @@ __global__ void boot_segment_trees(veb_tree **segment_trees,
 
 
 //sanity check: are the VEB trees empty?
-__global__ void assert_empty(veb_tree ** segment_trees, int num_trees){
+__global__ inline void assert_empty(veb_tree ** segment_trees, int num_trees){
 
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -168,7 +168,7 @@ __global__ void assert_empty(veb_tree ** segment_trees, int num_trees){
 //boot the allocator memory blocks during initialization
 //this loops through the blocks and initializes half as many at each iteration.
 template <typename allocator>
-__global__ void boot_shared_block_container(allocator * alloc, uint16_t max_tree_id, int max_smid, int cutoff){
+__global__ inline void boot_shared_block_container(allocator * alloc, uint16_t max_tree_id, int max_smid, int cutoff){
 
 	uint64_t tid = gallatin::utils::get_tid();
 
@@ -193,7 +193,7 @@ __global__ void boot_shared_block_container(allocator * alloc, uint16_t max_tree
 
 
 template <typename allocator>
-__global__ void boot_shared_block_container_one_thread(allocator * alloc, uint16_t max_tree_id, int max_smid, int cutoff){
+__global__ inline void boot_shared_block_container_one_thread(allocator * alloc, uint16_t max_tree_id, int max_smid, int cutoff){
 
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -221,7 +221,7 @@ __global__ void boot_shared_block_container_one_thread(allocator * alloc, uint16
 }
 
 template <typename allocator>
-__global__ void print_overhead_kernel(allocator * alloc){
+__global__ inline void print_overhead_kernel(allocator * alloc){
 
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -236,7 +236,7 @@ __global__ void print_overhead_kernel(allocator * alloc){
 }
 
 template <typename allocator>
-__global__ void print_guided_fill_kernel(allocator * table, uint16_t id){
+__global__ inline void print_guided_fill_kernel(allocator * table, uint16_t id){
 
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -247,7 +247,7 @@ __global__ void print_guided_fill_kernel(allocator * table, uint16_t id){
 }
 
 template <typename allocator>
-__global__ void print_segment_fill_kernel(allocator * alloc){
+__global__ inline void print_segment_fill_kernel(allocator * alloc){
 
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -321,7 +321,7 @@ struct Gallatin {
   // generate the allocator on device.
   // this takes in the number of bytes owned by the allocator (does not include
   // the space of the allocator itself.)
-  static __host__ my_type *generate_on_device(uint64_t max_bytes,
+  static __host__ inline my_type *generate_on_device(uint64_t max_bytes,
                                               uint64_t seed, bool print_info=true, bool running_calloc=false) {
     
 
@@ -424,7 +424,7 @@ struct Gallatin {
   // generate the allocator on device, with host memory as the backing.
   // this takes in the number of bytes owned by the allocator (does not include
   // the space of the allocator itself.)
-  static __host__ my_type *generate_on_device_host(uint64_t max_bytes,
+  static __host__ inline my_type *generate_on_device_host(uint64_t max_bytes,
                                               uint64_t seed, bool print_info=true, bool running_calloc=false) {
     
 
@@ -528,7 +528,7 @@ struct Gallatin {
     // generate the allocator on device, with host memory as the backing.
   // this takes in the number of bytes owned by the allocator (does not include
   // the space of the allocator itself.)
-  static __host__ my_type *generate_on_device_managed(uint64_t max_bytes,
+  static __host__ inline my_type *generate_on_device_managed(uint64_t max_bytes,
                                               uint64_t seed, bool print_info=true, bool running_calloc=false) {
     
 
@@ -630,17 +630,17 @@ struct Gallatin {
   }
 
   // return the index of the largest bit set
-  static __host__ __device__ int get_first_bit_bigger(uint64_t counter) {
+  static __host__ __device__ inline int get_first_bit_bigger(uint64_t counter) {
     return gallatin::utils::get_first_bit_bigger(counter);
   }
 
   // get number of sub trees live
-  static __host__ __device__ int get_num_trees() {
+  static __host__ __device__ inline int get_num_trees() {
     return get_first_bit_bigger(biggest) - get_first_bit_bigger(smallest) + 1;
   }
 
   // return memory used to device
-  static __host__ void free_on_device(my_type *dev_version) {
+  static __host__ inline void free_on_device(my_type *dev_version) {
     // this frees dev version.
     my_type *host_version = move_to_host<my_type>(dev_version);
 
@@ -670,7 +670,7 @@ struct Gallatin {
 
   //simple spot check to make sure that the allocator isn't giving off memory
   //outside of it's addresses.
-  __device__ bool check_alloc_valid(void * allocation){
+  __device__ inline bool check_alloc_valid(void * allocation){
 
     uint64_t byte_difference = (uint64_t) allocation - (uint64_t) table->memory;
 
@@ -704,7 +704,7 @@ struct Gallatin {
   // Cast an offset back into a memory pointer
   // this requires the offset and the tree_id so that we know how far to scale
   // the pointer
-  __device__ void *alloc_offset_to_ptr(uint64_t offset, uint16_t tree_id) {
+  __device__ inline void *alloc_offset_to_ptr(uint64_t offset, uint16_t tree_id) {
     uint64_t block_id = offset / 4096;
 
     uint64_t relative_offset = offset % 4096;
@@ -723,7 +723,7 @@ struct Gallatin {
 
 
   //initialize a block for the first time.
-  __device__ void boot_block(uint16_t tree_id, int smid){
+  __device__ inline void boot_block(uint16_t tree_id, int smid){
 
     per_size_pinned_blocks * local_shared_block_storage =
           local_blocks->get_tree_local_blocks(tree_id);
@@ -787,7 +787,7 @@ struct Gallatin {
   }
 
 
-  __device__ uint64_t malloc_segment_allocation(uint & num_segments_required){
+  __device__ inline uint64_t malloc_segment_allocation(uint & num_segments_required){
 
 
     //calculate # of segments needed
@@ -825,7 +825,7 @@ struct Gallatin {
 
   }
   
-  __device__ uint64_t malloc_block_allocation(uint16_t & tree_id){
+  __device__ inline uint64_t malloc_block_allocation(uint16_t & tree_id){
 
     // #if GALLATIN_DEBUG_PRINTS
     // printf("Alloc of %llu bytes pulling from block in tree %d\n", bytes_needed, block_tree);
@@ -862,7 +862,7 @@ struct Gallatin {
 
 
   //experimental - acquire a slice given a tree_id  
-  __device__ uint64_t malloc_slice_allocation(uint16_t & tree_id, uint & alloc_count){
+  __device__ inline uint64_t malloc_slice_allocation(uint16_t & tree_id, uint & alloc_count){
 
      // get local block storage and thread storage
     per_size_pinned_blocks * local_shared_block_storage =
@@ -1080,7 +1080,7 @@ struct Gallatin {
 
   //replace block with a new one pulled from the system
   //gets called when a block is detected to be empty.
-  __device__ bool replace_block(int tree_id, int smid, Block * my_block, per_size_pinned_blocks * my_pinned_blocks){
+  __device__ inline bool replace_block(int tree_id, int smid, Block * my_block, per_size_pinned_blocks * my_pinned_blocks){
 
   	if (my_pinned_blocks->swap_out_block(smid, my_block)){
 
@@ -1138,7 +1138,7 @@ struct Gallatin {
   }
 
 
-  __device__ uint16_t get_tree_id_from_size(uint64_t size){
+  __device__ inline uint16_t get_tree_id_from_size(uint64_t size){
 
       if (size < smallest) return 0;
 
@@ -1149,7 +1149,7 @@ struct Gallatin {
   // used for poison - return bytes to be allocated
   // for a requested # of bytes needed
   // just adjusts the size and then promotes to next p2
-  __device__ uint64_t get_allocated_size(uint64_t bytes_needed){
+  __device__ inline uint64_t get_allocated_size(uint64_t bytes_needed){
 
 
     if (bytes_needed < 16) bytes_needed = 16;
@@ -1183,7 +1183,7 @@ struct Gallatin {
   }
 
   //v2 of malloc - handle tree_id externally.
-  __device__ void * malloc(uint64_t size){
+  __device__ inline void * malloc(uint64_t size){
 
     //updated version for register sharing
     // uint alloc_count = 1;
@@ -1280,7 +1280,7 @@ struct Gallatin {
   //new helper function for calloc
   //this is called whenever a segment needs to be freed back to the system
   //occurs immediately in regular calls and after memclear in calloc.
-  __device__ void submit_segment_for_free(uint64_t segment, uint16_t size, uint16_t tree_id){
+  __device__ inline void submit_segment_for_free(uint64_t segment, uint16_t size, uint16_t tree_id){
 
       segment_tree->return_multiple(segment, size);
 
@@ -1303,7 +1303,7 @@ struct Gallatin {
 
 
 
-  __device__ void submit_segment_for_memclear(void * allocation, uint64_t segment, uint16_t size, uint16_t tree_id){
+  __device__ inline void submit_segment_for_memclear(void * allocation, uint64_t segment, uint16_t size, uint16_t tree_id){
 
 
       #if GALLATIN_USING_DYNAMIC_PARALLELISM
@@ -1331,7 +1331,7 @@ struct Gallatin {
 
   //rework of the concept
   //when submitting a block you call the function in the table, and maybe call a kernel on the table.
-  __device__ void submit_block_for_memclear(Block * block_ptr, uint64_t slice_size, uint64_t segment, uint64_t num_blocks, uint16_t tree_id){
+  __device__ inline void submit_block_for_memclear(Block * block_ptr, uint64_t slice_size, uint64_t segment, uint64_t num_blocks, uint16_t tree_id){
 
 
       #if GALLATIN_USING_DYNAMIC_PARALLELISM
@@ -1375,7 +1375,7 @@ struct Gallatin {
   //if this precondition is violated - i.e. free is called without calloc flag set,
   //Gallatin will throw a trap on the next calloc call.
   //Calloc requires dynamic parallelism to be enabled with -DGAL_DYNAMIC=ON
-  __device__ void free(void * allocation){
+  __device__ inline void free(void * allocation){
 
 
     //this logic is verifie allocation to offset
@@ -1462,7 +1462,7 @@ struct Gallatin {
 
 
   // get a new segment for a given tree!
-  __device__ int gather_new_segment(uint16_t tree) {
+  __device__ inline int gather_new_segment(uint16_t tree) {
 
     // request new segment
     uint64_t new_segment_id = segment_tree->malloc_first();
@@ -1510,11 +1510,11 @@ struct Gallatin {
   }
 
   // lock given tree to prevent oversubscription
-  __device__ bool acquire_tree_lock(uint16_t tree) {
+  __device__ inline bool acquire_tree_lock(uint16_t tree) {
     return ((atomicOr(&locks, SET_BIT_MASK(tree)) & SET_BIT_MASK(tree)) == 0);
   }
 
-  __device__ bool release_tree_lock(uint16_t tree) {
+  __device__ inline bool release_tree_lock(uint16_t tree) {
     atomicAnd(&locks, ~SET_BIT_MASK(tree));
   }
 
@@ -1522,7 +1522,7 @@ struct Gallatin {
   // gather a new block for a tree.
   // this attempts to pull from a memory segment.
   //  and will atteach a new segment if now
-  __device__ Block *request_new_block_from_tree(uint16_t tree) {
+  __device__ inline Block *request_new_block_from_tree(uint16_t tree) {
     int attempts = 0;
 
     while (attempts < REQUEST_BLOCK_MAX_ATTEMPTS) {
@@ -1634,7 +1634,7 @@ struct Gallatin {
   //called after memory is freed.
   //this helper separates the logic between acquiring a block and returning
   //so that the free can cleanly acquire size before proceeding to free.
-  __device__ void return_block(Block * block_to_free, uint64_t segment, uint16_t tree){
+  __device__ inline void return_block(Block * block_to_free, uint64_t segment, uint16_t tree){
 
 
     uint64_t num_blocks = table->get_blocks_per_segment(tree);
@@ -1729,7 +1729,7 @@ struct Gallatin {
 
   // return a block to the system
   // this is called by a block once all allocations have been returned.
-  __device__ void free_block(Block *block_to_free) {
+  __device__ inline void free_block(Block *block_to_free) {
 
 
     //asm volatile ("trap;");
@@ -1771,7 +1771,7 @@ struct Gallatin {
   //fuckk this doesn't work.
   //needs to be a system variable.
 
-  __device__ void free_offset(uint64_t malloc) {
+  __device__ inline void free_offset(uint64_t malloc) {
 
     // get block
 
@@ -1828,7 +1828,7 @@ struct Gallatin {
 
 
   //given a uint64_t allocation, return a void * corresponding to the desired memory
-  __device__ void * offset_to_allocation(uint64_t offset, uint16_t tree_id){
+  __device__ inline void * offset_to_allocation(uint64_t offset, uint16_t tree_id){
 
 
       //to start, get the segment
@@ -1839,7 +1839,7 @@ struct Gallatin {
 
 
   //given a void * and the known size (expressed as tree id), translate to offset in global space.
-  __device__ uint64_t allocation_to_offset(void * allocation, uint16_t tree_id){
+  __device__ inline uint64_t allocation_to_offset(void * allocation, uint16_t tree_id){
 
     
       return table->allocation_to_offset(allocation, tree_id);
@@ -1852,7 +1852,7 @@ struct Gallatin {
   // print useful allocator info.
   // this returns the number of segments owned by each tree
   // and maybe more useful things later.
-  __host__ void print_info() {
+  __host__ inline void print_info() {
     my_type *host_version = copy_to_host<my_type>(this);
 
     uint64_t segments_available = host_version->segment_tree->report_fill();
@@ -1896,20 +1896,20 @@ struct Gallatin {
 
   }
 
-  static __host__ __device__ uint64_t get_blocks_per_segment(uint16_t tree) {
+  static __host__ __device__ inline uint64_t get_blocks_per_segment(uint16_t tree) {
     return alloc_table<bytes_per_segment, smallest>::get_blocks_per_segment(
         tree);
   }
 
   //return maximum # of possible allocations per segment.
-  static __host__ __device__ uint64_t get_max_allocations_per_segment(){
+  static __host__ __device__ inline uint64_t get_max_allocations_per_segment(){
 
     return alloc_table<bytes_per_segment, smallest>::get_max_allocations_per_segment();
 
   }
 
   //launch a thread to calculate overhead
-  __device__ uint64_t calculate_overhead(){
+  __device__ inline uint64_t calculate_overhead(){
 
     uint64_t overhead = 0;
 
@@ -1943,7 +1943,7 @@ struct Gallatin {
 
   }
 
-  __host__ void print_overhead(){
+  __host__ inline void print_overhead(){
 
 
     print_overhead_kernel<my_type><<<1,1>>>(this);
@@ -1955,7 +1955,7 @@ struct Gallatin {
   }
 
 
-  __host__ void print_usage(){
+  __host__ inline void print_usage(){
 
     my_type *host_version = copy_to_host<my_type>(this);
 
@@ -1973,7 +1973,7 @@ struct Gallatin {
   }
 
   //generate average fill using the info from the segment tree
-  __device__ void print_guided_fill(uint16_t id){
+  __device__ inline void print_guided_fill(uint16_t id){
 
 
     uint64_t count = 0;
@@ -2011,20 +2011,20 @@ struct Gallatin {
   }
 
 
-  __host__ void print_guided_fill_host(uint16_t id){
+  __host__ inline void print_guided_fill_host(uint16_t id){
 
     print_guided_fill_kernel<my_type><<<1,1>>>(this, id);
 
   }
 
-  __host__ void print_segment_fills(){
+  __host__ inline void print_segment_fills(){
 
     print_segment_fill_kernel<my_type><<<2000, 256>>>(this);
 
   }
 
   //returns true if this allocation is inside the range of the allocator
-  __device__ bool owns_allocation(void * alloc){
+  __device__ inline bool owns_allocation(void * alloc){
 
     return table->owns_allocation(alloc);
 

@@ -22,19 +22,19 @@ namespace data_structs {
 		T item;
 		queue_node<T> * next;
 
-		__device__ void init(T new_item){
+		__device__ inline void init(T new_item){
 			item = new_item;
 			next = nullptr;
 		}
 
-		__device__ void set_next(queue_node<T> * ext_next){
+		__device__ inline void set_next(queue_node<T> * ext_next){
 			next = ext_next;
 		}
 
 		//given the next node that should be in the chain and CAS
 		//returns nullptr on correct swap
 		//else returns new tail.
-		__device__ queue_node<T> * CAS_and_return(queue_node<T> * next_node){
+		__device__ inline queue_node<T> * CAS_and_return(queue_node<T> * next_node){
 
 
 			return (queue_node<T> *) atomicCAS((unsigned long long int *)&next, 0ULL, (unsigned long long int )next_node);
@@ -69,7 +69,7 @@ namespace data_structs {
 
 		//instantiate a queue on device.
 		//currently does not pull from the allocator, but it totally should
-		static __host__ my_type * generate_on_device(allocator * backing_allocator){
+		static __host__ inline my_type * generate_on_device(allocator * backing_allocator){
 
 			my_type * host_version = gallatin::utils::get_host_version<my_type>();
 
@@ -80,13 +80,13 @@ namespace data_structs {
 
 		}
 
-		__host__ __device__ void init(allocator * backing_allocator){
+		__host__ __device__ inline void init(allocator * backing_allocator){
 			my_backing_allocator = backing_allocator;
 			head = nullptr;
 			tail = nullptr;
 		}
 
-		__device__ void enqueue(T new_item){
+		__device__ inline void enqueue(T new_item){
 
 			queue_node<T> * new_node = (queue_node<T> *) my_backing_allocator->malloc(sizeof(queue_node<T>));
 
@@ -137,7 +137,7 @@ namespace data_structs {
 
 		//valid to make optional type?
 
-		__device__ bool dequeue(T & return_val){
+		__device__ inline bool dequeue(T & return_val){
 
 			//do these reads need to be atomic? 
 			//I don't think so as these values don't change.
@@ -203,7 +203,7 @@ namespace data_structs {
 		uint64_t free_counter;
 		queue queue_list[width];
 
-		__host__ __device__ void init(allocator * backing_allocator){
+		__host__ __device__ inline void init(allocator * backing_allocator){
 
 
 			malloc_counter = 0;
@@ -217,7 +217,7 @@ namespace data_structs {
 
 
 		//generate a live version of the queue
-		__host__ my_type * generate_on_device(allocator * backing_allocator){
+		__host__ inline my_type * generate_on_device(allocator * backing_allocator){
 
 			my_type * host_version = gallatin::utils::get_host_version<my_type>();
 
@@ -227,7 +227,7 @@ namespace data_structs {
 
 		}
 
-		__device__ void enqueue(T new_item){
+		__device__ inline void enqueue(T new_item){
 
 			uint64_t my_count = atomicAdd((unsigned long long int *)&malloc_counter, 1ULL) % width;
 
@@ -237,7 +237,7 @@ namespace data_structs {
 		}
 
 
-		__device__ bool dequeue(T & return_val){
+		__device__ inline bool dequeue(T & return_val){
 
 			uint64_t my_count = atomicAdd((unsigned long long int *)&free_counter, 1ULL) % width;
 

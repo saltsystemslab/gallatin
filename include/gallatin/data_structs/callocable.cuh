@@ -40,7 +40,7 @@ namespace data_structs {
 		//if resizing, 
 		//perform global reads until new keys, vals are available.
 
-		__device__ callocable(uint64_t nitems){
+		__device__ inline callocable(uint64_t nitems){
 
 			uint64_t total_bytes = nitems*sizeof(T);
 
@@ -83,7 +83,7 @@ namespace data_structs {
 
 		}
 
-		__device__ void print_calloc_status(uint64_t index){
+		__device__ inline void print_calloc_status(uint64_t index){
 
 			uint64_t bit = index/stride;
 
@@ -119,7 +119,7 @@ namespace data_structs {
 
 		}
 
-		__device__ bool check_if_need_calloc(uint64_t index){
+		__device__ inline bool check_if_need_calloc(uint64_t index){
 
 			uint64_t bit = index/stride;
 
@@ -217,7 +217,7 @@ namespace data_structs {
 
 
 		//write STRIDE*sizeof(T) bytes of memory to 0, based on the region bit.
-		__device__ void calloc_region(uint64_t region_bit){
+		__device__ inline void calloc_region(uint64_t region_bit){
 
 			// char * byte_start = (char *) &data[region_bit*stride];
 
@@ -252,7 +252,7 @@ namespace data_structs {
 		}
 
 		//deference operator - double check that memory has been cleared before giving back.
-		__device__ T& operator[](uint64_t index)
+		__device__ inline T& operator[](uint64_t index)
 		{
 		    bool check_if_need_load = check_if_need_calloc(index);
 
@@ -269,7 +269,7 @@ namespace data_structs {
 		//set memory just to assert that calloc works.
 		//this may be messing things up by touching the memory early?
 		//without this can get guarantee that memory has not been touched since it was allocated
-		__device__ void debug_set_memory(uint64_t index, T item){
+		__device__ inline void debug_set_memory(uint64_t index, T item){
 
 
 			return;
@@ -282,7 +282,7 @@ namespace data_structs {
 
 
 		//move constructor
-		__device__ callocable(callocable&& other){
+		__device__ inline callocable(callocable&& other){
 
 			//move pointers
 			data = other.data;
@@ -296,7 +296,7 @@ namespace data_structs {
 
 		}
 
-		__device__ callocable operator=(const callocable & first){
+		__device__ inline callocable operator=(const callocable & first){
 
 			data = first.data;
 
@@ -306,7 +306,7 @@ namespace data_structs {
 
 		}
 
-		__device__ void free_memory(){
+		__device__ inline void free_memory(){
 
 			gallatin::allocators::global_free(data);
 			gallatin::allocators::global_free(is_flushed);
@@ -315,7 +315,7 @@ namespace data_structs {
 		}
 
 
-		__device__ static my_type * get_pointer(uint64_t nitems){
+		__device__ inline static my_type * get_pointer(uint64_t nitems){
 
 			my_type * memory = (my_type *) gallatin::allocators::global_malloc(sizeof(my_type));
 

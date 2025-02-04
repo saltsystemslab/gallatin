@@ -22,13 +22,13 @@ namespace data_structs {
 
 		tuple_type my_args;
 
-		__device__ functor(Args...input_arguments){
+		__device__ inline functor(Args...input_arguments){
 
 			my_args = cuda::std::make_tuple(input_arguments...);
 
 		}
 
-		__device__ auto apply_args(){
+		__device__ inline auto apply_args(){
 
 
 			//printf("%d\n", std::cuda::get<0>(t));
@@ -48,14 +48,14 @@ namespace data_structs {
 
 		//tuple_type my_args;
 
-		__device__ functor(Args...input_arguments){
+		__device__ inline functor(Args...input_arguments){
 
 			my_args = cuda::std::make_tuple(input_arguments...);
 
 		}
 
 		template <typename ... Args>
-		static __device__ auto apply_args(cuda::std::tuple<Args...> my_arguments){
+		static __device__ inline auto apply_args(cuda::std::tuple<Args...> my_arguments){
 
 
 			//printf("%d\n", std::cuda::get<0>(t));
@@ -72,7 +72,7 @@ namespace data_structs {
 	// struct temp_functor {
 
 	// 	template <typename ... Args>
-	// 	__device__ void apply_args(Args...arguments){
+	// 	__device__ inline void apply_args(Args...arguments){
 
 
 	// 		auto t = cuda::std::make_tuple(arguments...);

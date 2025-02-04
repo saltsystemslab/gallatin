@@ -64,7 +64,7 @@ enum Gallatin_memory_type {device_only, host_only, managed};
 //get the total # of allocs freed in the system.
 //max # blocks - this says something about the current state
 template <typename table>
-__global__ void count_block_free_kernel(table * alloc_table, uint64_t num_blocks, uint64_t * counter){
+__global__ inline void count_block_free_kernel(table * alloc_table, uint64_t num_blocks, uint64_t * counter){
 
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -79,7 +79,7 @@ __global__ void count_block_free_kernel(table * alloc_table, uint64_t num_blocks
 
 
 template <typename table>
-__global__ void count_block_live_kernel(table * alloc_table, uint64_t num_blocks, uint64_t * counter){
+__global__ inline void count_block_live_kernel(table * alloc_table, uint64_t num_blocks, uint64_t * counter){
 
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -100,7 +100,7 @@ __global__ void count_block_live_kernel(table * alloc_table, uint64_t num_blocks
 
 //kernel called to actually clear memory.
 template <typename allocator_type, typename block_type>
-__global__ void clear_block_memory_kernel(allocator_type * allocator, uint64_t segment, uint64_t size, uint64_t num_blocks, uint queue_start, int live_blocks, uint16_t tree_id){
+__global__ inline void clear_block_memory_kernel(allocator_type * allocator, uint64_t segment, uint64_t size, uint64_t num_blocks, uint queue_start, int live_blocks, uint16_t tree_id){
 
 
   uint64_t tid = gallatin::utils::get_tid();
@@ -142,7 +142,7 @@ __global__ void clear_block_memory_kernel(allocator_type * allocator, uint64_t s
 //given kernel, one thread determines # of blocks to handle
 //then launch child kernel
 template <typename allocator_type, typename block_type>
-__global__ void setup_clear_blocks_kernel(allocator_type * allocator, uint64_t segment, uint64_t size, uint64_t num_blocks, uint16_t tree_id){
+__global__ inline void setup_clear_blocks_kernel(allocator_type * allocator, uint64_t segment, uint64_t size, uint64_t num_blocks, uint16_t tree_id){
 
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -170,7 +170,7 @@ __global__ void setup_clear_blocks_kernel(allocator_type * allocator, uint64_t s
 // using uint16_t as there shouldn't be that many trees.
 // register atomically insert tree num, or registers memory from chunk_tree.
 
-__global__ void gallatin_init_counters_kernel(
+__global__ inline void gallatin_init_counters_kernel(
                                            int * active_counts,
                                            uint * queue_counters, uint * queue_free_counters,
                                            uint * final_queue_free_counters,
@@ -201,7 +201,7 @@ __global__ void gallatin_init_counters_kernel(
 }
 
 
-__global__ void init_calloc_counters_kernel(int * calloc_active_counters, uint * calloc_enqueue_counters, uint * calloc_finished_counters, Block ** calloc_queues, uint * calloc_clear_counters, uint64_t num_segments, uint64_t blocks_per_segment){
+__global__ inline void init_calloc_counters_kernel(int * calloc_active_counters, uint * calloc_enqueue_counters, uint * calloc_finished_counters, Block ** calloc_queues, uint * calloc_clear_counters, uint64_t num_segments, uint64_t blocks_per_segment){
 
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -286,7 +286,7 @@ struct alloc_table {
 
 
   // generate structure on device and return pointer.
-  static __host__ my_type *generate_on_device(uint64_t max_bytes,  Gallatin_memory_type ext_memory_control=device_only, bool calloc=false) {
+  static __host__ inline my_type *generate_on_device(uint64_t max_bytes,  Gallatin_memory_type ext_memory_control=device_only, bool calloc=false) {
     my_type *host_version;
 
     cudaMallocHost((void **)&host_version, sizeof(my_type));
@@ -468,7 +468,7 @@ struct alloc_table {
 
 
     // generate structure on device and return pointer.
-  static __host__ my_type *generate_on_device_nowait(uint64_t max_bytes, Gallatin_memory_type ext_memory_control=device_only, bool calloc=false) {
+  static __host__ inline my_type *generate_on_device_nowait(uint64_t max_bytes, Gallatin_memory_type ext_memory_control=device_only, bool calloc=false) {
     my_type *host_version;
 
     cudaMallocHost((void **)&host_version, sizeof(my_type));
@@ -647,7 +647,7 @@ struct alloc_table {
   }
 
   // return memory/resources to GPU
-  static __host__ void free_on_device(my_type *dev_version) {
+  static __host__ inline void free_on_device(my_type *dev_version) {
     my_type *host_version;
 
     cudaMallocHost((void **)&host_version, sizeof(my_type));
@@ -698,7 +698,7 @@ struct alloc_table {
   }
 
   // register a tree component
-  __device__ void register_tree(uint64_t segment, uint16_t id) {
+  __device__ inline void register_tree(uint64_t segment, uint16_t id) {
     if (segment >= num_segments) {
 
       #if GALLATIN_MEM_TABLE_DEBUG
@@ -715,7 +715,7 @@ struct alloc_table {
   }
 
   // register a segment from the table.
-  __device__ void register_size(uint64_t segment, uint16_t size) {
+  __device__ inline void register_size(uint64_t segment, uint16_t size) {
     if (segment >= num_segments) {
 
       #if GALLATIN_MEM_TABLE_DEBUG
@@ -734,7 +734,7 @@ struct alloc_table {
   }
 
   // get the void pointer to the start of a segment.
-  __device__ char *get_segment_memory_start(uint64_t segment) {
+  __device__ inline char *get_segment_memory_start(uint64_t segment) {
     return memory + bytes_per_segment * segment;
   }
 
@@ -743,7 +743,7 @@ struct alloc_table {
   // set tree ID, set malloc_counter
   // free_counter is set
   // return;
-  __device__ bool setup_segment(uint64_t segment, uint16_t tree_id) {
+  __device__ inline bool setup_segment(uint64_t segment, uint16_t tree_id) {
     uint64_t tree_alloc_size = get_tree_alloc_size(tree_id);
 
     // should stop interlopers
@@ -820,7 +820,7 @@ struct alloc_table {
 
   // set the tree id of a segment atomically
   //  returns true on success.
-  __device__ bool set_tree_id(uint64_t segment, uint16_t tree_id) {
+  __device__ inline bool set_tree_id(uint64_t segment, uint16_t tree_id) {
     return (atomicCAS((unsigned short int *)&chunk_ids[segment],
                       (unsigned short int)~0U,
                       (unsigned short int)tree_id) == (unsigned short int)~0U);
@@ -828,7 +828,7 @@ struct alloc_table {
 
   // atomically read tree id.
   // this may be faster with global load lcda instruction
-  __device__ uint16_t read_tree_id(uint64_t segment) {
+  __device__ inline uint16_t read_tree_id(uint64_t segment) {
 
     #if GALLATIN_TABLE_GLOBAL_READ
 
@@ -844,7 +844,7 @@ struct alloc_table {
   }
 
   // return tree id to ~0
-  __device__ bool reset_tree_id(uint64_t segment, uint16_t tree_id) {
+  __device__ inline bool reset_tree_id(uint64_t segment, uint16_t tree_id) {
     return (atomicCAS((unsigned short int *)&chunk_ids[segment],
                       (unsigned short int)tree_id,
                       (unsigned short int)~0U) == (unsigned short int)tree_id);
@@ -863,17 +863,17 @@ struct alloc_table {
 
   //pull a slot from the segment
   //this acts as a gate over the malloc counters.
-  __device__ int get_slot_in_segment(uint64_t segment){
+  __device__ inline int get_slot_in_segment(uint64_t segment){
     return atomicSub(&active_counts[segment], 1);
   }
 
-  __device__ int return_slot_to_segment(uint64_t segment){
+  __device__ inline int return_slot_to_segment(uint64_t segment){
     return atomicAdd(&active_counts[segment], 1);
   }
 
   //helper to check if block is entirely free.
   //requires you to have a valid tree_id
-  __device__ bool all_blocks_free(int active_count, uint64_t blocks_per_segment){
+  __device__ inline bool all_blocks_free(int active_count, uint64_t blocks_per_segment){
 
     return (active_count == blocks_per_segment-2);
 
@@ -881,20 +881,20 @@ struct alloc_table {
 
   //check if the count for a thread is valid
   //current condition is that negative numbers represent invalid requests.
-  __device__ bool active_count_valid(int active_count){
+  __device__ inline bool active_count_valid(int active_count){
 
     return (active_count >= 0);
 
   }
 
 
-  __device__ uint increment_queue_position(uint64_t segment){
+  __device__ inline uint increment_queue_position(uint64_t segment){
 
     return atomicAdd(&queue_counters[segment], 1);
 
   }
 
-  __device__ uint increment_free_queue_position(uint64_t segment){
+  __device__ inline uint increment_free_queue_position(uint64_t segment){
 
     return atomicAdd(&queue_free_counters[segment], 1);
 
@@ -903,7 +903,7 @@ struct alloc_table {
   //given that we have already written to an address,
   //atomicCAS loop to assert that write is finalized.
   //this is necessary
-  __device__ void finalize_free_queue(uint64_t segment, uint position){
+  __device__ inline void finalize_free_queue(uint64_t segment, uint position){
 
     while (atomicCAS(&final_queue_free_counters[segment], position, position+1) != position);
 
@@ -912,7 +912,7 @@ struct alloc_table {
   // request a segment from a block
   // this verifies that the segment is initialized correctly
   // and returns nullptr on failure.
-  __device__ Block *get_block(uint64_t segment_id, uint16_t tree_id,
+  __device__ inline Block *get_block(uint64_t segment_id, uint16_t tree_id,
                               bool &empty) {
 
 
@@ -993,7 +993,7 @@ struct alloc_table {
     }
 
   //given a global block_id, return the block
-  __device__ Block * get_block_from_global_block_id(uint64_t global_block_id){
+  __device__ inline Block * get_block_from_global_block_id(uint64_t global_block_id){
 
   	return &blocks[global_block_id];
 
@@ -1001,7 +1001,7 @@ struct alloc_table {
 
   // snap a block back to its segment
   // needed for returning
-  __device__ uint64_t get_segment_from_block_ptr(Block *block) {
+  __device__ inline uint64_t get_segment_from_block_ptr(Block *block) {
     // this returns the stride in blocks
     uint64_t offset = (block - blocks);
 
@@ -1009,7 +1009,7 @@ struct alloc_table {
   }
 
   // get relative offset of a block in its segment.
-  __device__ int get_relative_block_offset(Block *block) {
+  __device__ inline int get_relative_block_offset(Block *block) {
     uint64_t offset = (block - blocks);
 
     return offset % blocks_per_segment;
@@ -1017,44 +1017,44 @@ struct alloc_table {
 
   // given a pointer, find the associated block for returns
   // not yet implemented
-  __device__ Block *get_block_from_ptr(void *ptr) {}
+  __device__ inline Block *get_block_from_ptr(void *ptr) {}
 
   // given a pointer, get the segment the pointer belongs to
-  __device__ uint64_t get_segment_from_ptr(void *ptr) {
+  __device__ inline uint64_t get_segment_from_ptr(void *ptr) {
     uint64_t offset = ((char *)ptr) - memory;
 
     return offset / bytes_per_segment;
   }
 
-  __device__ uint64_t get_segment_from_offset(uint64_t offset){
+  __device__ inline uint64_t get_segment_from_offset(uint64_t offset){
 
     return offset/get_max_allocations_per_segment();
 
   }
 
   // get the tree the segment currently belongs to
-  __device__ int get_tree_from_segment(uint64_t segment) {
+  __device__ inline int get_tree_from_segment(uint64_t segment) {
     return chunk_ids[segment];
   }
 
   // helper function for moving from power of two exponent to index
-  static __host__ __device__ uint64_t get_p2_from_index(int index) {
+  static __host__ __device__ inline uint64_t get_p2_from_index(int index) {
     return (1ULL) << index;
   }
 
   // given tree id, return size of allocations.
-  static __host__ __device__ uint64_t get_tree_alloc_size(uint16_t tree) {
+  static __host__ __device__ inline uint64_t get_tree_alloc_size(uint16_t tree) {
     // scales up by smallest.
     return min_size * get_p2_from_index(tree);
   }
 
   // get relative position of block in list of all blocks
-  __device__ uint64_t get_global_block_offset(Block *block) {
+  __device__ inline uint64_t get_global_block_offset(Block *block) {
     return block - blocks;
   }
 
   // get max blocks per segment when formatted to a given tree size.
-  static __host__ __device__ uint64_t get_blocks_per_segment(uint16_t tree) {
+  static __host__ __device__ inline uint64_t get_blocks_per_segment(uint16_t tree) {
     uint64_t tree_alloc_size = get_tree_alloc_size(tree);
 
     return bytes_per_segment / (tree_alloc_size * 4096);
@@ -1062,14 +1062,14 @@ struct alloc_table {
 
   //get maximum # of allocations per segment
   //useful for converting alloc offsets into void *
-  static __host__ __device__ uint64_t get_max_allocations_per_segment(){
+  static __host__ __device__ inline uint64_t get_max_allocations_per_segment(){
 
   	//get size of smallest tree
   	return bytes_per_segment / min_size;
 
   }
 
-  __device__ void * offset_to_allocation(uint64_t allocation, uint16_t tree_id){
+  __device__ inline void * offset_to_allocation(uint64_t allocation, uint16_t tree_id){
 
   	uint64_t segment_id = allocation/get_max_allocations_per_segment();
 
@@ -1087,7 +1087,7 @@ struct alloc_table {
 
 
   //given a known tree id, snap an allocation back to the correct offset
-  __device__ uint64_t allocation_to_offset(void * alloc, uint16_t tree_id){
+  __device__ inline uint64_t allocation_to_offset(void * alloc, uint16_t tree_id){
 
 
       uint64_t byte_offset = (uint64_t) ((char *) alloc - memory);
@@ -1127,7 +1127,7 @@ struct alloc_table {
   }
 
   //enqueues a block into the calloc storage 
-  __device__ bool calloc_free_block(Block * block_ptr, uint64_t & segment, uint16_t & global_tree_id, uint64_t & num_blocks){
+  __device__ inline bool calloc_free_block(Block * block_ptr, uint64_t & segment, uint16_t & global_tree_id, uint64_t & num_blocks){
 
 
     uint current_enqueue_position = atomicAdd(&calloc_enqueue_position[segment],1);
@@ -1155,7 +1155,7 @@ struct alloc_table {
   //return which index in the queue structure is valid
   //and start swap
   //this does not increment find index yet.
-  __device__ uint reserve_segment_slot(Block * block_ptr, uint64_t & segment, uint16_t & global_tree_id, uint64_t & num_blocks){
+  __device__ inline uint reserve_segment_slot(Block * block_ptr, uint64_t & segment, uint16_t & global_tree_id, uint64_t & num_blocks){
 
 
     //system allows for multiple people to reserve simultaneously...
@@ -1223,7 +1223,7 @@ struct alloc_table {
 
 
   //once the messy logic of the tree reset is done, clean up
-  __device__ bool finish_freeing_block(uint64_t segment, uint64_t num_blocks){
+  __device__ inline bool finish_freeing_block(uint64_t segment, uint64_t num_blocks){
 
     int return_id = return_slot_to_segment(segment);
 
@@ -1240,16 +1240,16 @@ struct alloc_table {
 
   }
 
-  __device__ uint read_free_queue_position(uint64_t segment){
+  __device__ inline uint read_free_queue_position(uint64_t segment){
     return gallatin::utils::ldca(&queue_free_counters[segment]);
   }
 
-  __device__ uint64_t get_bytes_per_segment(){
+  __device__ inline uint64_t get_bytes_per_segment(){
     return bytes_per_segment;
   }
 
 
-  __host__ uint64_t report_free(){
+  __host__ inline uint64_t report_free(){
 
     uint64_t * counter;
 
@@ -1288,7 +1288,7 @@ struct alloc_table {
 
   }
 
-  __host__ uint64_t report_live(){
+  __host__ inline uint64_t report_live(){
 
     uint64_t * counter;
 
@@ -1328,7 +1328,7 @@ struct alloc_table {
   }
 
 
-  __device__ uint64_t calculate_overhead(){
+  __device__ inline uint64_t calculate_overhead(){
 
     //overhead per segment
     //4 bytes active count
@@ -1343,7 +1343,7 @@ struct alloc_table {
 
   }
 
-  __device__ bool owns_allocation(void * alloc){
+  __device__ inline bool owns_allocation(void * alloc){
 
 
     uint64_t byte_difference = ( (char *) alloc - (char *) memory);

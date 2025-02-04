@@ -30,7 +30,7 @@ namespace data_structs {
 	//helper kernel
 	//each resize triggers a new kernel to insert items. 
 	template <typename Key, typename Val, typename Table>
-	__global__ void reinsert_old_keys(Key * old_keys, Val * old_vals, uint64_t nslots, Table * ext_table){
+	__global__ inline void reinsert_old_keys(Key * old_keys, Val * old_vals, uint64_t nslots, Table * ext_table){
 
 		uint64_t tid = gallatin::utils::get_tid();
 
@@ -97,7 +97,7 @@ namespace data_structs {
 		//if resizing, 
 		//perform global reads until new keys, vals are available.
 
-		__device__ void init(uint64_t initial_nslots=100, uint64_t ext_seed=4095){
+		__device__ inline void init(uint64_t initial_nslots=100, uint64_t ext_seed=4095){
 
 			keys = (Key *) gallatin::allocators::global_malloc(sizeof(Key)*initial_nslots);
 
@@ -131,7 +131,7 @@ namespace data_structs {
 
 		//called by one thread - this triggers the resizing flag
 		//then mallocs the buffers needed for the resize.
-		__device__ int prep_upsize(uint64_t my_nslots){
+		__device__ inline int prep_upsize(uint64_t my_nslots){
 
 
 			//start with conversion of my_next_nslots
@@ -212,7 +212,7 @@ namespace data_structs {
 		}
 
 		//spin on resizing until final control thread signals done.
-		__device__ void finish_upsize(){
+		__device__ inline void finish_upsize(){
 
 
 			while (atomicAdd(&resizing, 0) == 1);
@@ -223,7 +223,7 @@ namespace data_structs {
 
 
 		//when called, waits until new arrays are visible.
-		__device__ void assert_keys_vals_loaded(Key * &my_new_keys, Val * &my_new_vals){
+		__device__ inline void assert_keys_vals_loaded(Key * &my_new_keys, Val * &my_new_vals){
 
 			//printf("Checking key array\n");
 
@@ -265,7 +265,7 @@ namespace data_structs {
 		}
 
 
-		__device__ void resize(Key * &my_new_keys, Val * &my_new_vals){
+		__device__ inline void resize(Key * &my_new_keys, Val * &my_new_vals){
 
 			
 
@@ -282,7 +282,7 @@ namespace data_structs {
 
 		//pull cooperative group for optimal memory access?
 		//nit for now, maybe nice optimization.	
-		__device__ void assist_with_copy(){
+		__device__ inline void assist_with_copy(){
 
 			uint64_t my_nslots = gallatin::utils::ldcg(&nslots);
 			uint64_t my_next_nslots = gallatin::utils::ldcg(&next_nslots);
@@ -397,7 +397,7 @@ namespace data_structs {
 		//assumes as a precondition table is large enough
 		//this returns true if success,
 		//false if probe depth exceeded
-		__device__ int internal_insert_key_val_pair(Key * ext_keys, Val * ext_vals, uint64_t ext_nslots, Key key, Val val){
+		__device__ inline int internal_insert_key_val_pair(Key * ext_keys, Val * ext_vals, uint64_t ext_nslots, Key key, Val val){
 
 
 			uint64_t hash = gallatin::hashers::MurmurHash64A(&key, sizeof(Key), seed);
@@ -426,7 +426,7 @@ namespace data_structs {
 		}
 
 		//perform insertion, and then back up table if something happened.
-		__device__ void insert(Key key, Val val){
+		__device__ inline void insert(Key key, Val val){
 
 
 			while (true){
@@ -513,7 +513,7 @@ namespace data_structs {
 		}
 
 		//can get away with one read to old state ?
-		__device__ bool query(Key key, Val & val){
+		__device__ inline bool query(Key key, Val & val){
 
 			uint64_t hash = gallatin::hashers::MurmurHash64A(&key, sizeof(Key), seed);
 

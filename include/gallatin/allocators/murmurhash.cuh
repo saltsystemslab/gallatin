@@ -17,7 +17,7 @@ namespace gallatin {
 namespace hashers {
 
 
-__host__ __device__ uint64_t MurmurHash64A ( const void * key, int len, uint64_t seed )
+__host__ __device__ inline uint64_t MurmurHash64A ( const void * key, int len, uint64_t seed )
 {
 	const uint64_t m = 0xc6a4a7935bd1e995;
 	const int r = 47;
@@ -84,13 +84,13 @@ public:
 	//init happens by a single thread on CPU/GPU
 	//no cg needed
 
-	__host__ __device__ void init(uint64_t ext_seed){	
+	__host__ __device__ inline void init(uint64_t ext_seed){	
 
 		seed = ext_seed;
 	}
 
 
-	__host__ __device__ uint64_t hash(Key key_to_hash){
+	__host__ __device__ inline uint64_t hash(Key key_to_hash){
 
 		Key copy_key = key_to_hash;
 		
@@ -100,7 +100,7 @@ public:
 	}
 
 	//all participate
-	__device__ uint64_t hash(Key key_to_hash, cg::thread_block_tile<Partition_size> group){
+	__device__ inline uint64_t hash(Key key_to_hash, cg::thread_block_tile<Partition_size> group){
 
 		Key copy_key = key_to_hash;
 

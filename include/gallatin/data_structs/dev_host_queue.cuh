@@ -35,14 +35,14 @@ namespace data_structs {
 		uint64_t enqueue_counter;
 
 
-		__host__ __device__ void init(uint64_t ext_nitems){
+		__host__ __device__ inline void init(uint64_t ext_nitems){
 			
 			nitems = ext_nitems;
 			items = (T *) global_malloc(sizeof(T)*ext_nitems);
 			enqueue_counter = 0;
 		}
 
-		__device__ bool enqueue(T new_item){
+		__device__ inline bool enqueue(T new_item){
 
 
 			uint64_t enqueue_slot = atomicAdd((unsigned long long int *)&enqueue_counter, 1ULL);
@@ -59,7 +59,7 @@ namespace data_structs {
 
 		//valid to make optional type?
 
-		__device__ uint64_t get_active_nitems(){
+		__device__ inline uint64_t get_active_nitems(){
 
 			if (enqueue_counter > nitems) return nitems;
 
@@ -69,7 +69,7 @@ namespace data_structs {
 
 		//copy items to new array in parallel.
 		//this is needed for dumping the queue items to a buffer during output.
-		__device__ void dump_to_array(T * ext_array, uint64_t my_item){
+		__device__ inline void dump_to_array(T * ext_array, uint64_t my_item){
 
 			ext_array[my_item] = items[my_item];
 

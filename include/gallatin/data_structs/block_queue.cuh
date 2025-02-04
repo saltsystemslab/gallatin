@@ -58,7 +58,7 @@ namespace data_structs {
 		
 	
 
-		__device__ void init(){
+		__device__ inline void init(){
 			//items[0] = new_item;
 			//next = nullptr;
 
@@ -71,27 +71,27 @@ namespace data_structs {
 
 		//attempt to set the address of the next node
 		//return true if true.
-		__device__ bool set_next(my_type * ext_next){
+		__device__ inline bool set_next(my_type * ext_next){
 
 
 			return (atomicCAS((unsigned long long int *)&next, 0ULL, (unsigned long long int)ext_next) == 0ULL);
 		}
 
 
-		static __device__ int get_max(){
+		static __device__ inline int get_max(){
 			return num_items;
 		}
 
 		//returns the address claimed, malloc occupies the lower bits. 
 		//does not do boundary checking
-		__device__ uint enqueue_increment_next(){
+		__device__ inline uint enqueue_increment_next(){
 
 			return (atomicAdd((unsigned int *) &want_enqueue_counter, 1U));
 
 		}
 
 
-		__device__ bool enqueue(T item){
+		__device__ inline bool enqueue(T item){
 
 			uint enqueue_pos = enqueue_increment_next();
 
@@ -114,7 +114,7 @@ namespace data_structs {
 		//attempt to read item from this queue block.
 		//pass in item & so that the user gets to deal with that 
 		// as we don't know what the ty
-		__device__ bool dequeue(T & item){
+		__device__ inline bool dequeue(T & item){
 
 			bool success = grab_active();
 
@@ -130,7 +130,7 @@ namespace data_structs {
 			return success;
 		}
 
-		__device__ bool grab_active(){
+		__device__ inline bool grab_active(){
 
 			uint64_t old = atomicAdd((unsigned long long int *)&dequeue_counter, 1ULL);
 
@@ -153,7 +153,7 @@ namespace data_structs {
 
 
 		//use atomicCAS to only allow correct orderings to proceed.
-		__device__ void signal_active(uint previous){
+		__device__ inline void signal_active(uint previous){
 
 
 			uint old = atomicCAS((unsigned int *) &enqueue_counter, (unsigned int) previous, (unsigned int)previous+1);
@@ -174,7 +174,7 @@ namespace data_structs {
 		//given the next node that should be in the chain and CAS
 		//returns nullptr on correct swap
 		//else returns new tail.
-		__device__ my_type * CAS_and_return(my_type * next_node){
+		__device__ inline my_type * CAS_and_return(my_type * next_node){
 
 
 			return (my_type *) atomicCAS((unsigned long long int *)&next, 0ULL, (unsigned long long int )next_node);
@@ -184,7 +184,7 @@ namespace data_structs {
 		//dequeue a segment
 		//does not check if too large/too small
 		//NOTE: This gives you an exclusive slot - does not guarantee
-		__device__ uint get_dequeue_position(){
+		__device__ inline uint get_dequeue_position(){
 
 			return atomicAdd((unsigned int *) &ordered_dequeue_counter, 1U);
 
@@ -192,7 +192,7 @@ namespace data_structs {
 		}
 
 		//Insert items with non_atomic + threadfence?
-		__device__ void place_item(T item, uint write_pos){
+		__device__ inline void place_item(T item, uint write_pos){
 
 			gallatin::utils::typed_atomic_exchange(&items[write_pos], item);
 			//items[write_pos] = item;
@@ -204,7 +204,7 @@ namespace data_structs {
 		//use ldca to force a global read of T
 		//if bigger than 64_bits, use indirection
 		//no idea if this works LMAO
-		// __device__ T global_read(uint pos){
+		// __device__ inline T global_read(uint pos){
 
 		// 	return ((T *)  gallatin::utils::ldca((void *) (items + pos)))[0];
 
@@ -226,7 +226,7 @@ namespace data_structs {
 	// - set next of node to current
 
 	template <typename queue>
-	__global__ void queue_init_dev_version(queue * my_queue){
+	__global__ inline void queue_init_dev_version(queue * my_queue){
 
 		uint64_t tid = gallatin::utils::get_tid();
 
@@ -250,7 +250,7 @@ namespace data_structs {
 
 		//instantiate a queue on device.
 		//currently does not pull from the allocator, but it totally should
-		static __host__ my_type * generate_on_device(){
+		static __host__ inline my_type * generate_on_device(){
 
 			my_type * host_version = gallatin::utils::get_host_version<my_type>();
 
@@ -269,7 +269,7 @@ namespace data_structs {
 
 		//can simplify the logic a tonnnn if we allow for there to always be
 		// at least one node, so head/tail never go to nullptr.
-		__device__ void init(){
+		__device__ inline void init(){
 
 
 			node_type * head_node = (node_type *) gallatin::allocators::global_malloc(sizeof(node_type));
@@ -281,14 +281,14 @@ namespace data_structs {
 
 
 		//doesn't matter for the 
-		__device__ void try_swap_head(node_type * old_head, node_type * my_head){
+		__device__ inline void try_swap_head(node_type * old_head, node_type * my_head){
 
 
 			atomicCAS((unsigned long long int *)&head, (unsigned long long int)old_head, (unsigned long long int)my_head);
 
 		}
 
-		__device__ node_type * add_to_tail(node_type ** current_tail, node_type *next_tail){
+		__device__ inline node_type * add_to_tail(node_type ** current_tail, node_type *next_tail){
 
 
 			return (node_type *) atomicCAS((unsigned long long int *)current_tail, 0ULL, (unsigned long long int)next_tail);
@@ -296,7 +296,7 @@ namespace data_structs {
 		}
 
 
-		__device__ void detect_loop(){
+		__device__ inline void detect_loop(){
 
 
 			node_type * loop_one = tail;
@@ -325,7 +325,7 @@ namespace data_structs {
 
 		}
 
-		__device__ node_type * trace_tail(node_type * my_tail){
+		__device__ inline node_type * trace_tail(node_type * my_tail){
 
 			//node_type * my_tail = tail;
 
@@ -342,7 +342,7 @@ namespace data_structs {
 
 		}
 
-		__device__ bool enqueue(T new_item){
+		__device__ inline bool enqueue(T new_item){
 
 			node_type * my_tail = trace_tail(tail);
 
@@ -408,7 +408,7 @@ namespace data_structs {
 
 		//valid to make optional type?
 
-		// __device__ bool dequeue(T & return_val){
+		// __device__ inline bool dequeue(T & return_val){
 
 		// 	//do these reads need to be atomic? 
 		// 	//I don't think so as these values don't change.
