@@ -185,7 +185,7 @@ __device__ inline uint64_t get_clock_time() {
   return res;
 }
 
-__device__ uint get_smid() {
+__device__ inline uint get_smid() {
   uint ret;
 
   asm("mov.u32 %0, %smid;" : "=r"(ret));
@@ -437,7 +437,7 @@ __device__ inline void cooperative_copy(T *dst, T *src) {
 
 //count first contiguous - ll variant
 //return # of contiguous 1s present in lower order bits
-__device__ int __cfcll(uint64_t bits){
+__device__ int inline __cfcll(uint64_t bits){
 
 
   int popc = __popcll(bits);
@@ -603,7 +603,7 @@ __device__ void memclear_generic(void * memory, uint64_t num_bytes, uint64_t num
 
 
 template <typename T>
-__device__ void memclear(T * memory, uint64_t nitems, uint64_t nthreads){
+__device__ void inline memclear(T * memory, uint64_t nitems, uint64_t nthreads){
 
   memclear_generic((void *)memory, sizeof(T)*nitems, nthreads);
 }
@@ -611,13 +611,13 @@ __device__ void memclear(T * memory, uint64_t nitems, uint64_t nthreads){
 #endif
 
 
-constexpr uint64_t numberOfBits(uint64_t x)
+constexpr inline uint64_t numberOfBits(uint64_t x)
 {
     return x < 2 ? x : 1+numberOfBits(x >> 1);
 }
 
 
-__device__ void clear_host_memory_per_thread(void * memory, uint64_t num_bytes, uint64_t n_threads, uint64_t tid){
+__device__ inline void clear_host_memory_per_thread(void * memory, uint64_t num_bytes, uint64_t n_threads, uint64_t tid){
 
   uint64_t bytes_per_thread = (num_bytes-1)/n_threads+1;
 
@@ -649,7 +649,7 @@ __global__ void clear_host_memory_kernel(void * memory, uint64_t num_bytes, uint
 }
 
 
-__host__ void clear_device_host_memory(void * ptr, uint64_t num_bytes){
+__host__ inline void clear_device_host_memory(void * ptr, uint64_t num_bytes){
 
   uint64_t num_threads = (num_bytes-1)/16+1;
 
