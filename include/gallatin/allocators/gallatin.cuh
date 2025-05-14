@@ -133,7 +133,7 @@ namespace allocators {
 
 using namespace gallatin::utils;
 
-__global__ inline void boot_segment_trees(veb_tree **segment_trees,
+__global__ void boot_segment_trees(veb_tree **segment_trees,
                                    uint64_t max_chunks, int num_trees) {
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -146,7 +146,7 @@ __global__ inline void boot_segment_trees(veb_tree **segment_trees,
 
 
 //sanity check: are the VEB trees empty?
-__global__ inline void assert_empty(veb_tree ** segment_trees, int num_trees){
+__global__ void assert_empty(veb_tree ** segment_trees, int num_trees){
 
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -168,7 +168,7 @@ __global__ inline void assert_empty(veb_tree ** segment_trees, int num_trees){
 //boot the allocator memory blocks during initialization
 //this loops through the blocks and initializes half as many at each iteration.
 template <typename allocator>
-__global__ inline void boot_shared_block_container(allocator * alloc, uint16_t max_tree_id, int max_smid, int cutoff){
+__global__ void boot_shared_block_container(allocator * alloc, uint16_t max_tree_id, int max_smid, int cutoff){
 
 	uint64_t tid = gallatin::utils::get_tid();
 
@@ -193,7 +193,7 @@ __global__ inline void boot_shared_block_container(allocator * alloc, uint16_t m
 
 
 template <typename allocator>
-__global__ inline void boot_shared_block_container_one_thread(allocator * alloc, uint16_t max_tree_id, int max_smid, int cutoff){
+__global__ void boot_shared_block_container_one_thread(allocator * alloc, uint16_t max_tree_id, int max_smid, int cutoff){
 
   uint64_t tid = gallatin::utils::get_tid();
 
