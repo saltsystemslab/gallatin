@@ -640,7 +640,7 @@ __device__ inline void clear_host_memory_per_thread(void * memory, uint64_t num_
 }
 
 
-__global__ void clear_host_memory_kernel(void * memory, uint64_t num_bytes, uint64_t num_threads){
+static __global__ void clear_host_memory_kernel(void * memory, uint64_t num_bytes, uint64_t num_threads){
 
   uint64_t tid = gallatin::utils::get_tid();
 
