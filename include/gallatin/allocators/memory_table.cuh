@@ -170,7 +170,7 @@ __global__ void setup_clear_blocks_kernel(allocator_type * allocator, uint64_t s
 // using uint16_t as there shouldn't be that many trees.
 // register atomically insert tree num, or registers memory from chunk_tree.
 
-__global__ void gallatin_init_counters_kernel(
+static __global__ void gallatin_init_counters_kernel(
                                            int * active_counts,
                                            uint * queue_counters, uint * queue_free_counters,
                                            uint * final_queue_free_counters,
