@@ -193,7 +193,7 @@ __device__ inline uint get_smid() {
   return ret;
 }
 
-__host__ int get_num_streaming_multiprocessors(int which_device) {
+__host__ inline int get_num_streaming_multiprocessors(int which_device) {
   cudaDeviceProp prop;
   cudaGetDeviceProperties(&prop, which_device);
   int mp = prop.multiProcessorCount;
@@ -211,7 +211,7 @@ __host__ uint64_t get_max_chunks() {
   return mem_total / bytes_per_chunk;
 }
 
-__host__ void print_mem_in_use() {
+__host__ inline void print_mem_in_use() {
   size_t mem_total;
   size_t mem_free;
   cudaMemGetInfo(&mem_free, &mem_total);
