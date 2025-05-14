@@ -33,7 +33,7 @@ namespace allocators {
 #define GAL_BLOCK_STORAGE_READ_BLOCK_ATOMIC 0
 
 // should these start initialized? I can try it.
-__global__ void gallatin_set_block_bitarrs(Block **blocks, uint64_t num_blocks) {
+static __global__ void gallatin_set_block_bitarrs(Block **blocks, uint64_t num_blocks) {
   uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
 
   if (tid >= num_blocks) return;

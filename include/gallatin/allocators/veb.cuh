@@ -69,7 +69,7 @@ namespace allocators {
 #define SET_BIT_MASK(index) ((1ULL << index))
 
 // cudaMemset is being weird
-__global__ void init_bits(uint64_t *bits, uint64_t items_in_universe) {
+static __global__ void init_bits(uint64_t *bits, uint64_t items_in_universe) {
   uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
 
   if (tid >= items_in_universe) return;
