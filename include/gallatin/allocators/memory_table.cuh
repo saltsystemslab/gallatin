@@ -201,7 +201,7 @@ __global__ void gallatin_init_counters_kernel(
 }
 
 
-__global__ inline void init_calloc_counters_kernel(int * calloc_active_counters, uint * calloc_enqueue_counters, uint * calloc_finished_counters, Block ** calloc_queues, uint * calloc_clear_counters, uint64_t num_segments, uint64_t blocks_per_segment){
+static __global__ void init_calloc_counters_kernel(int * calloc_active_counters, uint * calloc_enqueue_counters, uint * calloc_finished_counters, Block ** calloc_queues, uint * calloc_clear_counters, uint64_t num_segments, uint64_t blocks_per_segment){
 
   uint64_t tid = gallatin::utils::get_tid();
 
