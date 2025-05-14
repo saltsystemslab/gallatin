@@ -397,13 +397,13 @@ static __host__ __device__ int get_first_bit_bigger(uint64_t counter) {
 #endif
 }
 
-__device__ uint64_t get_tid() {
+__device__ inline uint64_t get_tid() {
   return ((uint64_t)threadIdx.x) + ((uint64_t)blockIdx.x) * ((uint64_t) blockDim.x);
 }
 
 
 template <typename team_type>
-__device__ uint64_t get_tile_tid(team_type team) {
+__device__ inline uint64_t get_tile_tid(team_type team) {
 
 
   return ((uint64_t) team.meta_group_rank()) + ((uint64_t)blockIdx.x) * ((uint64_t) team.meta_group_size());
@@ -411,7 +411,7 @@ __device__ uint64_t get_tile_tid(team_type team) {
 }
 
 template <uint team_size>
-__device__ uint64_t get_team_tid(cg::thread_block_tile<team_size> team) {
+__device__ inline uint64_t get_team_tid(cg::thread_block_tile<team_size> team) {
 
   uint64_t block_id = blockIdx.x;
 
@@ -423,14 +423,14 @@ __device__ uint64_t get_team_tid(cg::thread_block_tile<team_size> team) {
 
 }
 
-__device__ void cooperative_copy(char *dst, char *src, uint64_t num_bytes) {
+__device__ inline void cooperative_copy(char *dst, char *src, uint64_t num_bytes) {
   for (uint64_t i = threadIdx.x; i < num_bytes; i += blockDim.x) {
     dst[i] = src[i];
   }
 }
 
 template <typename T>
-__device__ void cooperative_copy(T *dst, T *src) {
+__device__ inline void cooperative_copy(T *dst, T *src) {
   return cooperative_copy((char *)dst, (char *)src, sizeof(T));
 }
 
