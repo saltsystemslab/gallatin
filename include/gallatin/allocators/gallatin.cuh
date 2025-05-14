@@ -133,7 +133,7 @@ namespace allocators {
 
 using namespace gallatin::utils;
 
-__global__ void boot_segment_trees(veb_tree **segment_trees,
+static __global__ void boot_segment_trees(veb_tree **segment_trees,
                                    uint64_t max_chunks, int num_trees) {
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -146,7 +146,7 @@ __global__ void boot_segment_trees(veb_tree **segment_trees,
 
 
 //sanity check: are the VEB trees empty?
-__global__ void assert_empty(veb_tree ** segment_trees, int num_trees){
+static __global__ void assert_empty(veb_tree ** segment_trees, int num_trees){
 
   uint64_t tid = gallatin::utils::get_tid();
 
