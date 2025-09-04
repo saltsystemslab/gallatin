@@ -344,7 +344,7 @@ __device__ bool global_check_poison(void * allocation){
 }
 
 
-__device__ void global_free_poison(void * allocation){
+__device__ inline void global_free_poison(void * allocation){
 
   global_check_poison(allocation);
 
