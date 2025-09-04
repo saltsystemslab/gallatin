@@ -40,9 +40,9 @@ namespace allocators {
 
 using global_allocator_type = gallatin::allocators::Gallatin<16ULL*1024*1024, 16ULL, 4096ULL>;
 
-__device__ global_allocator_type * global_gallatin;
+static __device__ global_allocator_type * global_gallatin;
 
-__device__ global_allocator_type * global_host_gallatin;
+static __device__ global_allocator_type * global_host_gallatin;
 
 
 __host__ inline void init_global_allocator(uint64_t num_bytes, uint64_t seed, bool print_info=true, bool running_calloc=false){
@@ -319,7 +319,7 @@ __device__ inline bool global_check_poison(void * allocation){
 
   if (poison_end[1] != extra_bytes){
     printf("Poison violated 3\n");
-    return;
+    return false;
   } 
 
 

@@ -1097,61 +1097,61 @@ struct veb_tree {
   }
 
 
-  __device__ uint64_t maybe_remove_layer_bits(int layer, uint64_t start_bit, uint64_t bits_to_check){
+  // __device__ uint64_t maybe_remove_layer_bits(int layer, uint64_t start_bit, uint64_t bits_to_check){
 
 
-    uint64_t working_bit = start_bit;
+  //   uint64_t working_bit = start_bit;
 
-    while (working_bit < start_bit+bits_to_check){
-
-
-
-
-      uint64_t bits = gallatin::utils::ldca(&layers[layer+1]->bits[working_bit]);
-
-      if (bits == 0){
-
-        uint64_t high = working_bit / 64;
-
-        int low = working_bit % 64;
-
-        layers[layer]->remove(high, low);
-
-      }
-
-      working_bit++;
-
-    }
-
-  }
-
-  __device__ uint64_t maybe_return_layer_bits(int layer, uint64_t start_bit, uint64_t bits_to_check){
-
-
-    uint64_t working_bit = start_bit;
-
-    while (working_bit < start_bit+bits_to_check){
+  //   while (working_bit < start_bit+bits_to_check){
 
 
 
 
-      uint64_t bits = gallatin::utils::ldca(&layers[layer+1]->bits[working_bit]);
+  //     uint64_t bits = gallatin::utils::ldca(&layers[layer+1]->bits[working_bit]);
 
-      if (__popcll(bits) == 64){
+  //     if (bits == 0){
 
-        uint64_t high = working_bit / 64;
+  //       uint64_t high = working_bit / 64;
 
-        int low = working_bit % 64;
+  //       int low = working_bit % 64;
 
-        layers[layer]->insert(high, low);
+  //       layers[layer]->remove(high, low);
 
-      }
+  //     }
 
-      working_bit++;
+  //     working_bit++;
 
-    }
+  //   }
 
-  }
+  // }
+
+  // __device__ uint64_t maybe_return_layer_bits(int layer, uint64_t start_bit, uint64_t bits_to_check){
+
+
+  //   uint64_t working_bit = start_bit;
+
+  //   while (working_bit < start_bit+bits_to_check){
+
+
+
+
+  //     uint64_t bits = gallatin::utils::ldca(&layers[layer+1]->bits[working_bit]);
+
+  //     if (__popcll(bits) == 64){
+
+  //       uint64_t high = working_bit / 64;
+
+  //       int low = working_bit % 64;
+
+  //       layers[layer]->insert(high, low);
+
+  //     }
+
+  //     working_bit++;
+
+  //   }
+
+  // }
 
   //grab multiple segments, starting from the back
   //this algorithm works by generating masks and attempting to apply them
