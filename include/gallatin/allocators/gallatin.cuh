@@ -1514,7 +1514,7 @@ struct Gallatin {
     return ((atomicOr(&locks, SET_BIT_MASK(tree)) & SET_BIT_MASK(tree)) == 0);
   }
 
-  __device__ bool release_tree_lock(uint16_t tree) {
+  __device__ void release_tree_lock(uint16_t tree) {
     atomicAnd(&locks, ~SET_BIT_MASK(tree));
   }
 
