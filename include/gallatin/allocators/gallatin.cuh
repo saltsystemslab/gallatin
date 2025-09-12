@@ -373,7 +373,7 @@ struct Gallatin {
     sub_tree_type **ext_sub_trees =
         get_host_version<sub_tree_type *>(num_trees);
 
-    for (int i = 0; i < num_trees; i++) {
+    for (uint i = 0; i < num_trees; i++) {
       sub_tree_type *temp_tree =
           sub_tree_type::generate_on_device_nowait(max_chunks, i + seed);
       ext_sub_trees[i] = temp_tree;
@@ -478,7 +478,7 @@ struct Gallatin {
     sub_tree_type **ext_sub_trees =
         get_host_version<sub_tree_type *>(num_trees);
 
-    for (int i = 0; i < num_trees; i++) {
+    for (uint i = 0; i < num_trees; i++) {
       sub_tree_type *temp_tree =
           sub_tree_type::generate_on_device_nowait(max_chunks, i + seed);
       ext_sub_trees[i] = temp_tree;
