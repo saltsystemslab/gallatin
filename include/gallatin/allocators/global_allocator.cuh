@@ -40,9 +40,9 @@ namespace allocators {
 
 using global_allocator_type = gallatin::allocators::Gallatin<16ULL*1024*1024, 16ULL, 4096ULL>;
 
-static __device__ global_allocator_type * global_gallatin;
+static __device__ global_allocator_type * global_gallatin = nullptr;
 
-static __device__ global_allocator_type * global_host_gallatin;
+static __device__ global_allocator_type * global_host_gallatin = nullptr;
 
 
 __host__ inline void init_global_allocator(uint64_t num_bytes, uint64_t seed, bool print_info=true, bool running_calloc=false){
@@ -80,7 +80,6 @@ __device__ inline void global_free(void * ptr){
   global_gallatin->free(ptr);
 
 }
-
 
 
 __host__ inline void print_global_stats(){
@@ -356,6 +355,13 @@ __device__ inline void global_free_poison(void * allocation){
 
 }
 
+__device__ inline bool is_global_allocator_init(){
+  return global_gallatin == nullptr;
+}
+
+__device__ inline bool is_global_host_allocator_init(){
+  return global_host_gallatin == nullptr;
+}
 
 }  // namespace allocators
 
