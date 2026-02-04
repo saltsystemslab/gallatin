@@ -356,11 +356,11 @@ __device__ inline void global_free_poison(void * allocation){
 }
 
 __device__ inline bool is_global_allocator_init(){
-  return global_gallatin == nullptr;
+  return global_gallatin != nullptr;
 }
 
 __device__ inline bool is_global_host_allocator_init(){
-  return global_host_gallatin == nullptr;
+  return global_host_gallatin != nullptr;
 }
 
 }  // namespace allocators
