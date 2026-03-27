@@ -2023,6 +2023,35 @@ struct Gallatin {
 
   }
 
+  // Return the number of bytes currently allocated from a given tree.
+  // Safe to call only when no allocations/frees are in flight.
+  __device__ uint64_t get_tree_bytes_in_use(uint16_t tree_id){
+
+    uint64_t alloc_size = table->get_tree_alloc_size(tree_id);
+    uint64_t nblocks = table->get_blocks_per_segment(tree_id);
+    uint64_t total = 0;
+
+    for (uint64_t seg = 0; seg < table->num_segments; seg++){
+
+      if (table->read_tree_id(seg) != tree_id) continue;
+
+      uint64_t base = seg * table->blocks_per_segment;
+
+      for (uint64_t b = 0; b < nblocks; b++){
+
+        Block * blk = table->get_block_from_global_block_id(base + b);
+        uint malloced = blk->clip_count(blk->malloc_counter);
+        uint freed = blk->free_counter;
+
+        if (malloced > freed){
+          total += (malloced - freed) * alloc_size;
+        }
+      }
+    }
+
+    return total;
+  }
+
   //returns true if this allocation is inside the range of the allocator
   __device__ bool owns_allocation(void * alloc){
 

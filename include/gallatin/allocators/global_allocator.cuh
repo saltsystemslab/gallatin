@@ -355,6 +355,10 @@ __device__ inline void global_free_poison(void * allocation){
 
 }
 
+__device__ inline uint64_t global_get_tree_bytes_in_use(uint16_t tree_id){
+  return global_gallatin->get_tree_bytes_in_use(tree_id);
+}
+
 __device__ inline bool is_global_allocator_init(){
   return global_gallatin != nullptr;
 }
