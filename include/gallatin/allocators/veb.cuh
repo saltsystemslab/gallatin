@@ -830,6 +830,12 @@ struct veb_tree {
 
   __device__ __host__ static uint64_t fail() { return ~0ULL; }
 
+  // Fast O(1) check: is the tree completely empty?
+  // Uses acquire semantics to see the latest inserts from concurrent frees.
+  __device__ bool is_empty() {
+    return gallatin::utils::ld_acq(&layers[0]->bits[0]) == 0;
+  }
+
   // finds the next one
   // this does one float up/ float down attempt
   // which gathers ~80% of items from testing.

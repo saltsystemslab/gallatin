@@ -793,6 +793,9 @@ struct Gallatin {
     //calculate # of segments needed
     //uint64_t num_segments_required = (bytes_needed - 1)/ bytes_per_segment + 1;
 
+    // Fast bail: no free segments available
+    if (segment_tree->is_empty()) return ~0ULL;
+
     while(!acquire_tree_lock(num_trees));
 
     uint64_t alloc_index = segment_tree->gather_multiple(num_segments_required);
@@ -895,6 +898,10 @@ struct Gallatin {
 
     //cycle if we read an old block
     if (my_block == nullptr){
+      // Fast bail: no block available and no way to get one
+      if (sub_trees[tree_id]->is_empty() && segment_tree->is_empty()){
+        return ~0ULL;
+      }
       num_attempts+=1;
       continue;
     }
@@ -1525,6 +1532,11 @@ struct Gallatin {
   __device__ Block *request_new_block_from_tree(uint16_t tree) {
     int attempts = 0;
 
+    // Fast bail: if sub-tree and segment tree are both empty, no blocks can be acquired.
+    if (sub_trees[tree]->is_empty() && segment_tree->is_empty()) {
+      return nullptr;
+    }
+
     while (attempts < REQUEST_BLOCK_MAX_ATTEMPTS) {
       __threadfence();
 
@@ -1534,6 +1546,11 @@ struct Gallatin {
       uint64_t segment = sub_trees[tree]->find_random_valid_index();
 
       if (segment == veb_tree::fail()) {
+
+        // Re-check: if segment tree is empty, no point retrying.
+        if (segment_tree->is_empty()) {
+          return nullptr;
+        }
 
         if (acquire_tree_lock(tree)) {
           int success = gather_new_segment(tree);

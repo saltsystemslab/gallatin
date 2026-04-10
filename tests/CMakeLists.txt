@@ -79,6 +79,8 @@ ConfigureExecutable(bulk_ht_test "${CMAKE_CURRENT_SOURCE_DIR}/src/bulk_ht_test.c
 
 ConfigureExecutable(global_exceed_test "${CMAKE_CURRENT_SOURCE_DIR}/src/global_exceed_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+ConfigureExecutable(global_fused_test "${CMAKE_CURRENT_SOURCE_DIR}/src/global_fused_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
 ConfigureExecutable(full_ext_ht_test "${CMAKE_CURRENT_SOURCE_DIR}/src/full_ext_ht_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
 ConfigureExecutable(grow_ext_ht_test "${CMAKE_CURRENT_SOURCE_DIR}/src/grow_ext_ht_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
