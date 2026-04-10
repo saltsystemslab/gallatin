@@ -689,6 +689,10 @@ struct Gallatin {
 
   }
 
+  __device__ uint64_t get_capacity_bytes(){
+    return table->num_segments * bytes_per_segment;
+  }
+
   // given a pointer, return the segment it belongs to
   // __device__ inline uint64_t snap_pointer_to_block(void *ext_ptr) {
 
