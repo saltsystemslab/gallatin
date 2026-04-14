@@ -1402,7 +1402,7 @@ struct Gallatin {
 
 
     //if this is true, removing valid large allocation of unknown size.  
-    if (tree_id > num_trees && (~tree_id != 0)){
+    if (tree_id > num_trees && (tree_id != (uint16_t)~0)){
 
       uint16_t size = tree_id - num_trees - 1;
       //freeing large block.
