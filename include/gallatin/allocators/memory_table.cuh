@@ -1348,7 +1348,11 @@ struct alloc_table {
 
     uint64_t byte_difference = ( (char *) alloc - (char *) memory);
 
-    return (byte_difference < num_segments*bytes_per_segment);
+    if (byte_difference >= num_segments*bytes_per_segment) return false;
+
+    uint64_t segment = byte_difference / bytes_per_segment;
+    uint16_t tid = read_tree_id(segment);
+    return tid != (uint16_t)~0;
 
   }
 
