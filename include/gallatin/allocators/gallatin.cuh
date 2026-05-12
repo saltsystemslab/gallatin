@@ -165,6 +165,13 @@ static __global__ void assert_empty(veb_tree ** segment_trees, int num_trees){
 
 }
 
+// Wrap the boot kernels in an anonymous namespace so each translation unit
+// gets its own internal-linkage instantiation. Without this, compute-sanitizer
+// flags multi-TU consumers (e.g. Andes test binaries) with "Duplicate kernel
+// entry: boot_shared_block_container<...>" — the linker is happy (weak symbols)
+// but the sanitizer output becomes unusable noise.
+namespace {
+
 //boot the allocator memory blocks during initialization
 //this loops through the blocks and initializes half as many at each iteration.
 template <typename allocator>
@@ -219,6 +226,8 @@ __global__ void boot_shared_block_container_one_thread(allocator * alloc, uint16
   }
 
 }
+
+} // namespace
 
 template <typename allocator>
 __global__ void print_overhead_kernel(allocator * alloc){
