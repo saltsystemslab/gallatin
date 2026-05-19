@@ -1,0 +1,2 @@
+# Local cluster job scripts and logs; not part of the published repo.
+sbatch/
