@@ -765,17 +765,13 @@ struct Gallatin {
       uint64_t allocation = true_count + thread_rank;
       bool valid = allocation < 4096;
 
-      // Some thread held the last in-bounds slot (4095) — that thread must
-      // replace the block in the pinned wavefront so future allocators don't
-      // contend on a now-full block.
-      bool should_replace_local = (allocation == 4095);
-      bool should_replace = coalesced_team.ballot(should_replace_local);
-
-      if (should_replace) {
-        if (coalesced_team.thread_rank() == 0) {
-          replace_block(tree_id, shared_block_storage_index, my_block,
-                        local_shared_block_storage);
-        }
+      // The thread that lands exactly on the last in-bounds slot (4095)
+      // is the sole replacer: per coalesced atomicAdd batch, at most one
+      // thread's allocation is == 4095. No ballot needed — the thread
+      // either is or isn't that thread.
+      if (allocation == 4095) {
+        replace_block(tree_id, shared_block_storage_index, my_block,
+                      local_shared_block_storage);
       }
       coalesced_team.sync();
 
@@ -1527,8 +1523,6 @@ struct Gallatin {
   __device__ void free_offset(uint64_t malloc) {
 
     // get block
-
-
     uint64_t block_id = malloc/4096;
 
 
@@ -1549,12 +1543,7 @@ struct Gallatin {
             #endif
 
             free_block(my_block);
-
-
-            
-
         }
-
       }
 
     #else

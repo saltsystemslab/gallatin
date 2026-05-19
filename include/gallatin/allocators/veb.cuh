@@ -863,37 +863,35 @@ struct veb_tree {
   }
 
 
-  __device__ uint64_t find_random_valid_index(){
+  // SplitMix64 — a tiny invertible mix. Diversifies a (tid, seed) pair
+  // enough to pick a starting slot in the tree without the ~120-instruction
+  // cost of MurmurHash64A. The bit-mixing quality is more than sufficient
+  // for "random starting point in a vEB walk."
+  static __device__ inline uint64_t splitmix64(uint64_t x) {
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+  }
 
+  __device__ uint64_t find_random_valid_index() {
     uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
 
-    uint64_t hash1 =
-        gallatin::hashers::MurmurHash64A(&tid, sizeof(uint64_t), seed);
-
-    tid = threadIdx.x + blockIdx.x * blockDim.x;
-
-    uint64_t hash2 =
-        gallatin::hashers::MurmurHash64A(&tid, sizeof(uint64_t), hash1);
+    uint64_t hash1 = splitmix64(tid ^ seed);
+    uint64_t hash2 = splitmix64(hash1);
 
     int attempts = 0;
-
     while (attempts < VEB_MAX_ATTEMPTS) {
-      // uint64_t index_to_start = (hash1+attempts*hash2) % (total_universe-64);
-      uint64_t index_to_start = (hash1 + attempts * hash2) % (total_universe);
+      uint64_t index_to_start = (hash1 + attempts * hash2) % total_universe;
 
       if (query(index_to_start)) return index_to_start;
 
       uint64_t index = successor_thorough(index_to_start);
-
       if (index != ~0ULL) return index;
 
-
-      attempts+=1;
-
+      attempts++;
     }
 
     return successor_thorough(0);
-
   }
 
   __device__ uint64_t malloc_first() {
@@ -911,38 +909,16 @@ struct veb_tree {
   }
 
   __device__ uint64_t malloc() {
-    // make several attempts at malloc?
-
     uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
 
-    uint64_t hash1 =
-        gallatin::hashers::MurmurHash64A(&tid, sizeof(uint64_t), seed);
-
-    tid = threadIdx.x + blockIdx.x * blockDim.x;
-
-    uint64_t hash2 =
-        gallatin::hashers::MurmurHash64A(&tid, sizeof(uint64_t), hash1);
+    uint64_t hash1 = splitmix64(tid ^ seed);
+    uint64_t hash2 = splitmix64(hash1);
 
     int attempts = 0;
-
     while (attempts < VEB_MAX_ATTEMPTS) {
-      // uint64_t index_to_start = (hash1+attempts*hash2) % (total_universe-64);
-      uint64_t index_to_start = (hash1 + attempts * hash2) % (total_universe);
-
-      if (index_to_start == ~0ULL) {
-        index_to_start = 0;
-
-        #if VEB_DEBUG_PRINTS
-        printf("U issue\n");
-        #endif
-      }
-
-      #if VEB_DEBUG_PRINTS
-      if (index_to_start >= total_universe) printf("Huge index error\n");
-      #endif
+      uint64_t index_to_start = (hash1 + attempts * hash2) % total_universe;
 
       uint64_t offset = lock_offset(index_to_start);
-
       if (offset != veb_tree::fail()) return offset;
 
       attempts++;
