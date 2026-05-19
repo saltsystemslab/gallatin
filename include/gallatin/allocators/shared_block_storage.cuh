@@ -30,8 +30,6 @@ namespace allocators {
 
 #define SHARED_BLOCK_COUNTER_CUTOFF 30
 
-#define GAL_BLOCK_STORAGE_READ_BLOCK_ATOMIC 0
-
 // should these start initialized? I can try it.
 static __global__ void gallatin_set_block_bitarrs(Block **blocks, uint64_t num_blocks) {
   uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -116,61 +114,56 @@ struct per_size_pinned_blocks {
     cudaFreeHost(host_version);
   }
 
-  __device__ int get_valid_block_index() {
+  // Probe the SM-indexed block table for an entry that's been published
+  // (non-null). Single acquire-load per slot: the previous split into
+  // get_valid_block_index + get_my_block did two redundant acquire-loads of
+  // the same address on every malloc. Acquire ordering pairs with the
+  // release-CAS in swap_out_nullptr/replace_block — any non-null Block* we
+  // see carries the publisher's init_malloc/free_counter writes with it.
+  __device__ Block *get_valid_block(int &out_smid) {
     int my_smid = gallatin::utils::get_smid() % num_blocks;
     int original_smid = my_smid;
-
     int counter = 0;
 
-    // addition - loop to find valid block.
-    while (blocks[my_smid] == nullptr && my_smid != (original_smid - 1)) {
+    Block *block = gallatin::utils::load_acquire(&blocks[my_smid]);
+    while (block == nullptr && my_smid != (original_smid - 1)) {
       my_smid = (my_smid + 1) % num_blocks;
-
       counter += 1;
       if (counter >= SHARED_BLOCK_COUNTER_CUTOFF) break;
+      block = gallatin::utils::load_acquire(&blocks[my_smid]);
     }
 
-    return my_smid;
+    out_smid = my_smid;
+    return block;
   }
 
-  __device__ Block *get_my_block(int id) {
-
-    #if GAL_BLOCK_STORAGE_READ_BLOCK_ATOMIC
-      return (Block *) gallatin::utils::ldca((uint64_t *)&blocks[id]);
-    #else 
-      return blocks[id]; 
-    #endif
-    
-
- }
-
-  __device__ Block *get_alt_block() {
-    int my_smid = gallatin::utils::get_smid();
-
-    my_smid = my_smid * my_smid % num_blocks;
-
-    return blocks[my_smid];
-  }
-
-  // replace block with nullptr.
+  // Detach: CAS(block_to_swap -> nullptr). Release ordering pairs with
+  // acquire-load above so any consumer that subsequently sees nullptr is also
+  // guaranteed to see prior writes from the detaching thread.
   __device__ bool swap_out_block(int my_smid, Block *block_to_swap) {
-    return (atomicCAS((unsigned long long int *)&blocks[my_smid],
-                      (unsigned long long int)block_to_swap,
-                      0ULL) == (unsigned long long int)block_to_swap);
+    Block *expected = block_to_swap;
+    return gallatin::utils::cas_release<Block *>(&blocks[my_smid], expected,
+                                                 nullptr);
   }
 
+  // Replace: CAS(old_block -> new_block). new_block must have already had its
+  // metadata (malloc_counter etc.) initialized by the caller; release ordering
+  // makes those initializations visible to any consumer that subsequently
+  // acquire-loads new_block.
   __device__ bool replace_block(Block *old_block, Block *new_block) {
     int my_smid = gallatin::utils::get_smid() % num_blocks;
-
-    return (atomicCAS((unsigned long long int *)&blocks[my_smid],
-                      (unsigned long long int)old_block,
-                      (unsigned long long int)new_block) ==
-            (unsigned long long int)old_block);
+    Block *expected = old_block;
+    return gallatin::utils::cas_release<Block *>(&blocks[my_smid], expected,
+                                                 new_block);
   }
 
+  // Publish: CAS(nullptr -> block_to_swap). Release ordering ensures the
+  // block's prior init_malloc write is visible to any acquire-load of the
+  // slot.
   __device__ bool swap_out_nullptr(int my_smid, Block *block_to_swap) {
-    return (atomicCAS((unsigned long long int *)&blocks[my_smid], 0ULL,
-                      (unsigned long long int)block_to_swap) == 0ULL);
+    Block *expected = nullptr;
+    return gallatin::utils::cas_release<Block *>(&blocks[my_smid], expected,
+                                                 block_to_swap);
   }
 
   __device__ bool lock_my_block() {

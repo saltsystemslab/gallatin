@@ -45,9 +45,9 @@ static __device__ global_allocator_type * global_gallatin = nullptr;
 static __device__ global_allocator_type * global_host_gallatin = nullptr;
 
 
-__host__ inline void init_global_allocator(uint64_t num_bytes, uint64_t seed, bool print_info=true, bool running_calloc=false){
+__host__ inline void init_global_allocator(uint64_t num_bytes, uint64_t seed, bool print_info=true){
 
-  global_allocator_type * local_copy = global_allocator_type::generate_on_device(num_bytes, seed, print_info, running_calloc);
+  global_allocator_type * local_copy = global_allocator_type::generate_on_device(num_bytes, seed, print_info);
 
   cudaMemcpyToSymbol(global_gallatin, &local_copy, sizeof(global_allocator_type *));
 
@@ -96,9 +96,9 @@ __host__ inline void print_global_stats(){
 }
 
 //host_init
-__host__ inline void init_global_allocator_host(uint64_t num_bytes, uint64_t seed, bool print_info=true, bool running_calloc=false){
+__host__ inline void init_global_allocator_host(uint64_t num_bytes, uint64_t seed, bool print_info=true){
 
-  global_allocator_type * local_copy = global_allocator_type::generate_on_device_host(num_bytes, seed, print_info, running_calloc);
+  global_allocator_type * local_copy = global_allocator_type::generate_on_device_host(num_bytes, seed, print_info);
 
   cudaMemcpyToSymbol(global_host_gallatin, &local_copy, sizeof(global_allocator_type *));
 
@@ -150,10 +150,10 @@ __host__ inline void print_global_stats_host(){
 
 
 //mixed malloc init
-__host__ inline void init_global_allocator_combined(uint64_t num_bytes, uint64_t host_bytes, uint64_t seed, bool print_info=true, bool running_calloc=false){
+__host__ inline void init_global_allocator_combined(uint64_t num_bytes, uint64_t host_bytes, uint64_t seed, bool print_info=true){
 
-  init_global_allocator(num_bytes, seed, print_info, running_calloc);
-  init_global_allocator_host(host_bytes, seed, print_info, running_calloc);
+  init_global_allocator(num_bytes, seed, print_info);
+  init_global_allocator_host(host_bytes, seed, print_info);
 
 
 }
@@ -259,21 +259,17 @@ __device__ inline void * global_malloc_poison(uint64_t bytes_needed){
   char * memory_end = (char *) (memory_as_bytes + 16 + bytes_needed);
 
   for (uint64_t i = 0; i < extra_bytes; i++){
-
     memory_end[i] = (char) i;
-
   }
 
-  atomicExch((unsigned long long int *)&poison_start[0], bytes_needed);
-
-  atomicExch((unsigned long long int *)&poison_start[1], extra_bytes);
-
-  atomicExch((unsigned long long int *)&poison_end[0], bytes_needed);
-
-  atomicExch((unsigned long long int *)&poison_end[1], extra_bytes);
+  // The allocator's malloc serves as the publication boundary for this
+  // allocation, so plain stores into poison_start/poison_end are sufficient.
+  poison_start[0] = bytes_needed;
+  poison_start[1] = extra_bytes;
+  poison_end[0] = bytes_needed;
+  poison_end[1] = extra_bytes;
 
   return (void *) (memory_as_bytes + 16);
-
 }
 
 __device__ inline bool global_check_poison(void * allocation){

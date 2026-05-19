@@ -63,18 +63,6 @@ if (GAL_DEBUG)
   set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -G -g")
 endif(GAL_DEBUG)
 
-option (GAL_DYNAMIC "Add dynamic parallelism - Needed for calloc calls" OFF)
-
-if (GAL_DYNAMIC)
-  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -lcudadevrt -rdc=true")
-  add_compile_definitions(GALLATIN_USING_DYNAMIC_PARALLELISM=1)
-  target_link_libraries(gallatin ${CUDA_cudadevrt_LIBRARY})
-  #set_target_properties(gallatin PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)  # this is required for some reason
-
-  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-endif(GAL_DYNAMIC)
-
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

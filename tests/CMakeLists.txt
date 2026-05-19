@@ -34,9 +34,6 @@ ConfigureExecutable(vector_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/vector_tests.c
 
 ConfigureExecutable(gallatin_single_thread "${CMAKE_CURRENT_SOURCE_DIR}/src/gallatin_single_thread.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
-ConfigureExecutable(global_calloc_test "${CMAKE_CURRENT_SOURCE_DIR}/src/global_calloc_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
-
-
 ConfigureExecutable(global_test_noprint "${CMAKE_CURRENT_SOURCE_DIR}/src/global_test_noprint.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
 #ConfigureExecutable(ht_test "${CMAKE_CURRENT_SOURCE_DIR}/src/ht_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")

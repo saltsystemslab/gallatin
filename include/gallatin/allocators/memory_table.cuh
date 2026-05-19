@@ -47,12 +47,6 @@
 
 #define GALLATIN_MEM_TABLE_DEBUG 0
 
-#define GALLATIN_TABLE_GLOBAL_READ 1
-
-
-//how many bytes per thread a memclear needs to operate on
-#define GALLATIN_MEMCLEAR_SIZE 1
-
 namespace gallatin {
 
 namespace allocators {
@@ -96,76 +90,6 @@ __global__ void count_block_live_kernel(table * alloc_table, uint64_t num_blocks
 
 }
 
-#if GALLATIN_USING_DYNAMIC_PARALLELISM
-
-//kernel called to actually clear memory.
-template <typename allocator_type, typename block_type>
-__global__ void clear_block_memory_kernel(allocator_type * allocator, uint64_t segment, uint64_t size, uint64_t num_blocks, uint queue_start, int live_blocks, uint16_t tree_id){
-
-
-  uint64_t tid = gallatin::utils::get_tid();
-
-  //if (tid == 0) printf("Clearing segment %llu\n", segment);
-
-  uint64_t threads_per_block = (size*4096-1)/GALLATIN_MEMCLEAR_SIZE+1;
-
-  uint64_t threads_needed = threads_per_block*live_blocks;
-
-  if (tid >= threads_needed) return;
-
-
-  uint64_t my_block = tid/threads_per_block;
-
-  uint64_t my_offset = tid % threads_per_block;
-
-  if (my_block >= live_blocks) return;
-
-  //read my block and determine my memory
-
-  uint64_t my_address = (my_block + queue_start) % num_blocks;
-
-  uint64_t base_offset = allocator->table->blocks_per_segment * segment;
-
-  block_type * my_block_ptr = (block_type *) atomicCAS((unsigned long long int *)&allocator->table->calloc_queues[base_offset + my_address], 0ULL, 0ULL);
-
-  uint64_t block_id = allocator->table->get_global_block_offset(my_block_ptr);
-
-  if (my_offset == 0){
-
-    //printf("Thread %llu returning block %llu (%llx) to segment %llu\n", tid, block_id, my_block_ptr, segment);
-    allocator->return_block(my_block_ptr, segment, tree_id);
-  }
-
-
-}
-
-//given kernel, one thread determines # of blocks to handle
-//then launch child kernel
-template <typename allocator_type, typename block_type>
-__global__ void setup_clear_blocks_kernel(allocator_type * allocator, uint64_t segment, uint64_t size, uint64_t num_blocks, uint16_t tree_id){
-
-  uint64_t tid = gallatin::utils::get_tid();
-
-  if (tid != 0) return;
-
-  //printf("kernel for stream %llu\n", segment);
-
-  int num_live_blocks = atomicExch(&allocator->table->calloc_counters[segment], 0);
-
-  //then add to my counter
-  uint my_start = atomicAdd(&allocator->table->calloc_clear_counters[segment], num_live_blocks);
-
-  uint64_t threads_per_block = (size*4096-1)/GALLATIN_MEMCLEAR_SIZE+1;
-
-  uint64_t threads_needed = threads_per_block*num_live_blocks;
-
-  clear_block_memory_kernel<allocator_type, block_type><<<(threads_needed-1)/256+1, 256, 0, cudaStreamFireAndForget>>>(allocator, segment, size, num_blocks, my_start, num_live_blocks, tree_id);
-
-
-}
-
-#endif
-
 // alloc table associates chunks of memory with trees
 // using uint16_t as there shouldn't be that many trees.
 // register atomically insert tree num, or registers memory from chunk_tree.
@@ -173,7 +97,6 @@ __global__ void setup_clear_blocks_kernel(allocator_type * allocator, uint64_t s
 static __global__ void gallatin_init_counters_kernel(
                                            int * active_counts,
                                            uint * queue_counters, uint * queue_free_counters,
-                                           uint * final_queue_free_counters,
                                            Block *blocks, Block ** queues, uint64_t num_segments,
                                            uint64_t blocks_per_segment) {
   uint64_t tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -184,7 +107,6 @@ static __global__ void gallatin_init_counters_kernel(
 
   queue_counters[tid] = 0;
   queue_free_counters[tid] = 0;
-  final_queue_free_counters[tid] = 0;
 
   uint64_t base_offset = blocks_per_segment * tid;
 
@@ -196,33 +118,10 @@ static __global__ void gallatin_init_counters_kernel(
     queues[base_offset+i] = nullptr;
 
   }
-
-  __threadfence();
+  // No __threadfence needed — kernel completion is the synchronization
+  // boundary; subsequent kernels in the same stream observe all writes.
 }
 
-
-static __global__ void init_calloc_counters_kernel(int * calloc_active_counters, uint * calloc_enqueue_counters, uint * calloc_finished_counters, Block ** calloc_queues, uint * calloc_clear_counters, uint64_t num_segments, uint64_t blocks_per_segment){
-
-  uint64_t tid = gallatin::utils::get_tid();
-
-  if (tid >= num_segments) return;
-
-
-  calloc_active_counters[tid] = 0;
-  calloc_enqueue_counters[tid] = 0;
-  calloc_finished_counters[tid] = 0;
-
-  calloc_clear_counters[tid] = 0;
-
-  uint64_t base_offset = blocks_per_segment * tid;
-
-  for (uint64_t i = 0; i < blocks_per_segment; i++){
-
-    calloc_queues[base_offset + i] = nullptr;
-
-  }
-
-}
 
 // The alloc table owns all blocks live in the system
 // and information for each segment
@@ -245,8 +144,6 @@ struct alloc_table {
   //free counters holds which index newly freed blocks are emplaced.
   uint * queue_free_counters;
 
-  uint * final_queue_free_counters;
-
   //active counts make sure that the # of blocks in movement are acceptable.
   int * active_counts;
 
@@ -260,33 +157,9 @@ struct alloc_table {
 
   Gallatin_memory_type memory_control;
 
-  //additional controls for calloc
-
-  bool calloc_mode;
-
-  int * calloc_counters;
-
-  uint * calloc_enqueue_position;
-
-  uint * calloc_clear_counters;
-
-  //CAS is necessary for correctness.
-  uint * calloc_enqueue_finished;
-
-  Block ** calloc_queues;
-
-  #if GALLATIN_USING_DYNAMIC_PARALLELISM
-
-  cudaStream_t * streams;
-
-  #endif
-
-  //optional helper kernels.
-  //cudaStream_t * free_streams;
-
 
   // generate structure on device and return pointer.
-  static __host__ my_type *generate_on_device(uint64_t max_bytes,  Gallatin_memory_type ext_memory_control=device_only, bool calloc=false) {
+  static __host__ my_type *generate_on_device(uint64_t max_bytes,  Gallatin_memory_type ext_memory_control=device_only) {
     my_type *host_version;
 
     cudaMallocHost((void **)&host_version, sizeof(my_type));
@@ -385,63 +258,14 @@ struct alloc_table {
 
     host_version->queue_counters = gallatin::utils::get_device_version<uint>(num_segments);
     host_version->queue_free_counters = gallatin::utils::get_device_version<uint>(num_segments);
-    host_version->final_queue_free_counters = gallatin::utils::get_device_version<uint>(num_segments);
 
 
 
     gallatin_init_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
-        host_version->active_counts, 
+        host_version->active_counts,
         host_version->queue_counters, host_version->queue_free_counters,
-        host_version->final_queue_free_counters,
         host_version->blocks, host_version->queues, num_segments,
         blocks_per_segment);
-
-
-    if (calloc){
-
-
-      host_version->calloc_mode = true;
-      host_version->calloc_counters = gallatin::utils::get_device_version<int>(num_segments);
-      host_version->calloc_enqueue_position = gallatin::utils::get_device_version<uint>(num_segments);
-      host_version->calloc_enqueue_finished = gallatin::utils::get_device_version<uint>(num_segments);
-      host_version->calloc_clear_counters = gallatin::utils::get_device_version<uint>(num_segments);
-
-
-      Block ** ext_calloc_queues;
-      cudaMalloc((void **)&ext_calloc_queues, sizeof(Block *)*blocks_per_segment*num_segments);
-
-      host_version->calloc_queues = ext_calloc_queues;
-
-      init_calloc_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
-        host_version->calloc_counters,
-        host_version->calloc_enqueue_position,
-        host_version->calloc_enqueue_finished,
-        host_version->calloc_queues,
-        host_version->calloc_clear_counters,
-        num_segments, blocks_per_segment
-      );
-
-
-      #if GALLATIN_USING_DYNAMIC_PARALLELISM
-
-      cudaStream_t * ext_streams = gallatin::utils::get_host_version<cudaStream_t>(num_segments);
-
-      for (uint64_t i = 0; i < num_segments; i++){
-
-        GPUErrorCheck(cudaStreamCreateWithFlags(&ext_streams[i], cudaStreamNonBlocking));
-
-      }
-
-      cudaDeviceSynchronize();
-
-      host_version->streams = gallatin::utils::move_to_device<cudaStream_t>(ext_streams, num_segments);
-
-
-
-      #endif
-
-
-    }
 
 
     GPUErrorCheck(cudaDeviceSynchronize());
@@ -468,7 +292,7 @@ struct alloc_table {
 
 
     // generate structure on device and return pointer.
-  static __host__ my_type *generate_on_device_nowait(uint64_t max_bytes, Gallatin_memory_type ext_memory_control=device_only, bool calloc=false) {
+  static __host__ my_type *generate_on_device_nowait(uint64_t max_bytes, Gallatin_memory_type ext_memory_control=device_only) {
     my_type *host_version;
 
     cudaMallocHost((void **)&host_version, sizeof(my_type));
@@ -561,74 +385,14 @@ struct alloc_table {
 
     host_version->queue_counters = gallatin::utils::get_device_version<uint>(num_segments);
     host_version->queue_free_counters = gallatin::utils::get_device_version<uint>(num_segments);
-    host_version->final_queue_free_counters = gallatin::utils::get_device_version<uint>(num_segments);
 
     gallatin_init_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
         host_version->active_counts, 
         host_version->queue_counters, host_version->queue_free_counters,
-        host_version->final_queue_free_counters,
         host_version->blocks, host_version->queues, num_segments,
         blocks_per_segment);
 
     //GPUErrorCheck(cudaDeviceSynchronize());
-
-
-   
-    if (calloc){
-      
-      printf("\033[1;31mWarning: Calloc is experimental. Performance and correctness are not guaranteed\033[0m\n");
-
-      //uint * calloc_counters;
-
-      //uint * enqueue_position;
-
-      //Block ** calloc_queues;
-
-
-      host_version->calloc_mode = true;
-      host_version->calloc_counters = gallatin::utils::get_device_version<int>(num_segments);
-      host_version->calloc_enqueue_position = gallatin::utils::get_device_version<uint>(num_segments);
-      host_version->calloc_enqueue_finished = gallatin::utils::get_device_version<uint>(num_segments);
-      host_version->calloc_clear_counters = gallatin::utils::get_device_version<uint>(num_segments);
-
-
-
-
-      Block ** ext_calloc_queues;
-      cudaMalloc((void **)&ext_calloc_queues, sizeof(Block *)*blocks_per_segment*num_segments);
-
-      host_version->calloc_queues = ext_calloc_queues;
-
-      init_calloc_counters_kernel<<<(num_segments - 1) / 512 + 1, 512>>>(
-        host_version->calloc_counters,
-        host_version->calloc_enqueue_position,
-        host_version->calloc_enqueue_finished,
-        host_version->calloc_queues,
-        host_version->calloc_clear_counters,
-        num_segments, blocks_per_segment
-      );
-
-       #if GALLATIN_USING_DYNAMIC_PARALLELISM
-
-      cudaStream_t * ext_streams = gallatin::utils::get_host_version<cudaStream_t>(num_segments);
-
-      for (uint64_t i = 0; i < num_segments; i++){
-
-        GPUErrorCheck(cudaStreamCreateWithFlags(&ext_streams[i], cudaStreamNonBlocking));
-
-      }
-
-      cudaDeviceSynchronize();
-
-      host_version->streams = gallatin::utils::move_to_device<cudaStream_t>(ext_streams, num_segments);
-
-
-
-      #endif
-
-
-    }
-
 
 
     // move to device and free host memory.
@@ -657,28 +421,6 @@ struct alloc_table {
 
     cudaDeviceSynchronize();
 
-    #if GALLATIN_USING_DYNAMIC_PARALLELISM
-
-    if (host_version->calloc_mode){
-
-      cudaFree(host_version->calloc_counters);
-      cudaFree(host_version->calloc_enqueue_position);
-      cudaFree(host_version->calloc_enqueue_finished);
-
-      //free cudastreams
-
-      cudaStream_t * host_streams = gallatin::utils::move_to_host<cudaStream_t>(host_version->streams, host_version->num_segments);
-      
-      for (uint64_t i = 0; i < host_version->num_segments; i++){
-        cudaStreamDestroy (host_streams[i]);
-      }
-        
-      cudaFreeHost(host_streams);
-
-    }
-
-    #endif
-
     cudaFree(host_version->blocks);
 
     cudaFree(host_version->chunk_ids);
@@ -697,157 +439,61 @@ struct alloc_table {
 
   }
 
-  // register a tree component
-  __device__ void register_tree(uint64_t segment, uint16_t id) {
-    if (segment >= num_segments) {
-
-      #if GALLATIN_MEM_TABLE_DEBUG
-      printf("Chunk issue: %llu > %llu\n", segment, num_segments);
-      #endif
-
-      #if BETA_TRAP_ON_ERR
-      asm volatile ("trap;");
-      #endif
-
-    }
-
-    chunk_ids[segment] = id;
-  }
-
-  // register a segment from the table.
-  __device__ void register_size(uint64_t segment, uint16_t size) {
-    if (segment >= num_segments) {
-
-      #if GALLATIN_MEM_TABLE_DEBUG
-      printf("Chunk issue\n");
-      #endif
-
-      #if BETA_TRAP_ON_ERR
-      asm volatile ("trap;");
-      #endif
-
-    }
-
-    size += 16;
-
-    chunk_ids[segment] = size;
-  }
-
   // get the void pointer to the start of a segment.
   __device__ char *get_segment_memory_start(uint64_t segment) {
     return memory + bytes_per_segment * segment;
   }
 
-  // claim segment
-  // to claim segment
-  // set tree ID, set malloc_counter
-  // free_counter is set
-  // return;
+  // Claim a segment for a tree.
+  //
+  // Initialization order matters: the tree_id CAS is the *publication* event,
+  // so it must happen LAST, with release ordering. Any thread that later sees
+  // a non-sentinel tree_id (via the acquire-load in read_tree_id) is then
+  // guaranteed to also see the per-segment state initialized below.
   __device__ bool setup_segment(uint64_t segment, uint16_t tree_id) {
-    uint64_t tree_alloc_size = get_tree_alloc_size(tree_id);
-
-    // should stop interlopers
-    bool did_set = set_tree_id(segment, tree_id);
-
-    //this shouldn't fail.
-    if (!did_set){
-
-      #if GALLATIN_MEM_TABLE_DEBUG
-      printf("Failed to set tree id for segment %lu\n", segment);
-      #endif
-
-      return false;
-    }
-
     int num_blocks = get_blocks_per_segment(tree_id);
 
-    //Segments now give out negative counters...
-    //this allows us to A) specify # of blocks exactly on construction.
-    // and B) still give out exact addresses when requesting (still 1 atomic.)
-    //the trigger for a failed block alloc is going negative
-
-
-    for (int i = 0; i < num_blocks; i++){
-      queues[segment*blocks_per_segment+i] = nullptr;
+    // 1. Initialize per-segment state. Plain stores: the release-CAS at the
+    // end orders these for any acquire-side reader.
+    for (int i = 0; i < num_blocks; i++) {
+      queues[segment * blocks_per_segment + i] = nullptr;
     }
 
-    __threadfence();
+    queue_counters[segment] = 0;
+    queue_free_counters[segment] = 0;
+    active_counts[segment] = num_blocks - 1;
 
-    if (calloc_mode){
-
-      atomicExch(&calloc_counters[segment], 0);
-      atomicExch(&calloc_enqueue_position[segment], 0);
-      atomicExch(&calloc_enqueue_finished[segment], 0);
-
-    }
-
-    //modification, boot queue elements
-    //as items can always interact with this, we simply reset.
-    //init with blocks per segment so that mallocs always understand a true count
-    atomicExch(&queue_counters[segment], 0);
-    atomicExch(&queue_free_counters[segment], 0);
-    atomicExch(&final_queue_free_counters[segment], 0);
-
-    int old_active_count = atomicExch(&active_counts[segment], num_blocks-1);
-
-    //init queue counters.
-
-
-    #if GALLATIN_MEM_TABLE_DEBUG
-
-    if (old_active_count != -1){
-      printf("Old active count has live threads: %d\n", old_active_count);
-    }
-
-
-    // if (old_malloc < 0){
-    //   printf("Did not fully reset segment %llu: %d malloc %d free\n", segment, old_malloc, old_free);
-
-    // }
-    #endif
-
-    // if (old_malloc >= 0){
-    //   #if BETA_TRAP_ON_ERR
-    //     asm volatile ("trap;");
-    //   #endif
-    // }
-
-
-    // gate to init is init_new_universe
-    return true;
+    // 2. Publish. set_tree_id is a release-CAS: ~0 -> tree_id. Returns false
+    // if some other thread already claimed the segment (shouldn't happen
+    // while the per-tree lock is held, but the CAS keeps the invariant honest).
+    return set_tree_id(segment, tree_id);
   }
 
 
-  // set the tree id of a segment atomically
-  //  returns true on success.
+  // Publish a segment as belonging to `tree_id`. Release ordering pairs with
+  // the acquire-load in read_tree_id, so prior initialization writes become
+  // visible alongside the new tree_id.
   __device__ bool set_tree_id(uint64_t segment, uint16_t tree_id) {
-    return (atomicCAS((unsigned short int *)&chunk_ids[segment],
-                      (unsigned short int)~0U,
-                      (unsigned short int)tree_id) == (unsigned short int)~0U);
+    uint16_t expected = static_cast<uint16_t>(~0U);
+    return gallatin::utils::cas_release<uint16_t>(&chunk_ids[segment], expected,
+                                                  tree_id);
   }
 
-  // atomically read tree id.
-  // this may be faster with global load lcda instruction
+  // Acquire-load: synchronizes with the release-CAS in set_tree_id /
+  // reset_tree_id. If the returned value is anything other than the ~0
+  // sentinel, all writes the publisher made before that CAS are visible to
+  // this thread.
   __device__ uint16_t read_tree_id(uint64_t segment) {
-
-    #if GALLATIN_TABLE_GLOBAL_READ
-
-      return gallatin::utils::global_read_uint16_t(&chunk_ids[segment]);
-
-    #else
-
-      return atomicCAS((unsigned short int *)&chunk_ids[segment],
-                (unsigned short int)~0U, (unsigned short int)~0U);
-
-    #endif
-
+    return gallatin::utils::load_acquire(&chunk_ids[segment]);
   }
 
-  // return tree id to ~0
+  // Publish: this segment is no longer owned by `tree_id` (~0 sentinel).
+  // Release ordering — any thread that subsequently observes the sentinel via
+  // an acquire load will also see any state the caller wrote before reset.
   __device__ bool reset_tree_id(uint64_t segment, uint16_t tree_id) {
-    return (atomicCAS((unsigned short int *)&chunk_ids[segment],
-                      (unsigned short int)tree_id,
-                      (unsigned short int)~0U) == (unsigned short int)tree_id);
+    uint16_t expected = tree_id;
+    return gallatin::utils::cas_release<uint16_t>(
+        &chunk_ids[segment], expected, static_cast<uint16_t>(~0U));
   }
 
 
@@ -900,15 +546,6 @@ struct alloc_table {
 
   }
 
-  //given that we have already written to an address,
-  //atomicCAS loop to assert that write is finalized.
-  //this is necessary
-  __device__ void finalize_free_queue(uint64_t segment, uint position){
-
-    while (atomicCAS(&final_queue_free_counters[segment], position, position+1) != position);
-
-  }
-
   // request a segment from a block
   // this verifies that the segment is initialized correctly
   // and returns nullptr on failure.
@@ -947,8 +584,6 @@ struct alloc_table {
       //this saves the reset having to be pushed to the main manager.
       return_slot_to_segment(segment_id);
 
-      __threadfence();
-
       return nullptr;
     }
 
@@ -966,18 +601,22 @@ struct alloc_table {
 
     } else {
 
-
       int queue_pos_wrapped = queue_pos % blocks_in_segment;
 
-      //swap out the queue element for nullptr.
-      my_block = (Block *) atomicExch((unsigned long long int *)&queues[segment_id*blocks_per_segment+queue_pos_wrapped], 0ULL);
-
-    }
-
-    if (my_block == nullptr){
-
-      //printf("Bug\n");
-      asm volatile ("trap;");
+      // Acquire-exchange: pair with the release-exchange in reserve_segment_slot.
+      // Any non-null pointer we take out of the queue carries the freeing
+      // thread's reset_free() write with it.
+      //
+      // Retry on nullptr: a producer at the same position has reserved its
+      // slot but not yet exchanged the block_ptr into place. active_counts
+      // pacing guarantees a producer exists for this slot; we just need to
+      // wait for it to publish.
+      Block * empty_marker = nullptr;
+      do {
+        my_block = gallatin::utils::exchange_acquire<Block *>(
+            &queues[segment_id * blocks_per_segment + queue_pos_wrapped],
+            empty_marker);
+      } while (my_block == nullptr);
 
     }
 
@@ -1030,11 +669,6 @@ struct alloc_table {
 
     return offset/get_max_allocations_per_segment();
 
-  }
-
-  // get the tree the segment currently belongs to
-  __device__ int get_tree_from_segment(uint64_t segment) {
-    return chunk_ids[segment];
   }
 
   // helper function for moving from power of two exponent to index
@@ -1103,12 +737,10 @@ struct alloc_table {
       if (segment_id != alt_segment){
         printf("Mismatch on segments in allocation to offset, %llu != %llu\n", segment_id, alt_segment);
 
-        #if BETA_TRAP_ON_ERR
+        #if GALLATIN_TRAP_ON_ERR
         asm volatile ("trap;");
         #endif
       }
-
-
 
       #endif
 
@@ -1126,99 +758,29 @@ struct alloc_table {
 
   }
 
-  //enqueues a block into the calloc storage 
-  __device__ bool calloc_free_block(Block * block_ptr, uint64_t & segment, uint16_t & global_tree_id, uint64_t & num_blocks){
-
-
-    uint current_enqueue_position = atomicAdd(&calloc_enqueue_position[segment],1);
-
-    uint live_enqueue_position = current_enqueue_position % num_blocks;
-
-    uint64_t old_block = atomicExch((unsigned long long int *)&calloc_queues[segment*blocks_per_segment+live_enqueue_position], (unsigned long long int) block_ptr);
-
-
-    while (atomicCAS(&calloc_enqueue_finished[segment], current_enqueue_position, current_enqueue_position+1) != current_enqueue_position);
-    
-    //TODO - make this actually calculate fill.
-    
-    int return_id = atomicAdd(&calloc_counters[segment], 1);
-
-    if (return_id == 0){
-      return true;
-    }
-
-    return false;
-
-  }
-
-
-  //return which index in the queue structure is valid
-  //and start swap
-  //this does not increment find index yet.
-  __device__ uint reserve_segment_slot(Block * block_ptr, uint64_t & segment, uint16_t & global_tree_id, uint64_t & num_blocks){
-
-
-    //system allows for multiple people to reserve simultaneously...
-    //claum 0 - malloc 0, reclaim 0.
-
-
-    //new idea - 4 atomics :[
-    //get unique index via atomicAdd
-    //atomic Exch to set
-    //get unique setter via
-    //then atomicCAS loop on finale
-    //then unset index
-
-
+  // Publish a freed block back into the per-segment queue.
+  //
+  // Release-exchange on the slot pairs with the acquire-exchange in get_block:
+  // any consumer that pulls this block out of the queue is also guaranteed to
+  // see the freeing thread's writes — most importantly the reset_free() that
+  // zeroed the block's free_counter.
+  //
+  // No explicit producer-side serialization: the active_counts pacing bounds
+  // (num_active_mallocs - num_active_frees) within [0, blocks_per_segment], so
+  // each ring slot has at most one in-flight producer at any moment. Consumers
+  // that observe nullptr in their target slot are racing a slow producer and
+  // simply retry (see get_block).
+  __device__ uint reserve_segment_slot(Block *block_ptr, uint64_t &segment,
+                                       uint16_t &global_tree_id,
+                                       uint64_t &num_blocks) {
     uint current_enqueue_position = increment_free_queue_position(segment);
-
     uint live_enqueue_position = current_enqueue_position % num_blocks;
 
-    uint64_t old_block = atomicExch((unsigned long long int *)&queues[segment*blocks_per_segment+live_enqueue_position], (unsigned long long int) block_ptr);
+    gallatin::utils::exchange_release<Block *>(
+        &queues[segment * blocks_per_segment + live_enqueue_position],
+        block_ptr);
 
-    finalize_free_queue(segment, current_enqueue_position);
-
-    //TODO - make this actually calculate fill.
     return live_enqueue_position;
-
-    // uint current_enqueue_position = read_free_queue_position(segment);
-
-
-    // while (true){
-
-    //   uint live_enqueue_position = current_enqueue_position % num_blocks;
-
-    //   uint64_t old_block = atomicCAS((unsigned long long int *)&queues[segment*blocks_per_segment+live_enqueue_position], 0ULL, (unsigned long long int) block_ptr);
-
-    //   if (old_block == 0ULL){
-    //     //success! swapped in successfully
-    //     //signal to other threads that swap is possible.
-
-    //     increment_free_queue_position(segment);
-
-    //     __threadfence();
-    //     return current_enqueue_position;
-
-    //   }
-
-    //   //drat, we failed!
-    //   //we know that slot is occupied, so lets try the next one!
-    //   current_enqueue_position++;
-
-
-    // }
-    
-    //get enqueue position.
-    // uint enqueue_position = increment_free_queue_position(segment) % num_blocks;
-
-    // //swap into queue
-    // atomicExch((unsigned long long int *)&queues[segment*blocks_per_segment+enqueue_position], (unsigned long long int) block_ptr);
-
-
-    // __threadfence();
-
-    // return enqueue_position;
-
   }
 
 
@@ -1238,10 +800,6 @@ struct alloc_table {
 
     return false;
 
-  }
-
-  __device__ uint read_free_queue_position(uint64_t segment){
-    return gallatin::utils::ldca(&queue_free_counters[segment]);
   }
 
   __device__ uint64_t get_bytes_per_segment(){

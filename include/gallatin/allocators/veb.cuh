@@ -55,7 +55,6 @@ void check(T err, const char *const func, const char *const file,
 
 #define VEB_RESTART_CUTOFF 30
 
-#define VEB_GLOBAL_LOAD 1
 #define VEB_MAX_ATTEMPTS 15
 
 namespace gallatin {
@@ -210,21 +209,6 @@ struct layer {
     return get_num_blocks(items_in_universe) * sizeof(uint64_t);
   }
 
-  // given a device layer initialize.
-  __device__ void init_from_array(uint64_t items_in_universe, uint64_t *array) {
-    universe_size = items_in_universe;
-
-    num_blocks = get_num_blocks(items_in_universe);
-
-    for (uint64_t i = 0; i < num_blocks; i++) {
-      bits[i] = ~0ULL;
-    }
-
-    __threadfence();
-
-    return;
-  }
-
   __host__ static void free_on_device(layer *dev_layer) {
     layer *host_layer;
 
@@ -239,23 +223,22 @@ struct layer {
     cudaFreeHost(host_layer);
   }
 
+  // Insert publishes a free slot. release ordering pairs with the consumer's
+  // acquire load in find_next/query, ensuring writes that happened-before the
+  // insert are visible once the consumer observes the bit set.
   __device__ uint64_t insert(uint64_t high, int low) {
-    return atomicOr((unsigned long long int *)&bits[high], SET_BIT_MASK(low));
+    return gallatin::utils::fetch_or_acq_rel<uint64_t>(&bits[high],
+                                                       SET_BIT_MASK(low));
   }
 
+  // Remove publishes an absence (slot has been claimed). release ordering pairs
+  // with consumer acquire loads.
   __device__ uint64_t remove(uint64_t high, int low) {
-    return atomicAnd((unsigned long long int *)&bits[high], ~SET_BIT_MASK(low));
+    return gallatin::utils::fetch_and_acq_rel<uint64_t>(&bits[high],
+                                                        ~SET_BIT_MASK(low));
   }
 
   __device__ int inline find_next(uint64_t high, int low) {
-    // printf("High is %lu, num blocks is %lu\n", high, num_blocks);
-    if (bits == nullptr) {
-
-      #if VEB_DEBUG_PRINTS
-      printf("Nullptr\n");
-      #endif
-    }
-
     if (high >= universe_size) {
       #if VEB_DEBUG_PRINTS
       printf("High issue %lu > %lu\n", high, universe_size);
@@ -263,26 +246,18 @@ struct layer {
       return -1;
     }
 
-#if VEB_GLOBAL_LOAD
-    gallatin::utils::ldca(&bits[high]);
-#endif
+    uint64_t word = gallatin::utils::load_acquire(&bits[high]);
 
     if (low == -1) {
-      return __ffsll(bits[high]) - 1;
+      return __ffsll(word) - 1;
     }
 
-    return __ffsll(bits[high] & ~BITMASK(low + 1)) - 1;
+    return __ffsll(word & ~BITMASK(low + 1)) - 1;
   }
-
-  //__device__ int inline
 
   // returns true if item in bitmask.
   __device__ bool query(uint64_t high, int low) {
-#if VEB_GLOBAL_LOAD
-    gallatin::utils::ldca(&bits[high]);
-#endif
-
-    return (bits[high] & SET_BIT_MASK(low));
+    return (gallatin::utils::load_acquire(&bits[high]) & SET_BIT_MASK(low));
   }
 
   __device__ void set_new_universe(uint64_t items_in_universe) {
@@ -290,34 +265,25 @@ struct layer {
     num_blocks = get_num_blocks(items_in_universe);
 
     for (uint64_t i = 0; i < num_blocks - 1; i++) {
-      atomicOr((unsigned long long int *)&bits[i], ~0ULL);
+      gallatin::utils::fetch_or_acq_rel<uint64_t>(&bits[i], ~0ULL);
     }
 
-    // uint64_t high = items_in_universe / 64;
     uint64_t low = items_in_universe % 64;
 
-    atomicOr((unsigned long long int *)&bits[num_blocks - 1], BITMASK(low));
-
-    return;
+    gallatin::utils::fetch_or_acq_rel<uint64_t>(&bits[num_blocks - 1],
+                                                BITMASK(low));
   }
 
-  //if a failure occurs, rollback previously acquired segments!
-  __device__ void rollback(uint64_t start_block, uint64_t bits_to_set){
-
-    while (bits_to_set > 64){
-
-      atomicOr((unsigned long long int *)&bits[start_block], BITMASK(64));
-
-      bits_to_set-=64;
-
+  // if a failure occurs, rollback previously acquired segments
+  __device__ void rollback(uint64_t start_block, uint64_t bits_to_set) {
+    while (bits_to_set > 64) {
+      gallatin::utils::fetch_or_acq_rel<uint64_t>(&bits[start_block],
+                                                  BITMASK(64));
+      bits_to_set -= 64;
       start_block++;
-
     }
-
-    atomicOr((unsigned long long int *)&bits[start_block], BITMASK(bits_to_set));
-
-    return;
-
+    gallatin::utils::fetch_or_acq_rel<uint64_t>(&bits[start_block],
+                                                BITMASK(bits_to_set));
   }
 
   __device__ uint64_t gather_multiple(uint64_t num_contiguous){
@@ -333,9 +299,9 @@ struct layer {
       //reset counter as we may have failed a previous iteration.
       num_contiguous = num_needed;
 
-      //ldca loads bits, ~ inverts, so __ffsll(~block) is first index that is 0 - first contiguous section to the right.
-      //since this is length need to subtract from 64
-      int contig_start = gallatin::utils::__cfcll(gallatin::utils::ldca(&bits[start_block]));
+      //load bits with acquire ordering; first contiguous run of 1s in the low bits.
+      int contig_start = gallatin::utils::__cfcll(
+          gallatin::utils::load_acquire(&bits[start_block]));
 
       if (contig_start == 0){
         start_block -=1;
@@ -347,7 +313,8 @@ struct layer {
         //special case - attempt to solve
         auto acq_bitmask = BITMASK(num_contiguous) << (contig_start-num_contiguous);
 
-        auto acquired_bits = atomicAnd((unsigned long long int *)&bits[start_block], ~acq_bitmask);
+        auto acquired_bits = gallatin::utils::fetch_and_acq_rel<uint64_t>(
+            &bits[start_block], ~acq_bitmask);
 
         //if acquired bits match exactly.
         if (__popcll(acquired_bits & acq_bitmask) == num_contiguous){
@@ -358,18 +325,19 @@ struct layer {
         } else {
 
           //rollback - only rollback bits that were set.
-          atomicOr((unsigned long long int *)&bits[start_block], (acq_bitmask & acquired_bits));
+          gallatin::utils::fetch_or_acq_rel<uint64_t>(
+              &bits[start_block], acq_bitmask & acquired_bits);
 
-          //try again - since things changed, maybe valid this time - if not, will automatically progress
+          //try again - since things changed, maybe valid this time
           continue;
 
         }
 
       }
 
-      //phases - determine how many blocks available at the start - if more than we need, just attempt?
-
-      auto acquired_bits = atomicAnd((unsigned long long int *)&bits[start_block], ~BITMASK(contig_start));
+      //phases - determine how many blocks available at the start
+      auto acquired_bits = gallatin::utils::fetch_and_acq_rel<uint64_t>(
+          &bits[start_block], ~BITMASK(contig_start));
 
       bool succeeded = true;
 
@@ -383,12 +351,14 @@ struct layer {
 
           start_block--;
 
-          acquired_bits = atomicAnd((unsigned long long int *)&bits[start_block], 0ULL);
+          acquired_bits = gallatin::utils::exchange_acq_rel<uint64_t>(
+              &bits[start_block], 0ULL);
 
           if (__popcll(acquired_bits) != 64){
 
             //undo and rollback
-            atomicOr((unsigned long long int *)&bits[start_block], (unsigned long long int) acquired_bits);
+            gallatin::utils::fetch_or_acq_rel<uint64_t>(
+                &bits[start_block], acquired_bits);
 
             rollback(start_block+1, (num_needed - num_contiguous));
 
@@ -409,19 +379,21 @@ struct layer {
 
         start_block--;
 
-        
+
         //otherwise we need to acquire the last segment.
         //generate last mask and shift up
         auto final_bitmask = BITMASK(num_contiguous) << (64-num_contiguous);
 
-        auto final_bits = atomicAnd((unsigned long long int *)&bits[start_block], ~final_bitmask);
+        auto final_bits = gallatin::utils::fetch_and_acq_rel<uint64_t>(
+            &bits[start_block], ~final_bitmask);
 
         if (__popcll(final_bits & final_bitmask) == num_contiguous){
           return start_block*64+64-num_contiguous;
         } else {
 
           //full reset
-          atomicOr((unsigned long long int *)&bits[start_block], final_bitmask & final_bits);
+          gallatin::utils::fetch_or_acq_rel<uint64_t>(
+              &bits[start_block], final_bitmask & final_bits);
 
           rollback(start_block+1, (num_needed-num_contiguous));
 
@@ -432,9 +404,9 @@ struct layer {
 
       } else {
 
-        //undo and retry
-        //same as before, updated info allows for fast retry.
-        atomicOr((unsigned long long int *)&bits[start_block], acquired_bits & BITMASK(contig_start));
+        //undo and retry - updated info allows for fast retry.
+        gallatin::utils::fetch_or_acq_rel<uint64_t>(
+            &bits[start_block], acquired_bits & BITMASK(contig_start));
 
         continue;
 
@@ -456,70 +428,40 @@ struct layer {
   //only occurs when lower layers fully allocated with gather_multiple.
   __device__ void remove_contiguous(uint64_t start_index, uint64_t num_indices){
 
-
     uint64_t block_index = start_index/64;
-
     int block_start = start_index % 64;
 
-
     while (num_indices + block_start > 64){
-
-
       int num_removed = 64 - block_start;
-
-
       auto bitmask = BITMASK(num_removed) << block_start;
-
-      atomicAnd((unsigned long long int *)&bits[block_index], ~bitmask);
-
+      gallatin::utils::fetch_and_acq_rel<uint64_t>(&bits[block_index], ~bitmask);
       block_start = 0;
-
-      block_index += 1; 
-
+      block_index += 1;
       num_indices -= num_removed;
-
     }
 
-    //finally, unset scragglers.
     auto bitmask = BITMASK(num_indices) << block_start;
-
-    atomicAnd((unsigned long long int *)&bits[block_index], ~bitmask);
-
-    return;
-
-
+    gallatin::utils::fetch_and_acq_rel<uint64_t>(&bits[block_index], ~bitmask);
   }
 
-  //add back multiple bits in a contiguous band
-  //accounts for starting and ending in the middle of a segment!
+  // add back multiple bits in a contiguous band
+  // accounts for starting and ending in the middle of a segment.
   __device__ void return_multiple(uint64_t start_index, uint64_t num_indices){
 
-
     uint64_t block_index = start_index/64;
-
     int block_start = start_index % 64;
 
     while (num_indices + block_start > 64){
-
       int num_added = 64 - block_start;
-
       auto bitmask = BITMASK(num_added) << block_start;
-
-      atomicOr((unsigned long long int *)&bits[block_index], bitmask);
-
+      gallatin::utils::fetch_or_acq_rel<uint64_t>(&bits[block_index], bitmask);
       block_start = 0;
-
-      block_index +=1;
-
+      block_index += 1;
       num_indices -= num_added;
-
     }
 
     auto bitmask = BITMASK(num_indices) << block_start;
-
-    atomicOr((unsigned long long int *)&bits[block_index], bitmask);
-
-
+    gallatin::utils::fetch_or_acq_rel<uint64_t>(&bits[block_index], bitmask);
   }
 
 
@@ -709,28 +651,6 @@ struct veb_tree {
     low = -1;
 
     return (layer < num_layers);
-  }
-
-  __device__ void init_new_universe(uint64_t items_in_universe) {
-    uint64_t ext_universe_size = items_in_universe;
-
-    int max_height = 64 - __builtin_clzll(items_in_universe);
-
-    assert(max_height >= 1);
-    // round up but always assume
-    int ext_num_layers = (max_height - 1) / 6 + 1;
-
-    num_layers = ext_num_layers;
-
-    total_universe = items_in_universe;
-
-    __threadfence();
-
-    for (int i = 0; i < ext_num_layers; i++) {
-      layers[ext_num_layers - 1 - i]->set_new_universe(ext_universe_size);
-
-      ext_universe_size = (ext_universe_size - 1) / 64 + 1;
-    }
   }
 
   // base setup - only works with lowest level
@@ -942,12 +862,6 @@ struct veb_tree {
     }
   }
 
-  // find the first index
-  __device__ uint64_t find_first_valid_index() {
-    if (query(0)) return 0;
-
-    return successor_thorough(0);
-  }
 
   __device__ uint64_t find_random_valid_index(){
 
@@ -1105,58 +1019,40 @@ struct veb_tree {
 
   __device__ void maybe_remove_layer_bits(int layer, uint64_t start_bit, uint64_t bits_to_check){
 
-
     uint64_t working_bit = start_bit;
 
     while (working_bit < start_bit+bits_to_check){
 
-
-
-
-      uint64_t bits = gallatin::utils::ldca(&layers[layer+1]->bits[working_bit]);
+      uint64_t bits =
+          gallatin::utils::load_acquire(&layers[layer+1]->bits[working_bit]);
 
       if (bits == 0){
-
         uint64_t high = working_bit / 64;
-
         int low = working_bit % 64;
-
         layers[layer]->remove(high, low);
-
       }
 
       working_bit++;
-
     }
-
   }
 
   __device__ void maybe_return_layer_bits(int layer, uint64_t start_bit, uint64_t bits_to_check){
 
-
     uint64_t working_bit = start_bit;
 
     while (working_bit < start_bit+bits_to_check){
 
-
-
-
-      uint64_t bits = gallatin::utils::ldca(&layers[layer+1]->bits[working_bit]);
+      uint64_t bits =
+          gallatin::utils::load_acquire(&layers[layer+1]->bits[working_bit]);
 
       if (__popcll(bits) == 64){
-
         uint64_t high = working_bit / 64;
-
         int low = working_bit % 64;
-
         layers[layer]->insert(high, low);
-
       }
 
       working_bit++;
-
     }
-
   }
 
   //grab multiple segments, starting from the back
