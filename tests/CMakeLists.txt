@@ -17,6 +17,11 @@ ConfigureExecutable(global_churn "${CMAKE_CURRENT_SOURCE_DIR}/src/global_churn.c
 # gallatin-segment-recycle-trap bug report. See test source for details.
 ConfigureExecutable(segment_recycle_test "${CMAKE_CURRENT_SOURCE_DIR}/src/segment_recycle_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+# Regression test for andes_fuzz's gallatin_7c44f77 boot-trap report:
+# small allocators must not trap during init even when the per-tree
+# wavefront can't be fully populated.
+ConfigureExecutable(small_allocator_test "${CMAKE_CURRENT_SOURCE_DIR}/src/small_allocator_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
 
 #optional tests
 #these are used for development of new features.

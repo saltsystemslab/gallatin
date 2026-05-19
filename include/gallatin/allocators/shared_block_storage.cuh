@@ -217,6 +217,31 @@ struct pinned_shared_blocks {
   }
 
 
+  // Variant that accepts an explicit per-tree slot count. Used by
+  // generate_on_device_impl to size each tree's wavefront based on what
+  // the allocator can actually afford. `tree_slot_counts[i]` is the
+  // number of pinned-block slots tree i should reserve.
+  static __host__ my_type *generate_on_device_nowait_per_tree(
+      const uint16_t *tree_slot_counts, uint64_t num_trees) {
+    my_type *host_version = gallatin::utils::get_host_version<my_type>();
+
+    per_size_pinned_blocks **host_block_containers =
+        gallatin::utils::get_host_version<per_size_pinned_blocks *>(num_trees);
+
+    for (uint64_t i = 0; i < num_trees; i++) {
+      host_block_containers[i] =
+          per_size_pinned_blocks::generate_on_device_nowait(
+              tree_slot_counts[i]);
+    }
+
+    host_version->block_containers =
+        gallatin::utils::move_to_device<per_size_pinned_blocks *>(
+            host_block_containers, num_trees);
+
+    return gallatin::utils::move_to_device_nowait<my_type>(host_version);
+  }
+
+
   static __host__ void free_on_device(my_type *dev_version) {
     my_type *host_version = gallatin::utils::move_to_host<my_type>(dev_version);
 

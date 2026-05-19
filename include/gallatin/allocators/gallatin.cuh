@@ -178,29 +178,23 @@ static __global__ void assert_empty(veb_tree ** segment_trees, int num_trees){
 // but the sanitizer output becomes unusable noise.
 namespace {
 
-//boot the allocator memory blocks during initialization
-//this loops through the blocks and initializes half as many at each iteration.
+// Boot the per-tree pinned-block wavefront. Each tree's slot count was
+// chosen at init time (see generate_on_device_impl), so we just read it
+// out of per_size_pinned_blocks::num_blocks rather than passing a
+// geometric/clamped recipe. tid 0..(num_blocks-1) of each tree fills
+// that tree's slots; the rest of the grid no-ops for that tree.
 template <typename allocator>
-__global__ void boot_shared_block_container(allocator * alloc, uint16_t max_tree_id, int max_smid, int cutoff){
+__global__ void boot_shared_block_container(allocator *alloc,
+                                            uint16_t max_tree_id) {
+  uint64_t tid = gallatin::utils::get_tid();
 
-	uint64_t tid = gallatin::utils::get_tid();
-
-	uint16_t tree_id = 0;
-
-	while (tree_id < max_tree_id){
-
-		if (tid >= max_smid) return;
-
-		alloc->boot_block(tree_id, tid);
-
-		max_smid = max_smid/2;
-
-		if (max_smid < cutoff) max_smid = cutoff;
-
-		tree_id+=1;
-
-	}
-
+  for (uint16_t tree_id = 0; tree_id < max_tree_id; tree_id++) {
+    uint64_t slot_count =
+        alloc->local_blocks->get_tree_local_blocks(tree_id)->num_blocks;
+    if (tid < slot_count) {
+      alloc->boot_block(tree_id, tid);
+    }
+  }
 }
 
 
@@ -352,17 +346,74 @@ struct Gallatin {
 
     uint64_t max_chunks = get_max_chunks<bytes_per_segment>(max_bytes);
 
+    uint64_t num_trees =
+        get_first_bit_bigger(biggest) - get_first_bit_bigger(smallest) + 1;
+
+    // Hard error if the allocator is below the absolute floor — we can't
+    // honor even one segment per tree.
+    if (max_chunks < num_trees) {
+      fprintf(stderr,
+              "gallatin: allocator size %llu B = %llu segments is below the "
+              "minimum of %llu (one segment per tree). Increase the size or "
+              "shrink the (smallest, biggest) span.\n",
+              (unsigned long long)max_bytes, (unsigned long long)max_chunks,
+              (unsigned long long)num_trees);
+      return nullptr;
+    }
+
+    // Per-tree wavefront sizing. Start from the historical geometric
+    // recipe (blocks_per_pinned_block=128, halve per tree, floor at
+    // MIN_PINNED_CUTOFF), then cap each tree at (num_segments *
+    // blocks_per_segment[tree]) / 4 so the wavefront takes at most ~1/4
+    // of any tree's potential blocks — the rest stays available for
+    // user allocations. The cap matters for large-slice trees where
+    // each slot consumes a whole segment.
+    constexpr uint64_t WAVEFRONT_BUDGET_FRACTION = 4;
+    uint16_t *tree_slot_counts =
+        gallatin::utils::get_host_version<uint16_t>(num_trees);
+
+    uint64_t blocks_per_pinned_block = 128;
+    uint64_t geom = blocks_per_pinned_block;
+    bool any_reduced = false;
+    for (uint16_t t = 0; t < num_trees; ++t) {
+      uint64_t blocks_per_seg =
+          alloc_table<bytes_per_segment, smallest>::get_blocks_per_segment(t);
+      uint64_t budget_cap =
+          (max_chunks * blocks_per_seg) / WAVEFRONT_BUDGET_FRACTION;
+      if (budget_cap == 0) budget_cap = 1;  // always at least one slot
+
+      uint64_t target =
+          geom < MIN_PINNED_CUTOFF ? (uint64_t)MIN_PINNED_CUTOFF : geom;
+      uint64_t actual = target < budget_cap ? target : budget_cap;
+      if (actual < target) any_reduced = true;
+      tree_slot_counts[t] = (uint16_t)actual;
+
+      if (print_info && actual < target) {
+        fprintf(stderr,
+                "gallatin: tree %u (slice %llu B) wavefront reduced %llu "
+                "-> %llu slots (%llu segments × %llu blocks/seg / %llu)\n",
+                (unsigned)t,
+                (unsigned long long)
+                    alloc_table<bytes_per_segment, smallest>::get_tree_alloc_size(t),
+                (unsigned long long)target, (unsigned long long)actual,
+                (unsigned long long)max_chunks,
+                (unsigned long long)blocks_per_seg,
+                (unsigned long long)WAVEFRONT_BUDGET_FRACTION);
+      }
+
+      geom = geom / 2;
+    }
+    (void)any_reduced;
+
     my_type *host_version = get_host_version<my_type>();
 
     host_version->segment_tree =
         veb_tree::generate_on_device_nowait(max_chunks, seed);
 
-    uint64_t blocks_per_pinned_block = 128;
-    host_version->local_blocks = pinned_block_type::generate_on_device_nowait(
-        blocks_per_pinned_block, MIN_PINNED_CUTOFF);
+    host_version->local_blocks =
+        pinned_block_type::generate_on_device_nowait_per_tree(
+            tree_slot_counts, num_trees);
 
-    uint64_t num_trees =
-        get_first_bit_bigger(biggest) - get_first_bit_bigger(smallest) + 1;
     host_version->smallest_bits = get_first_bit_bigger(smallest);
     host_version->num_trees = num_trees;
 
@@ -407,10 +458,20 @@ struct Gallatin {
 
     auto device_version = move_to_device_nowait(host_version);
 
+    // Launch enough threads to fill the largest tree's wavefront. Smaller
+    // trees no-op past their own slot count via the per-tree num_blocks
+    // check inside boot_shared_block_container.
+    uint64_t max_slots = 0;
+    for (uint16_t t = 0; t < num_trees; ++t) {
+      if (tree_slot_counts[t] > max_slots) max_slots = tree_slot_counts[t];
+    }
+    cudaFreeHost(tree_slot_counts);
+
+    constexpr int BOOT_BLOCK_DIM = 128;
+    int boot_grid = (int)((max_slots + BOOT_BLOCK_DIM - 1) / BOOT_BLOCK_DIM);
+    if (boot_grid < 1) boot_grid = 1;
     boot_shared_block_container<my_type>
-        <<<(blocks_per_pinned_block - 1) / 128 + 1, 128>>>(
-            device_version, num_trees, blocks_per_pinned_block,
-            MIN_PINNED_CUTOFF);
+        <<<boot_grid, BOOT_BLOCK_DIM>>>(device_version, (uint16_t)num_trees);
 
     GPUErrorCheck(cudaDeviceSynchronize());
 
@@ -568,7 +629,13 @@ struct Gallatin {
 
 
 
-  //initialize a block for the first time.
+  // Initialize one pinned-wavefront slot at boot. The wavefront is a perf
+  // optimization, not a hard requirement: if the allocator was sized too
+  // small to pre-populate every slot for every tree (most commonly with
+  // large-slice trees, where one slot consumes one segment), we simply
+  // leave that slot empty. The malloc path's get_valid_block already
+  // walks forward when it sees a null slot, so functionally the allocator
+  // just runs with a sparser wavefront for that tree.
   __device__ void boot_block(uint16_t tree_id, int smid){
 
     per_size_pinned_blocks * local_shared_block_storage =
@@ -576,7 +643,7 @@ struct Gallatin {
 
 
     if (smid >= local_shared_block_storage->num_blocks){
-
+      // Bug in the boot kernel — tid range exceeds slot count. Real error.
       printf("ERR %d >= %llu\n", smid, local_shared_block_storage->num_blocks);
 
       #if GALLATIN_TRAP_ON_ERR
@@ -590,14 +657,13 @@ struct Gallatin {
   	Block * new_block = request_new_block_from_tree(tree_id);
 
   	if (new_block == nullptr){
-
-  		printf("Failed to initialize block %d from tree %u", smid, tree_id);
-
-      #if GALLATIN_TRAP_ON_ERR
-      asm volatile ("trap;");
-      #endif
-
-  		return;
+        // No segment available for this tree at boot. Leave the slot empty
+        // (it stays at its post-cudaMemset nullptr state); subsequent
+        // mallocs that target this slot will probe forward in
+        // get_valid_block, find a populated peer, and proceed. No need
+        // to trap — this happens deterministically on small-allocator
+        // configurations and is recoverable.
+        return;
   	}
 
 
