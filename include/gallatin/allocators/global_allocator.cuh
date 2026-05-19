@@ -55,6 +55,17 @@ __host__ inline void init_global_allocator(uint64_t num_bytes, uint64_t seed, bo
 
 }
 
+// Legacy 4-arg overload kept for source compatibility with callers that
+// still pass running_calloc. The flag is ignored — calloc-mode was removed.
+[[deprecated(
+    "running_calloc was removed; calloc-mode no longer exists. Use the "
+    "3-arg init_global_allocator(bytes, seed, print_info).")]]
+__host__ inline void init_global_allocator(uint64_t num_bytes, uint64_t seed,
+                                            bool print_info,
+                                            bool /*running_calloc*/) {
+  init_global_allocator(num_bytes, seed, print_info);
+}
+
 
 __host__ inline void free_global_allocator(){
 
@@ -104,6 +115,15 @@ __host__ inline void init_global_allocator_host(uint64_t num_bytes, uint64_t see
 
   cudaDeviceSynchronize();
 
+}
+
+[[deprecated(
+    "running_calloc was removed; calloc-mode no longer exists. Use the "
+    "3-arg init_global_allocator_host(bytes, seed, print_info).")]]
+__host__ inline void init_global_allocator_host(uint64_t num_bytes,
+                                                 uint64_t seed, bool print_info,
+                                                 bool /*running_calloc*/) {
+  init_global_allocator_host(num_bytes, seed, print_info);
 }
 
 
@@ -156,6 +176,18 @@ __host__ inline void init_global_allocator_combined(uint64_t num_bytes, uint64_t
   init_global_allocator_host(host_bytes, seed, print_info);
 
 
+}
+
+[[deprecated(
+    "running_calloc was removed; calloc-mode no longer exists. Use the "
+    "4-arg init_global_allocator_combined(bytes, host_bytes, seed, "
+    "print_info).")]]
+__host__ inline void init_global_allocator_combined(uint64_t num_bytes,
+                                                     uint64_t host_bytes,
+                                                     uint64_t seed,
+                                                     bool print_info,
+                                                     bool /*running_calloc*/) {
+  init_global_allocator_combined(num_bytes, host_bytes, seed, print_info);
 }
 
 

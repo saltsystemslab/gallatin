@@ -118,12 +118,12 @@ namespace allocators {
 //adds exhausted segments back to their tree.
 
 // MIN_PINNED_CUTOFF is the minimum number of live blocks in the per-tree
-// wavefront. Each pinned block is SMID-keyed (via get_smid() % num_blocks),
-// so a low cutoff means many SMs collide on the same slot and serialize on
-// the block's malloc_counter atomicAdd. Modern data-center GPUs have 100+ SMs
-// (H100=132, RTX 6000 Pro Blackwell=144), so 32 strikes a balance: low
-// per-tree memory overhead (32 Block* = 256B) while keeping the SMID
-// collision factor below 5×.
+// wavefront. Each pinned slot is keyed by (smid ^ warp_in_block ^ blockIdx).
+// Bumping the cutoff higher in principle reduces the per-slot collision
+// factor, but it also makes the boot kernel acquire `cutoff * num_trees`
+// blocks from segment_tree before any user kernel runs — and the largest
+// trees yield only one block per segment, so a high cutoff can saturate
+// the segment budget at startup. 32 is the empirical sweet spot for now.
 
 //Team free controls if opportunistic coalescing is used for frees
 #define REREGISTER_CUTOFF .1
@@ -435,6 +435,38 @@ struct Gallatin {
                                                       uint64_t seed,
                                                       bool print_info = true) {
     return generate_on_device_impl(max_bytes, seed, print_info, managed);
+  }
+
+  // --- Legacy 4-arg overloads -------------------------------------------------
+  // Calloc was removed (it was a failed dynamic-parallelism experiment); the
+  // running_calloc flag is now ignored. These overloads exist to keep
+  // downstream code that still passes the flag (e.g. andes' init wrapper)
+  // compiling, but emit a compile-time deprecation warning so callers migrate.
+  [[deprecated(
+      "running_calloc was removed; calloc-mode no longer exists. Use the "
+      "3-arg generate_on_device(bytes, seed, print_info).")]] static __host__
+      my_type *
+      generate_on_device(uint64_t max_bytes, uint64_t seed, bool print_info,
+                         bool /*running_calloc*/) {
+    return generate_on_device(max_bytes, seed, print_info);
+  }
+
+  [[deprecated(
+      "running_calloc was removed; calloc-mode no longer exists. Use the "
+      "3-arg generate_on_device_host(bytes, seed, print_info).")]] static __host__
+      my_type *
+      generate_on_device_host(uint64_t max_bytes, uint64_t seed,
+                              bool print_info, bool /*running_calloc*/) {
+    return generate_on_device_host(max_bytes, seed, print_info);
+  }
+
+  [[deprecated(
+      "running_calloc was removed; calloc-mode no longer exists. Use the "
+      "3-arg generate_on_device_managed(bytes, seed, "
+      "print_info).")]] static __host__ my_type *
+  generate_on_device_managed(uint64_t max_bytes, uint64_t seed,
+                             bool print_info, bool /*running_calloc*/) {
+    return generate_on_device_managed(max_bytes, seed, print_info);
   }
 
   // return the index of the largest bit set

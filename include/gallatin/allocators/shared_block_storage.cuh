@@ -46,8 +46,6 @@ static __global__ void gallatin_set_block_bitarrs(Block **blocks, uint64_t num_b
 struct per_size_pinned_blocks {
   uint64_t num_blocks;
 
-  uint64_t *block_bitmap;
-
   Block **blocks;
 
   static __host__ per_size_pinned_blocks *generate_on_device(
@@ -56,13 +54,6 @@ struct per_size_pinned_blocks {
 
     per_size_pinned_blocks *host_version =
         gallatin::utils::get_host_version<per_size_pinned_blocks>();
-
-    uint64_t num_uints = (num_blocks - 1) / 64 + 1;
-
-    host_version->block_bitmap =
-        gallatin::utils::get_device_version<uint64_t>(num_uints);
-
-    cudaMemset(host_version->block_bitmap, 0ULL, num_uints * sizeof(uint64_t));
 
     host_version->blocks =
         gallatin::utils::get_device_version<Block *>(num_blocks);
@@ -83,13 +74,6 @@ struct per_size_pinned_blocks {
     per_size_pinned_blocks *host_version =
         gallatin::utils::get_host_version<per_size_pinned_blocks>();
 
-    uint64_t num_uints = (num_blocks - 1) / 64 + 1;
-
-    host_version->block_bitmap =
-        gallatin::utils::get_device_version<uint64_t>(num_uints);
-
-    cudaMemset(host_version->block_bitmap, 0ULL, num_uints * sizeof(uint64_t));
-
     host_version->blocks =
         gallatin::utils::get_device_version<Block *>(num_blocks);
 
@@ -105,10 +89,6 @@ struct per_size_pinned_blocks {
     per_size_pinned_blocks *host_version =
         gallatin::utils::move_to_host<per_size_pinned_blocks>(dev_version);
 
-    // malloc_bitarr::free_on_device(host_version->block_bitmap);
-
-    cudaFree(host_version->block_bitmap);
-
     cudaFree(host_version->blocks);
 
     cudaFreeHost(host_version);
@@ -118,8 +98,15 @@ struct per_size_pinned_blocks {
   // (non-null). Single acquire-load per slot: the previous split into
   // get_valid_block_index + get_my_block did two redundant acquire-loads of
   // the same address on every malloc. Acquire ordering pairs with the
-  // release-CAS in swap_out_nullptr/replace_block — any non-null Block* we
-  // see carries the publisher's init_malloc/free_counter writes with it.
+  // release-CAS in swap_out_nullptr — any non-null Block* we see carries the
+  // publisher's init_malloc/free_counter writes with it.
+  //
+  // NOTE: an experimental per-warp slot key (smid ^ warp ^ blockIdx) was
+  // measured at a 40% regression at the current `MIN_PINNED_CUTOFF=32` on
+  // Blackwell — spreading 8 same-SM warps to 8 different `blocks[slot]`
+  // cachelines bouncing across SMs cost more than the atomic-contention win.
+  // Per-warp keying needs a much larger pool to pay off; revisit when the
+  // boot-cost / per-tree cutoff design lands.
   __device__ Block *get_valid_block(int &out_smid) {
     int my_smid = gallatin::utils::get_smid() % num_blocks;
     int original_smid = my_smid;
@@ -146,17 +133,6 @@ struct per_size_pinned_blocks {
                                                  nullptr);
   }
 
-  // Replace: CAS(old_block -> new_block). new_block must have already had its
-  // metadata (malloc_counter etc.) initialized by the caller; release ordering
-  // makes those initializations visible to any consumer that subsequently
-  // acquire-loads new_block.
-  __device__ bool replace_block(Block *old_block, Block *new_block) {
-    int my_smid = gallatin::utils::get_smid() % num_blocks;
-    Block *expected = old_block;
-    return gallatin::utils::cas_release<Block *>(&blocks[my_smid], expected,
-                                                 new_block);
-  }
-
   // Publish: CAS(nullptr -> block_to_swap). Release ordering ensures the
   // block's prior init_malloc write is visible to any acquire-load of the
   // slot.
@@ -166,39 +142,8 @@ struct per_size_pinned_blocks {
                                                  block_to_swap);
   }
 
-  __device__ bool lock_my_block() {
-    int my_smid = gallatin::utils::get_smid() % num_blocks;
-
-    int high = my_smid / 64;
-    int low = my_smid % 64;
-
-    uint64_t mask = BITMASK(low);
-
-    uint64_t old_bits =
-        atomicOr((unsigned long long int *)&block_bitmap[high], mask);
-
-    return !(old_bits & mask);
-  }
-
-  __device__ bool unlock_my_block() {
-    int my_smid = gallatin::utils::get_smid() % num_blocks;
-
-    int high = my_smid / 64;
-    int low = my_smid % 64;
-
-    uint64_t mask = BITMASK(low);
-
-    uint64_t old_bits =
-        atomicAnd((unsigned long long int *)&block_bitmap[high], ~mask);
-
-    // true if old bit was 1
-    return (old_bits & mask);
-  }
-
   __device__ uint64_t calculate_overhead(){
-
-    return num_blocks/8+num_blocks*sizeof(Block *);
-
+    return num_blocks * sizeof(Block *);
   }
 
 };
