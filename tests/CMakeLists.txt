@@ -13,6 +13,10 @@ ConfigureExecutable(global_test "${CMAKE_CURRENT_SOURCE_DIR}/src/global_test.cu"
 
 ConfigureExecutable(global_churn "${CMAKE_CURRENT_SOURCE_DIR}/src/global_churn.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+# Reproduces the cross-kernel survivor pattern from the
+# gallatin-segment-recycle-trap bug report. See test source for details.
+ConfigureExecutable(segment_recycle_test "${CMAKE_CURRENT_SOURCE_DIR}/src/segment_recycle_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
 
 #optional tests
 #these are used for development of new features.
