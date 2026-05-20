@@ -77,13 +77,14 @@ __global__ void phase_alloc_tree8(uint64_t n, uint64_t **out,
 }
 
 int main(int argc, char **argv) {
-  // 4 GB allocator, ~256 segments. Phase A uses tree 0 (256 blocks/segment,
-  // 4096 slices/block); we allocate ~30% of capacity to make tree-0 spread
-  // across many segments. Phase C wants tree-8 — needs those same segments
-  // to migrate.
+  // 4 GB allocator, ~256 segments. Drain ~60% of allocator capacity in
+  // Phase A so Phase C forces large-scale segment migration without
+  // hitting saturation-contention noise. (At ≥75% capacity 200M threads
+  // produce ~4% misses purely from MAX_ATTEMPTS exhaustion — that's
+  // contention, not a stuck-segment bug, so we leave headroom.)
   uint64_t mem_bytes = 4ULL * 1024 * 1024 * 1024;
-  uint64_t n_threads_tree0 = 16ULL * 1024 * 1024;  // ~256 MB of 16 B slices
-  uint64_t n_threads_tree8 = 64ULL * 1024;          // ~256 MB of 4096 B slices
+  uint64_t n_threads_tree0 = 128ULL * 1024 * 1024;  // 2 GB of 16 B slices
+  uint64_t n_threads_tree8 = 512ULL * 1024;          // 2 GB of 4096 B slices
 
   if (argc > 1) mem_bytes = std::stoull(argv[1]) * 1024ULL * 1024;
 

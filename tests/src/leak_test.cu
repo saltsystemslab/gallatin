@@ -36,8 +36,8 @@ __global__ void alloc_and_free(uint64_t n, uint64_t size,
 
 int main(int argc, char **argv) {
   uint64_t mem_bytes = 4ULL * 1024 * 1024 * 1024;
-  uint32_t cycles = 5;
-  uint64_t n_per_cycle = 256ULL * 1024;
+  uint32_t cycles = 20;
+  uint64_t n_per_cycle = 2ULL * 1024 * 1024;  // 2 M threads
   const uint64_t sizes[4] = {16, 64, 256, 1024};  // span several trees
 
   if (argc > 1) cycles = std::stoul(argv[1]);

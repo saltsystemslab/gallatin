@@ -45,7 +45,7 @@ __global__ void drain_free(uint64_t n, uint64_t **in, uint64_t *corruptions) {
 
 int main(int argc, char **argv) {
   uint64_t mem_bytes = 4ULL * 1024 * 1024 * 1024;  // 4 GB
-  uint32_t cycles = 8;
+  uint32_t cycles = 24;
 
   if (argc > 1) cycles = std::stoul(argv[1]);
   if (argc > 2) mem_bytes = std::stoull(argv[2]) * 1024ULL * 1024;
@@ -55,12 +55,11 @@ int main(int argc, char **argv) {
   // demanding a different tree will see capacity decay.
   const uint64_t sizes[4] = {16, 64, 256, 1024};
 
-  // Each cycle targets the same total bytes (~12.5% of the allocator),
-  // so different sizes ask for very different N. This keeps the work
-  // comparable across cycles and well under the allocator's saturation
-  // ceiling — degradation across cycles cleanly signals a real bug, not
-  // a "we asked for more than fits" artifact.
-  uint64_t target_bytes_per_cycle = mem_bytes / 8;
+  // Each cycle targets 50% of the allocator. High enough that segments
+  // must aggressively recycle across cycles, low enough that successful
+  // allocators saturate cleanly — i.e., any miss is a real sign of
+  // stuck segments / lost blocks, not contention-driven fragmentation.
+  uint64_t target_bytes_per_cycle = mem_bytes / 2;
 
   std::cout << "drain_refill_test:\n"
             << "  allocator = " << (mem_bytes >> 20) << " MB\n"
@@ -111,9 +110,9 @@ int main(int argc, char **argv) {
       break;
     }
 
-    // Since each cycle targets only 12.5% of the allocator, any sensible
-    // allocator should saturate. Anything below 95% success signals a
-    // real problem (segments stuck in a prior tree, lost blocks, etc.).
+    // Each cycle targets 50% of the allocator: well below saturation
+    // for a healthy allocator. Anything below 95% success means a real
+    // problem (segments stuck in a prior tree, lost blocks, etc).
     if (successes * 100 < n * 95) {
       std::cerr << "FAIL: cycle " << c << " size=" << size
                 << " success rate " << (100 * successes / n) << "% < 95%\n";
