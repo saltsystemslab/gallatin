@@ -22,6 +22,13 @@ ConfigureExecutable(segment_recycle_test "${CMAKE_CURRENT_SOURCE_DIR}/src/segmen
 # wavefront can't be fully populated.
 ConfigureExecutable(small_allocator_test "${CMAKE_CURRENT_SOURCE_DIR}/src/small_allocator_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+# Behavioral / invariants tests: segments must migrate between trees;
+# repeated drain/refill must not decay capacity; equal malloc/free pairs
+# must not leak.
+ConfigureExecutable(tree_migration_test "${CMAKE_CURRENT_SOURCE_DIR}/src/tree_migration_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+ConfigureExecutable(drain_refill_test "${CMAKE_CURRENT_SOURCE_DIR}/src/drain_refill_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+ConfigureExecutable(leak_test "${CMAKE_CURRENT_SOURCE_DIR}/src/leak_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
 
 #optional tests
 #these are used for development of new features.
