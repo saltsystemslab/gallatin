@@ -435,10 +435,13 @@ struct Gallatin {
     cudaDeviceSynchronize();
     #endif
 
-    // Per-tree locks, one per 128B cache line.
+    // Per-tree locks, one per 128B cache line. Plus one extra slot at
+    // index `num_trees` used by malloc_segment_allocation for the
+    // global multi-segment grouping lock.
     host_version->tree_locks =
-        gallatin::utils::get_device_version<padded_lock>(num_trees);
-    cudaMemset(host_version->tree_locks, 0, sizeof(padded_lock) * num_trees);
+        gallatin::utils::get_device_version<padded_lock>(num_trees + 1);
+    cudaMemset(host_version->tree_locks, 0,
+               sizeof(padded_lock) * (num_trees + 1));
 
     host_version->table =
         alloc_table<bytes_per_segment, smallest>::generate_on_device_nowait(
@@ -708,6 +711,9 @@ struct Gallatin {
     // Fast bail: no free segments available
     if (segment_tree->is_empty()) return ~0ULL;
 
+    // Lock slot at index `num_trees` is the global multi-segment grouping
+    // lock — separate from per-tree locks. tree_locks is allocated with
+    // num_trees+1 entries for exactly this reason.
     while(!acquire_tree_lock(num_trees));
 
     uint64_t alloc_index = segment_tree->gather_multiple(num_segments_required);

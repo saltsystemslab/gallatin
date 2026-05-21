@@ -29,6 +29,11 @@ ConfigureExecutable(tree_migration_test "${CMAKE_CURRENT_SOURCE_DIR}/src/tree_mi
 ConfigureExecutable(drain_refill_test "${CMAKE_CURRENT_SOURCE_DIR}/src/drain_refill_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 ConfigureExecutable(leak_test "${CMAKE_CURRENT_SOURCE_DIR}/src/leak_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+# Regression for OOB write in malloc_segment_allocation: tree_locks was
+# allocated num_trees entries, but the segment-grouping lock indexes
+# tree_locks[num_trees]. Run under compute-sanitizer to confirm.
+ConfigureExecutable(segment_lock_oob_test "${CMAKE_CURRENT_SOURCE_DIR}/src/segment_lock_oob_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
 
 #optional tests
 #these are used for development of new features.
