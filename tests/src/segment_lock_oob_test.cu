@@ -51,8 +51,15 @@ int main(int argc, char **argv) {
   uint64_t big_bytes = 100ULL * 1024 * 1024;       // 100 MB (matches bug report)
   uint64_t n_bg_threads = 256ULL * 1024;
   uint64_t n_iters = 16;
+  // Sanitizer-only mode: skip background traffic, just exercise the
+  // multi-segment alloc path. The OOB is contention-independent — any
+  // single call to malloc_segment_allocation is enough to trip it.
+  bool sanitizer_mode = false;
 
   if (argc > 1) mem_bytes = std::stoull(argv[1]) * 1024ULL * 1024;
+  if (argc > 2) n_bg_threads = std::stoull(argv[2]);
+  if (argc > 3) n_iters = std::stoull(argv[3]);
+  if (argc > 4 && std::string(argv[4]) == "sanitizer") sanitizer_mode = true;
 
   std::cout << "segment_lock_oob_test:\n"
             << "  allocator = " << (mem_bytes >> 20) << " MB\n"
@@ -70,15 +77,17 @@ int main(int argc, char **argv) {
   *big_ptr = nullptr;
   cudaDeviceSynchronize();
 
-  // Run small allocs and the big alloc concurrently on separate streams so
-  // gallatin's internal locks see real contention when the big alloc
-  // enters malloc_segment_allocation.
   cudaStream_t s_bg, s_big;
   cudaStreamCreate(&s_bg);
   cudaStreamCreate(&s_big);
 
-  background_small_allocs<<<(n_bg_threads - 1) / 256 + 1, 256, 0, s_bg>>>(
-      n_iters, misses);
+  if (!sanitizer_mode) {
+    // Run small allocs and the big alloc concurrently on separate streams
+    // so gallatin's internal locks see real contention when the big alloc
+    // enters malloc_segment_allocation.
+    background_small_allocs<<<(n_bg_threads - 1) / 256 + 1, 256, 0, s_bg>>>(
+        n_iters, misses);
+  }
   big_alloc<<<1, 1, 0, s_big>>>(big_bytes, big_ptr);
 
   cudaError_t err = cudaDeviceSynchronize();

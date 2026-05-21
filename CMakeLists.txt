@@ -30,7 +30,13 @@ endif()
 
 #set(CUDA_TOOLKIT_ROOT_DIR /usr/local/cuda-12.1)
 
-find_package(CUDAToolkit 11.8 REQUIRED)
+find_package(CUDAToolkit 12.8 REQUIRED)
+if(CUDAToolkit_VERSION VERSION_LESS "12.8")
+  message(FATAL_ERROR
+    "Gallatin requires CUDA 12.8 or newer (found ${CUDAToolkit_VERSION}). "
+    "The atomic publish path uses cuda::atomic_ref<uint16_t>, which was "
+    "not supported by libcudacxx until the version that ships with 12.8.")
+endif()
 set(CMAKE_CUDA_RUNTIME_LIBRARY SHARED)
 
 #package manager
