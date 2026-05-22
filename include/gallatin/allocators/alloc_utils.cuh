@@ -212,6 +212,16 @@ __device__ inline uint16_t ldcv(const uint16_t *p) {
   return res;
 }
 
+// Cache-hinted 16-bit load. Not acquire-ordered — matches the legacy
+// PTX (ld.global.ca.u16) and is kept for downstream data_structs/
+// callers that predate the acq/rel rewrite (see ds_utils.cuh's
+// typed_global_read<uint16_t> specialization).
+__device__ inline uint16_t global_read_uint16_t(const uint16_t *p) {
+  uint16_t res;
+  asm volatile("ld.global.ca.u16 %0, [%1];" : "=h"(res) : "l"(p));
+  return res;
+}
+
 
 __device__ inline uint64_t ld_acq(const uint64_t *p) {
   return load_acquire(p);
