@@ -42,6 +42,10 @@ ConfigureExecutable(size_to_tree_overlap_test "${CMAKE_CURRENT_SOURCE_DIR}/src/s
 # Reported regression: 96 GB pool failed where 64 GB worked.
 ConfigureExecutable(large_pool_scaling_test "${CMAKE_CURRENT_SOURCE_DIR}/src/large_pool_scaling_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+# Comprehensive correctness parity test for Gallatin_memory_type::managed
+# (UVM-backed allocator) vs device_only. Plus an oversubscription probe.
+ConfigureExecutable(managed_mode_test "${CMAKE_CURRENT_SOURCE_DIR}/src/managed_mode_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
 
 #optional tests
 #these are used for development of new features.
