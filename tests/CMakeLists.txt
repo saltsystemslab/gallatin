@@ -46,6 +46,10 @@ ConfigureExecutable(large_pool_scaling_test "${CMAKE_CURRENT_SOURCE_DIR}/src/lar
 # (UVM-backed allocator) vs device_only. Plus an oversubscription probe.
 ConfigureExecutable(managed_mode_test "${CMAKE_CURRENT_SOURCE_DIR}/src/managed_mode_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+# Diagnoses where the ~26% "double_malloc" counter in mixed_churn came
+# from by isolating the variables (fixed vs random size, marker scheme).
+ConfigureExecutable(churn_diagnostics_test "${CMAKE_CURRENT_SOURCE_DIR}/src/churn_diagnostics_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
 
 #optional tests
 #these are used for development of new features.

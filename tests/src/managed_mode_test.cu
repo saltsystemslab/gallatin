@@ -83,6 +83,36 @@ __global__ void k_verify_free(allocator_t *alloc, uint64_t n, uint64_t **in,
   alloc->free(p);
 }
 
+// Sustained pressure: N threads each do `rounds` alloc-write-read-free at
+// a fixed size. Detects real concurrent overwrite via `back != marker`
+// (i.e., between this thread's two atomicExchs, another thread wrote the
+// slot). We deliberately do NOT check `prior == 0` — gallatin doesn't
+// zero on free, and previous test sub-runs may leave non-zero bytes in
+// slots they freed. The meaningful contract is "no concurrent live use
+// of the same slot", which back != marker catches.
+__global__ void k_stress(allocator_t *alloc, uint64_t n, int rounds,
+                         uint64_t size, uint64_t *misses,
+                         uint64_t *double_mallocs) {
+  uint64_t tid = gallatin::utils::get_tid();
+  if (tid >= n) return;
+  uint64_t marker = tid + 1;  // +1 so we don't share value with sentinel 0
+  for (int r = 0; r < rounds; ++r) {
+    uint64_t *p = (uint64_t *)alloc->malloc(size);
+    if (p == nullptr) {
+      atomicAdd((unsigned long long int *)misses, 1ULL);
+      continue;
+    }
+    atomicExch((unsigned long long int *)p, marker);
+    uint64_t back = atomicExch((unsigned long long int *)p, 0ULL);
+    if (back != marker)
+      atomicAdd((unsigned long long int *)double_mallocs, 1ULL);
+    alloc->free(p);
+  }
+}
+
+// Same shape as k_stress but with a random size each iteration covering
+// both the slice path (16..4096) and the multi-slice block path (>4096).
+// Same "no prior == 0 check" rationale as k_stress.
 __global__ void k_mixed_churn(allocator_t *alloc, uint64_t n, int rounds,
                               uint64_t *misses, uint64_t *double_mallocs) {
   uint64_t tid = gallatin::utils::get_tid();
@@ -92,17 +122,15 @@ __global__ void k_mixed_churn(allocator_t *alloc, uint64_t n, int rounds,
     hash ^= (hash >> 32);
     hash *= 0xbf58476d1ce4e5b9ULL;
     uint64_t size = 16 + (hash & 0xFFF);  // 16..4111
+    uint64_t marker = tid * 1000ULL + r + 1;
     uint64_t *p = (uint64_t *)alloc->malloc(size);
     if (p == nullptr) {
       atomicAdd((unsigned long long int *)misses, 1ULL);
       continue;
     }
-    uint64_t prior =
-        atomicExch((unsigned long long int *)p, tid * 1000ULL + r + 1);
-    if (prior != 0ULL)
-      atomicAdd((unsigned long long int *)double_mallocs, 1ULL);
+    atomicExch((unsigned long long int *)p, marker);
     uint64_t back = atomicExch((unsigned long long int *)p, 0ULL);
-    if (back != tid * 1000ULL + r + 1)
+    if (back != marker)
       atomicAdd((unsigned long long int *)double_mallocs, 1ULL);
     alloc->free(p);
   }
@@ -271,6 +299,35 @@ static subtest_result run_drain_refill(allocator_t *alloc,
   return r;
 }
 
+// Long-running, fixed-size, high-concurrency churn. Counts misses and
+// double-mallocs. The gallatin_churn test does the same pattern at this
+// scale and passes — if we see corruption here it points to a real
+// allocator issue, not a random-size test artifact.
+static subtest_result run_stress(allocator_t *alloc) {
+  subtest_result r{"stress"};
+  uint64_t n = 1ULL * 1024 * 1024;  // 1 M threads
+  int rounds = 16;                   // 16 M total alloc/free pairs
+  uint64_t size = 64;
+  uint64_t *misses, *double_mallocs;
+  cudaMallocManaged((void **)&misses, sizeof(uint64_t));
+  cudaMallocManaged((void **)&double_mallocs, sizeof(uint64_t));
+  *misses = 0;
+  *double_mallocs = 0;
+  cudaDeviceSynchronize();
+
+  gallatin::utils::timer t;
+  k_stress<<<(n - 1) / 256 + 1, 256>>>(alloc, n, rounds, size, misses,
+                                       double_mallocs);
+  cudaDeviceSynchronize();
+  r.seconds = t.sync_end();
+  r.misses = *misses;
+  r.corruptions = *double_mallocs;
+  r.pass = (r.misses == 0 && r.corruptions == 0);
+  cudaFree(misses);
+  cudaFree(double_mallocs);
+  return r;
+}
+
 static subtest_result run_mixed_churn(allocator_t *alloc) {
   subtest_result r{"mixed_churn"};
   uint64_t n = 256ULL * 1024;  // 256 K threads
@@ -289,14 +346,7 @@ static subtest_result run_mixed_churn(allocator_t *alloc) {
   r.seconds = t.sync_end();
   r.misses = *misses;
   r.corruptions = *double_mallocs;
-  // Pass = no misses. The "double_mallocs" count is informational — both
-  // device_only and managed currently report similar nonzero counts here,
-  // meaning the kernel's prior/back-zero assumption is not a guarantee
-  // gallatin makes. We surface it but don't fail the run on this signal.
-  r.pass = (r.misses == 0);
-  if (r.corruptions > 0) {
-    r.note = "double_mallocs counter is informational only — see source";
-  }
+  r.pass = (r.misses == 0 && r.corruptions == 0);
   cudaFree(misses);
   cudaFree(double_mallocs);
   return r;
@@ -321,6 +371,7 @@ run_all(Gallatin_memory_type mode, uint64_t pool_bytes) {
   results.push_back(run_concurrent(alloc, pool_bytes));
   results.push_back(run_tree_migration(alloc));
   results.push_back(run_drain_refill(alloc, pool_bytes));
+  results.push_back(run_stress(alloc));
   results.push_back(run_mixed_churn(alloc));
 
   allocator_t::free_on_device(alloc);
@@ -352,11 +403,7 @@ static int compare_results(const std::vector<subtest_result> &dev,
   std::cout << "\n[parity]\n";
   for (size_t i = 0; i < dev.size(); ++i) {
     bool same_pass = (dev[i].pass == mgr[i].pass);
-    // mixed_churn's corruption count is informational and inherently
-    // racy (see comment in run_mixed_churn) — don't require parity on it.
-    bool corruption_relevant = (dev[i].name != "mixed_churn");
-    bool same_corruption =
-        !corruption_relevant || (dev[i].corruptions == mgr[i].corruptions);
+    bool same_corruption = (dev[i].corruptions == mgr[i].corruptions);
     std::cout << "  " << (same_pass && same_corruption ? "OK  " : "DIFF")
               << "  " << dev[i].name
               << "  device(pass=" << dev[i].pass
