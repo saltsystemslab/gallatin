@@ -45,7 +45,10 @@ static __device__ global_allocator_type * global_gallatin = nullptr;
 static __device__ global_allocator_type * global_host_gallatin = nullptr;
 
 
-__host__ inline void init_global_allocator(uint64_t num_bytes, uint64_t seed, bool print_info=true){
+// Returns true on success, false if the underlying generate_on_device
+// failed (e.g., pre-flight OOM check). Existing callers that treat this
+// as void continue to work — the return value is opt-in.
+__host__ inline bool init_global_allocator(uint64_t num_bytes, uint64_t seed, bool print_info=true){
 
   global_allocator_type * local_copy = global_allocator_type::generate_on_device(num_bytes, seed, print_info);
 
@@ -53,6 +56,7 @@ __host__ inline void init_global_allocator(uint64_t num_bytes, uint64_t seed, bo
 
   cudaDeviceSynchronize();
 
+  return local_copy != nullptr;
 }
 
 // Legacy 4-arg overload kept for source compatibility with callers that
@@ -60,10 +64,10 @@ __host__ inline void init_global_allocator(uint64_t num_bytes, uint64_t seed, bo
 [[deprecated(
     "running_calloc was removed; calloc-mode no longer exists. Use the "
     "3-arg init_global_allocator(bytes, seed, print_info).")]]
-__host__ inline void init_global_allocator(uint64_t num_bytes, uint64_t seed,
+__host__ inline bool init_global_allocator(uint64_t num_bytes, uint64_t seed,
                                             bool print_info,
                                             bool /*running_calloc*/) {
-  init_global_allocator(num_bytes, seed, print_info);
+  return init_global_allocator(num_bytes, seed, print_info);
 }
 
 

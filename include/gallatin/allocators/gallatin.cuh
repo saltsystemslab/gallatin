@@ -361,6 +361,53 @@ struct Gallatin {
       return nullptr;
     }
 
+    // Pre-flight OOM check. The boot path issues a number of cudaMallocs
+    // (segment memory, blocks, queues, chunk_ids, vEB layers, locks,
+    // wavefront). On a near-full GPU these fail mid-boot, leaving the
+    // allocator in a half-initialized state and producing confusing
+    // downstream errors. Estimate the total request and fail fast with
+    // a clear message if it can't fit.
+    if (memory_control == device_only) {
+      constexpr uint64_t blocks_per_segment =
+          bytes_per_segment / (smallest * 4096);
+
+      const uint64_t segment_memory_bytes = bytes_per_segment * max_chunks;
+      const uint64_t blocks_bytes =
+          sizeof(Block) * blocks_per_segment * max_chunks;
+      const uint64_t queues_bytes =
+          sizeof(Block *) * blocks_per_segment * max_chunks;
+      const uint64_t chunk_ids_bytes = sizeof(uint16_t) * max_chunks;
+      // vEB tree (segment_tree + num_trees sub_trees), tree_locks, and
+      // wavefront storage are small in absolute terms but scale with
+      // max_chunks. Conservative estimate: ~16 B per segment per tree
+      // for vEB bitmaps + a few KB for the wavefront.
+      const uint64_t veb_bytes =
+          (uint64_t)(num_trees + 1) * (max_chunks / 4 + 64);
+      const uint64_t misc_bytes = 4ULL * 1024 * 1024;  // round overhead pad
+
+      const uint64_t required_bytes = segment_memory_bytes + blocks_bytes +
+                                      queues_bytes + chunk_ids_bytes +
+                                      veb_bytes + misc_bytes;
+
+      size_t free_b = 0, total_b = 0;
+      cudaMemGetInfo(&free_b, &total_b);
+
+      if (required_bytes > free_b) {
+        fprintf(stderr,
+                "gallatin: OOM at boot — requested %.2f GB pool needs ~%.2f GB "
+                "total GPU memory (segments + blocks + queues + bookkeeping), "
+                "but only %.2f GB of %.2f GB is free on the device. Reduce "
+                "the pool size by at least %.2f GB, or use "
+                "Gallatin_memory_type::managed to spill to host.\n",
+                (double)max_bytes / (1024.0 * 1024 * 1024),
+                (double)required_bytes / (1024.0 * 1024 * 1024),
+                (double)free_b / (1024.0 * 1024 * 1024),
+                (double)total_b / (1024.0 * 1024 * 1024),
+                (double)(required_bytes - free_b) / (1024.0 * 1024 * 1024));
+        return nullptr;
+      }
+    }
+
     // Per-tree wavefront sizing. Start from the historical geometric
     // recipe (blocks_per_pinned_block=128, halve per tree, floor at
     // MIN_PINNED_CUTOFF), then cap each tree at (num_segments *

@@ -34,6 +34,14 @@ ConfigureExecutable(leak_test "${CMAKE_CURRENT_SOURCE_DIR}/src/leak_test.cu" "${
 # tree_locks[num_trees]. Run under compute-sanitizer to confirm.
 ConfigureExecutable(segment_lock_oob_test "${CMAKE_CURRENT_SOURCE_DIR}/src/segment_lock_oob_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+# Reproduces the andes report that global_malloc(N) for N between two
+# slice-tree sizes returns an undersized slice and causes overlap.
+ConfigureExecutable(size_to_tree_overlap_test "${CMAKE_CURRENT_SOURCE_DIR}/src/size_to_tree_overlap_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
+# Probes whether gallatin scales cleanly above 64 GB / 4096 segments.
+# Reported regression: 96 GB pool failed where 64 GB worked.
+ConfigureExecutable(large_pool_scaling_test "${CMAKE_CURRENT_SOURCE_DIR}/src/large_pool_scaling_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
 
 #optional tests
 #these are used for development of new features.
