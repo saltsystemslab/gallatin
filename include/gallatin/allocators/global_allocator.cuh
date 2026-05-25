@@ -40,23 +40,38 @@ namespace allocators {
 
 using global_allocator_type = gallatin::allocators::Gallatin<16ULL*1024*1024, 16ULL, 4096ULL>;
 
-__device__ global_allocator_type * global_gallatin;
+static __device__ global_allocator_type * global_gallatin = nullptr;
 
-__device__ global_allocator_type * global_host_gallatin;
+static __device__ global_allocator_type * global_host_gallatin = nullptr;
 
 
-__host__ void init_global_allocator(uint64_t num_bytes, uint64_t seed, bool print_info=true, bool running_calloc=false){
+// Returns true on success, false if the underlying generate_on_device
+// failed (e.g., pre-flight OOM check). Existing callers that treat this
+// as void continue to work — the return value is opt-in.
+__host__ inline bool init_global_allocator(uint64_t num_bytes, uint64_t seed, bool print_info=true){
 
-  global_allocator_type * local_copy = global_allocator_type::generate_on_device(num_bytes, seed, print_info, running_calloc);
+  global_allocator_type * local_copy = global_allocator_type::generate_on_device(num_bytes, seed, print_info);
 
   cudaMemcpyToSymbol(global_gallatin, &local_copy, sizeof(global_allocator_type *));
 
   cudaDeviceSynchronize();
 
+  return local_copy != nullptr;
+}
+
+// Legacy 4-arg overload kept for source compatibility with callers that
+// still pass running_calloc. The flag is ignored — calloc-mode was removed.
+[[deprecated(
+    "running_calloc was removed; calloc-mode no longer exists. Use the "
+    "3-arg init_global_allocator(bytes, seed, print_info).")]]
+__host__ inline bool init_global_allocator(uint64_t num_bytes, uint64_t seed,
+                                            bool print_info,
+                                            bool /*running_calloc*/) {
+  return init_global_allocator(num_bytes, seed, print_info);
 }
 
 
-__host__ void free_global_allocator(){
+__host__ inline void free_global_allocator(){
 
 
   global_allocator_type * local_copy;
@@ -69,21 +84,20 @@ __host__ void free_global_allocator(){
 
 }
 
-__device__ void * global_malloc(uint64_t num_bytes){
+__device__ inline void * global_malloc(uint64_t num_bytes){
 
   return global_gallatin->malloc(num_bytes);
 
 }
 
-__device__ void global_free(void * ptr){
+__device__ inline void global_free(void * ptr){
 
   global_gallatin->free(ptr);
 
 }
 
 
-
-__host__ void print_global_stats(){
+__host__ inline void print_global_stats(){
 
   global_allocator_type * local_copy;
 
@@ -97,9 +111,9 @@ __host__ void print_global_stats(){
 }
 
 //host_init
-__host__ void init_global_allocator_host(uint64_t num_bytes, uint64_t seed, bool print_info=true, bool running_calloc=false){
+__host__ inline void init_global_allocator_host(uint64_t num_bytes, uint64_t seed, bool print_info=true){
 
-  global_allocator_type * local_copy = global_allocator_type::generate_on_device_host(num_bytes, seed, print_info, running_calloc);
+  global_allocator_type * local_copy = global_allocator_type::generate_on_device_host(num_bytes, seed, print_info);
 
   cudaMemcpyToSymbol(global_host_gallatin, &local_copy, sizeof(global_allocator_type *));
 
@@ -107,8 +121,17 @@ __host__ void init_global_allocator_host(uint64_t num_bytes, uint64_t seed, bool
 
 }
 
+[[deprecated(
+    "running_calloc was removed; calloc-mode no longer exists. Use the "
+    "3-arg init_global_allocator_host(bytes, seed, print_info).")]]
+__host__ inline void init_global_allocator_host(uint64_t num_bytes,
+                                                 uint64_t seed, bool print_info,
+                                                 bool /*running_calloc*/) {
+  init_global_allocator_host(num_bytes, seed, print_info);
+}
 
-__host__ void free_global_allocator_host(){
+
+__host__ inline void free_global_allocator_host(){
 
 
   global_allocator_type * local_copy;
@@ -121,13 +144,13 @@ __host__ void free_global_allocator_host(){
 
 }
 
-__device__ void * global_malloc_host(uint64_t num_bytes){
+__device__ inline void * global_malloc_host(uint64_t num_bytes){
 
   return global_host_gallatin->malloc(num_bytes);
 
 }
 
-__device__ void global_free_host(void * ptr){
+__device__ inline void global_free_host(void * ptr){
 
   global_host_gallatin->free(ptr);
 
@@ -135,7 +158,7 @@ __device__ void global_free_host(void * ptr){
 
 
 
-__host__ void print_global_stats_host(){
+__host__ inline void print_global_stats_host(){
 
   global_allocator_type * local_copy;
 
@@ -151,23 +174,35 @@ __host__ void print_global_stats_host(){
 
 
 //mixed malloc init
-__host__ void init_global_allocator_combined(uint64_t num_bytes, uint64_t host_bytes, uint64_t seed, bool print_info=true, bool running_calloc=false){
+__host__ inline void init_global_allocator_combined(uint64_t num_bytes, uint64_t host_bytes, uint64_t seed, bool print_info=true){
 
-  init_global_allocator(num_bytes, seed, print_info, running_calloc);
-  init_global_allocator_host(host_bytes, seed, print_info, running_calloc);
+  init_global_allocator(num_bytes, seed, print_info);
+  init_global_allocator_host(host_bytes, seed, print_info);
 
 
 }
 
+[[deprecated(
+    "running_calloc was removed; calloc-mode no longer exists. Use the "
+    "4-arg init_global_allocator_combined(bytes, host_bytes, seed, "
+    "print_info).")]]
+__host__ inline void init_global_allocator_combined(uint64_t num_bytes,
+                                                     uint64_t host_bytes,
+                                                     uint64_t seed,
+                                                     bool print_info,
+                                                     bool /*running_calloc*/) {
+  init_global_allocator_combined(num_bytes, host_bytes, seed, print_info);
+}
 
-__host__ void free_global_allocator_combined(){
+
+__host__ inline void free_global_allocator_combined(){
 
   free_global_allocator();
   free_global_allocator_host();
 
 }
 
-__device__ void * global_malloc_combined(uint64_t num_bytes, bool on_host=false){
+__device__ inline void * global_malloc_combined(uint64_t num_bytes, bool on_host=false){
 
   if (on_host){
     return global_malloc_host(num_bytes);
@@ -177,7 +212,7 @@ __device__ void * global_malloc_combined(uint64_t num_bytes, bool on_host=false)
 
 }
 
-__device__ void global_free_combined(void * ptr, bool on_host=false){
+__device__ inline void global_free_combined(void * ptr, bool on_host=false){
 
   if (on_host){
     return global_free_host(ptr);
@@ -192,7 +227,7 @@ __device__ void global_free_combined(void * ptr, bool on_host=false){
 //then fall back to host on failure
 //this allows for a data structure to expand cleanly to host
 // this does NOT perform caching - pointers are stable until free is called.
-__device__ void * global_malloc_fused(uint64_t num_bytes){
+__device__ inline void * global_malloc_fused(uint64_t num_bytes){
 
   void * alloc = global_malloc(num_bytes);
 
@@ -204,7 +239,7 @@ __device__ void * global_malloc_fused(uint64_t num_bytes){
 
 }
 
-__device__ void global_free_fused(void * ptr){
+__device__ inline void global_free_fused(void * ptr){
 
   if (global_gallatin->owns_allocation(ptr)){
     global_free(ptr);
@@ -220,7 +255,7 @@ __device__ void global_free_fused(void * ptr){
 
 
 
-__host__ void print_global_stats_combined(){
+__host__ inline void print_global_stats_combined(){
 
   printf("Device Allocator:\n");
 
@@ -237,7 +272,7 @@ __host__ void print_global_stats_combined(){
 
 //writes poison directly before and after the region.
 //TODO - add check and fill in extra with poison.
-__device__ void * global_malloc_poison(uint64_t bytes_needed){
+__device__ inline void * global_malloc_poison(uint64_t bytes_needed){
 
   //need to promote this to power of 2.
   //if (bytes_needed < 16) bytes_needed = 16;
@@ -260,24 +295,20 @@ __device__ void * global_malloc_poison(uint64_t bytes_needed){
   char * memory_end = (char *) (memory_as_bytes + 16 + bytes_needed);
 
   for (uint64_t i = 0; i < extra_bytes; i++){
-
     memory_end[i] = (char) i;
-
   }
 
-  atomicExch((unsigned long long int *)&poison_start[0], bytes_needed);
-
-  atomicExch((unsigned long long int *)&poison_start[1], extra_bytes);
-
-  atomicExch((unsigned long long int *)&poison_end[0], bytes_needed);
-
-  atomicExch((unsigned long long int *)&poison_end[1], extra_bytes);
+  // The allocator's malloc serves as the publication boundary for this
+  // allocation, so plain stores into poison_start/poison_end are sufficient.
+  poison_start[0] = bytes_needed;
+  poison_start[1] = extra_bytes;
+  poison_end[0] = bytes_needed;
+  poison_end[1] = extra_bytes;
 
   return (void *) (memory_as_bytes + 16);
-
 }
 
-__device__ bool global_check_poison(void * allocation){
+__device__ inline bool global_check_poison(void * allocation){
 
   if (allocation == nullptr){
     printf("Poison violated 0\n");
@@ -319,7 +350,7 @@ __device__ bool global_check_poison(void * allocation){
 
   if (poison_end[1] != extra_bytes){
     printf("Poison violated 3\n");
-    return;
+    return false;
   } 
 
 
@@ -344,7 +375,7 @@ __device__ bool global_check_poison(void * allocation){
 }
 
 
-__device__ void global_free_poison(void * allocation){
+__device__ inline void global_free_poison(void * allocation){
 
   global_check_poison(allocation);
 
@@ -356,6 +387,17 @@ __device__ void global_free_poison(void * allocation){
 
 }
 
+__device__ inline uint64_t global_get_tree_bytes_in_use(uint16_t tree_id){
+  return global_gallatin->get_tree_bytes_in_use(tree_id);
+}
+
+__device__ inline bool is_global_allocator_init(){
+  return global_gallatin != nullptr;
+}
+
+__device__ inline bool is_global_host_allocator_init(){
+  return global_host_gallatin != nullptr;
+}
 
 }  // namespace allocators
 

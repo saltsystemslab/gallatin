@@ -6,6 +6,7 @@
 #include <cooperative_groups/scan.h>
 #include <cuda.h>
 #include <cuda_runtime_api.h>
+#include <cuda/atomic>
 
 #include "assert.h"
 #include "stdio.h"
@@ -37,6 +38,119 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 namespace gallatin {
 
 namespace utils {
+
+// ---------------------------------------------------------------------------
+// Atomic ordering helpers
+//
+// Gallatin's hot paths perform a lot of cross-thread publication: one thread
+// initializes a Block/segment/vEB bit and another thread (often on a different
+// SM) is expected to observe both the new value and any prior writes the
+// publisher did. Historically this codebase used `ldca`/`ld.global.ca` (cache
+// hints, NOT acquire ordering) and bare `atomic*` intrinsics (relaxed in the
+// PTX 6.0+ memory model). The wrappers below give us correct release / acquire
+// semantics via `cuda::atomic_ref`, which lowers to native `.acquire` /
+// `.release` PTX on sm_70+ and to a fence-emulated fallback elsewhere.
+//
+// Scope is fixed to thread_scope_device — Gallatin's publisher and consumer
+// can live on different SMs, but always on the same GPU.
+// ---------------------------------------------------------------------------
+
+template <typename T>
+using gallatin_atomic_ref = cuda::atomic_ref<T, cuda::thread_scope_device>;
+
+template <typename T>
+__device__ inline T load_acquire(const T *p) {
+  return gallatin_atomic_ref<T>(*const_cast<T *>(p))
+      .load(cuda::memory_order_acquire);
+}
+
+template <typename T>
+__device__ inline T load_relaxed(const T *p) {
+  return gallatin_atomic_ref<T>(*const_cast<T *>(p))
+      .load(cuda::memory_order_relaxed);
+}
+
+template <typename T>
+__device__ inline void store_release(T *p, T v) {
+  gallatin_atomic_ref<T>(*p).store(v, cuda::memory_order_release);
+}
+
+template <typename T>
+__device__ inline void store_relaxed(T *p, T v) {
+  gallatin_atomic_ref<T>(*p).store(v, cuda::memory_order_relaxed);
+}
+
+template <typename T>
+__device__ inline T exchange_acq_rel(T *p, T v) {
+  return gallatin_atomic_ref<T>(*p).exchange(v, cuda::memory_order_acq_rel);
+}
+
+template <typename T>
+__device__ inline T exchange_acquire(T *p, T v) {
+  return gallatin_atomic_ref<T>(*p).exchange(v, cuda::memory_order_acquire);
+}
+
+template <typename T>
+__device__ inline T exchange_release(T *p, T v) {
+  return gallatin_atomic_ref<T>(*p).exchange(v, cuda::memory_order_release);
+}
+
+template <typename T>
+__device__ inline T fetch_or_acq_rel(T *p, T v) {
+  return gallatin_atomic_ref<T>(*p).fetch_or(v, cuda::memory_order_acq_rel);
+}
+
+template <typename T>
+__device__ inline T fetch_and_acq_rel(T *p, T v) {
+  return gallatin_atomic_ref<T>(*p).fetch_and(v, cuda::memory_order_acq_rel);
+}
+
+template <typename T>
+__device__ inline T fetch_or_relaxed(T *p, T v) {
+  return gallatin_atomic_ref<T>(*p).fetch_or(v, cuda::memory_order_relaxed);
+}
+
+template <typename T>
+__device__ inline T fetch_and_relaxed(T *p, T v) {
+  return gallatin_atomic_ref<T>(*p).fetch_and(v, cuda::memory_order_relaxed);
+}
+
+template <typename T>
+__device__ inline T fetch_add_acq_rel(T *p, T v) {
+  return gallatin_atomic_ref<T>(*p).fetch_add(v, cuda::memory_order_acq_rel);
+}
+
+template <typename T>
+__device__ inline T fetch_add_relaxed(T *p, T v) {
+  return gallatin_atomic_ref<T>(*p).fetch_add(v, cuda::memory_order_relaxed);
+}
+
+template <typename T>
+__device__ inline T fetch_sub_acq_rel(T *p, T v) {
+  return gallatin_atomic_ref<T>(*p).fetch_sub(v, cuda::memory_order_acq_rel);
+}
+
+// Strong CAS. `expected` is updated on failure. Returns true on success.
+template <typename T>
+__device__ inline bool cas_acquire(T *p, T &expected, T desired) {
+  return gallatin_atomic_ref<T>(*p).compare_exchange_strong(
+      expected, desired, cuda::memory_order_acquire,
+      cuda::memory_order_relaxed);
+}
+
+template <typename T>
+__device__ inline bool cas_release(T *p, T &expected, T desired) {
+  return gallatin_atomic_ref<T>(*p).compare_exchange_strong(
+      expected, desired, cuda::memory_order_release,
+      cuda::memory_order_relaxed);
+}
+
+template <typename T>
+__device__ inline bool cas_acq_rel(T *p, T &expected, T desired) {
+  return gallatin_atomic_ref<T>(*p).compare_exchange_strong(
+      expected, desired, cuda::memory_order_acq_rel,
+      cuda::memory_order_acquire);
+}
 
 __device__ inline uint ldca(const uint *p) {
   uint res;
@@ -98,46 +212,39 @@ __device__ inline uint16_t ldcv(const uint16_t *p) {
   return res;
 }
 
-
-__device__ inline uint64_t ld_acq(const uint64_t *p) {
-  uint64_t res;
-  asm volatile("ld.gpu.acquire.u64 %0, [%1];" : "=l"(res) : "l"(p));
-  return res;
-
-  // return atomicOr((unsigned long long int *)p, 0ULL);
-}
-
-__device__ inline uint16_t ld_acq(const uint16_t *p) {
-  uint16_t res;
-  asm volatile("ld.gpu.acquire.u16 %0, [%1];" : "=h"(res) : "l"(p));
-  return res;
-}
-
-
-__device__ inline void st_rel(const uint64_t *p, uint64_t store_val) {
-  
-  asm volatile("st.gpu.release.u64 [%0], %1;" :: "l"(p), "l"(store_val) : "memory");
-
-  // return atomicOr((unsigned long long int *)p, 0ULL);
-}
-
-
-
-
-
+// Cache-hinted 16-bit load. Not acquire-ordered — matches the legacy
+// PTX (ld.global.ca.u16) and is kept for downstream data_structs/
+// callers that predate the acq/rel rewrite (see ds_utils.cuh's
+// typed_global_read<uint16_t> specialization).
 __device__ inline uint16_t global_read_uint16_t(const uint16_t *p) {
   uint16_t res;
   asm volatile("ld.global.ca.u16 %0, [%1];" : "=h"(res) : "l"(p));
   return res;
 }
 
-//this does not guarantee visibility to other threads.=
-__device__ inline void global_store_byte(const char *p, char byte) {
- 
-  asm volatile("st.global.wb.u8 [%0], %1;" :: "l"(p), "h"((uint16_t) byte));
-  
-  return;
+
+__device__ inline uint64_t ld_acq(const uint64_t *p) {
+  return load_acquire(p);
 }
+
+__device__ inline uint16_t ld_acq(const uint16_t *p) {
+  return load_acquire(p);
+}
+
+__device__ inline uint32_t ld_acq(const uint32_t *p) {
+  return load_acquire(p);
+}
+
+__device__ inline void st_rel(uint64_t *p, uint64_t store_val) {
+  store_release(p, store_val);
+}
+
+__device__ inline void st_rel(uint32_t *p, uint32_t store_val) {
+  store_release(p, store_val);
+}
+
+
+
 
 
 __device__ inline void *ldca(void *const *p) {
@@ -185,7 +292,7 @@ __device__ inline uint64_t get_clock_time() {
   return res;
 }
 
-__device__ uint get_smid() {
+__device__ inline uint get_smid() {
   uint ret;
 
   asm("mov.u32 %0, %smid;" : "=r"(ret));
@@ -193,7 +300,7 @@ __device__ uint get_smid() {
   return ret;
 }
 
-__host__ int get_num_streaming_multiprocessors(int which_device) {
+__host__ inline int get_num_streaming_multiprocessors(int which_device) {
   cudaDeviceProp prop;
   cudaGetDeviceProperties(&prop, which_device);
   int mp = prop.multiProcessorCount;
@@ -211,7 +318,7 @@ __host__ uint64_t get_max_chunks() {
   return mem_total / bytes_per_chunk;
 }
 
-__host__ void print_mem_in_use() {
+__host__ inline void print_mem_in_use() {
   size_t mem_total;
   size_t mem_free;
   cudaMemGetInfo(&mem_free, &mem_total);
@@ -397,13 +504,13 @@ static __host__ __device__ int get_first_bit_bigger(uint64_t counter) {
 #endif
 }
 
-__device__ uint64_t get_tid() {
+__device__ inline uint64_t get_tid() {
   return ((uint64_t)threadIdx.x) + ((uint64_t)blockIdx.x) * ((uint64_t) blockDim.x);
 }
 
 
 template <typename team_type>
-__device__ uint64_t get_tile_tid(team_type team) {
+__device__ inline uint64_t get_tile_tid(team_type team) {
 
 
   return ((uint64_t) team.meta_group_rank()) + ((uint64_t)blockIdx.x) * ((uint64_t) team.meta_group_size());
@@ -411,7 +518,7 @@ __device__ uint64_t get_tile_tid(team_type team) {
 }
 
 template <uint team_size>
-__device__ uint64_t get_team_tid(cg::thread_block_tile<team_size> team) {
+__device__ inline uint64_t get_team_tid(cg::thread_block_tile<team_size> team) {
 
   uint64_t block_id = blockIdx.x;
 
@@ -423,21 +530,21 @@ __device__ uint64_t get_team_tid(cg::thread_block_tile<team_size> team) {
 
 }
 
-__device__ void cooperative_copy(char *dst, char *src, uint64_t num_bytes) {
+__device__ inline void cooperative_copy(char *dst, char *src, uint64_t num_bytes) {
   for (uint64_t i = threadIdx.x; i < num_bytes; i += blockDim.x) {
     dst[i] = src[i];
   }
 }
 
 template <typename T>
-__device__ void cooperative_copy(T *dst, T *src) {
+__device__ inline void cooperative_copy(T *dst, T *src) {
   return cooperative_copy((char *)dst, (char *)src, sizeof(T));
 }
 
 
 //count first contiguous - ll variant
 //return # of contiguous 1s present in lower order bits
-__device__ int __cfcll(uint64_t bits){
+__device__ int inline __cfcll(uint64_t bits){
 
 
   int popc = __popcll(bits);
@@ -454,170 +561,15 @@ __device__ int __cfcll(uint64_t bits){
 
 
 
-#if GALLATIN_USING_DYNAMIC_PARALLELISM
 
-__device__ void clear_memory_per_thread(void * memory, uint64_t num_bytes, uint64_t n_threads, uint64_t tid){
 
-  uint64_t bytes_per_thread = (num_bytes-1)/n_threads+1;
-
-  uint64_t my_start = bytes_per_thread*tid;
-
-  uint64_t my_length = num_bytes;
-
-  //this thread responsible for weird offset at end.
-  if ((my_start + my_length) >= num_bytes) my_length = num_bytes-my_start;
-
-  if (my_length == 0 || my_start >= num_bytes) return;
-
-  memset( ((char *) memory)+my_start, 0, my_length);
-
-  __threadfence();
-
-  return;
-
-
-}
-
-
-__global__ void clear_memory_kernel(void * memory, uint64_t num_bytes, uint64_t num_threads){
-
-  uint64_t tid = gallatin::utils::get_tid();
-
-  clear_memory_per_thread(memory, num_bytes, num_threads, tid);
-
-}
-
-
-
-// template <typename gallatin_template_type>
-// __global__ void calloc_return_block 
-
-
-// //two templates for dynamic parallelism - these are launched by an internal func in Gallatin
-// // and sidestep the regular free for callocs.
-// template <typename gallatin_template_type>
-// __global__ void gallatin_clear_block(void * memory, uint64_t num_bytes, uint64_t n_threads, gallatin_template_type * allocator){
-
-//   uint64_t tid = gallatin::utils::get_tid();
-
-//   clear_memory_per_thread(memory, num_bytes, num_threads, tid);
-  
-
-
-// }
-
-template <typename gallatin_template_type, typename block_type>
-__global__ void calloc_return_block(gallatin_template_type * allocator, block_type * block_to_free, uint64_t segment, uint16_t tree){
-
-  uint64_t tid = gallatin::utils::get_tid();
-
-  if (tid != 0) return;
-
-  allocator->return_block(block_to_free, segment, tree);
-
-
-}
-
-
-//template <typename gallatin_template_type>
-__global__ void test_kernel (int test_value) {
-
-  uint64_t tid = gallatin::utils::get_tid();
-
-  if (tid == 0) printf("Test kernel launch\n");
-
-  return;
-
-}
-
-
-//two templates for dynamic parallelism - these are launched by an internal func in Gallatin
-// and sidestep the regular free for callocs.
-template <typename gallatin_template_type, typename block_type>
-__global__ void gallatin_clear_block(block_type * block, void * memory, uint64_t num_bytes, uint64_t num_threads, gallatin_template_type * allocator, uint64_t segment, uint16_t tree){
-
-
-
-  return; 
-
-
-  uint64_t tid = gallatin::utils::get_tid();
-
-  if (tid >= num_threads) return;
-
-  clear_memory_per_thread(memory, num_bytes, num_threads, tid);
-  
-
-  if (tid == 0){
-
-    calloc_return_block<gallatin_template_type, block_type><<<1,1, 0, cudaStreamTailLaunch>>>(allocator, block, segment, tree);
-
-  }
-
-
-}
-
-
-template <typename gallatin_template_type>
-__global__ void calloc_return_segment(gallatin_template_type * allocator, uint64_t segment, uint16_t size, uint16_t tree_id){
-
-  uint64_t tid = gallatin::utils::get_tid();
-
-  if (tid != 0) return;
-
-  allocator->submit_segment_for_free(segment, size, tree_id);
-
-
-}
-
-
-//two templates for dynamic parallelism - these are launched by an internal func in Gallatin
-// and sidestep the regular free for callocs.
-template <typename gallatin_template_type>
-__global__ void gallatin_clear_segment(void * memory, uint64_t num_bytes, uint64_t num_threads, gallatin_template_type * allocator, uint64_t segment, uint16_t size, uint16_t tree_id){
-
-  uint64_t tid = gallatin::utils::get_tid();
-
-  if (tid >= num_threads) return;
-
-  clear_memory_per_thread(memory, num_bytes, num_threads, tid);
-  
-
-  if (tid == 0){
-
-    calloc_return_segment<gallatin_template_type><<<1,1,0,cudaStreamTailLaunch>>>(allocator, segment, size, tree_id);
-
-  }
-
-
-}
-
-
-  
-//use dynamic parallelism to clear memory
-__device__ void memclear_generic(void * memory, uint64_t num_bytes, uint64_t num_threads){
-
-  clear_memory_kernel<<<((num_threads-1)/512 +1), 512>>>(memory, num_bytes, num_threads);
-
-}
-
-
-template <typename T>
-__device__ void memclear(T * memory, uint64_t nitems, uint64_t nthreads){
-
-  memclear_generic((void *)memory, sizeof(T)*nitems, nthreads);
-}
-
-#endif
-
-
-constexpr uint64_t numberOfBits(uint64_t x)
+constexpr inline uint64_t numberOfBits(uint64_t x)
 {
     return x < 2 ? x : 1+numberOfBits(x >> 1);
 }
 
 
-__device__ void clear_host_memory_per_thread(void * memory, uint64_t num_bytes, uint64_t n_threads, uint64_t tid){
+__device__ inline void clear_host_memory_per_thread(void * memory, uint64_t num_bytes, uint64_t n_threads, uint64_t tid){
 
   uint64_t bytes_per_thread = (num_bytes-1)/n_threads+1;
 
@@ -640,7 +592,7 @@ __device__ void clear_host_memory_per_thread(void * memory, uint64_t num_bytes, 
 }
 
 
-__global__ void clear_host_memory_kernel(void * memory, uint64_t num_bytes, uint64_t num_threads){
+static __global__ void clear_host_memory_kernel(void * memory, uint64_t num_bytes, uint64_t num_threads){
 
   uint64_t tid = gallatin::utils::get_tid();
 
@@ -649,7 +601,7 @@ __global__ void clear_host_memory_kernel(void * memory, uint64_t num_bytes, uint
 }
 
 
-__host__ void clear_device_host_memory(void * ptr, uint64_t num_bytes){
+__host__ inline void clear_device_host_memory(void * ptr, uint64_t num_bytes){
 
   uint64_t num_threads = (num_bytes-1)/16+1;
 

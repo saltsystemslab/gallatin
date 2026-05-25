@@ -18,13 +18,25 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 
-set(GPU_ARCHS "")
-include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/EvalGpuArchs.cmake)
+# Check if GPU_ARCHS is predefined
+if (DEFINED GPU_ARCHS)
+  message("GPU_ARCHS is defined as ${GPU_ARCHS}")
+else()
+  message("GPU_ARCHS not specified, auto-detecting GPU...")
+  set(GPU_ARCHS "")
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/EvalGpuArchs.cmake)
   evaluate_gpu_archs(GPU_ARCHS)
+endif()
 
 #set(CUDA_TOOLKIT_ROOT_DIR /usr/local/cuda-12.1)
 
-find_package(CUDAToolkit 11.8 REQUIRED)
+find_package(CUDAToolkit 12.8 REQUIRED)
+if(CUDAToolkit_VERSION VERSION_LESS "12.8")
+  message(FATAL_ERROR
+    "Gallatin requires CUDA 12.8 or newer (found ${CUDAToolkit_VERSION}). "
+    "The atomic publish path uses cuda::atomic_ref<uint16_t>, which was "
+    "not supported by libcudacxx until the version that ships with 12.8.")
+endif()
 set(CMAKE_CUDA_RUNTIME_LIBRARY SHARED)
 
 #package manager
@@ -56,18 +68,6 @@ option (GAL_DEBUG "Add debug flags to CMake" OFF)
 if (GAL_DEBUG)
   set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -G -g")
 endif(GAL_DEBUG)
-
-option (GAL_DYNAMIC "Add dynamic parallelism - Needed for calloc calls" OFF)
-
-if (GAL_DYNAMIC)
-  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -lcudadevrt -rdc=true")
-  add_compile_definitions(GALLATIN_USING_DYNAMIC_PARALLELISM=1)
-  target_link_libraries(gallatin ${CUDA_cudadevrt_LIBRARY})
-  #set_target_properties(gallatin PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)  # this is required for some reason
-
-  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-endif(GAL_DYNAMIC)
-
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
