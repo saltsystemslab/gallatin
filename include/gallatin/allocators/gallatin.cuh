@@ -751,46 +751,65 @@ struct Gallatin {
 
   __device__ uint64_t malloc_segment_allocation(uint & num_segments_required){
 
-
-    //calculate # of segments needed
-    //uint64_t num_segments_required = (bytes_needed - 1)/ bytes_per_segment + 1;
-
     // Fast bail: no free segments available
     if (segment_tree->is_empty()) return ~0ULL;
+
+    // Warp-level coalesce: threads in this warp that all want the same
+    // number of segments do ONE gather for (team_size * K) segments,
+    // then each thread takes its own K-segment slice and publishes its
+    // own tree_id. This collapses N lock acquisitions to 1 and gives the
+    // vEB tree one packed scan instead of N fragmented ones — both wins
+    // when multiple warp lanes simultaneously request big allocations.
+    cg::coalesced_group warp_team = cg::coalesced_threads();
+    cg::coalesced_group team =
+        labeled_partition(warp_team, (uint)num_segments_required);
+    const uint team_size = team.size();
+    const uint my_rank = team.thread_rank();
+    const uint64_t total_segments =
+        (uint64_t)team_size * (uint64_t)num_segments_required;
 
     // Lock slot at index `num_trees` is the global multi-segment grouping
     // lock — separate from per-tree locks. tree_locks is allocated with
     // num_trees+1 entries for exactly this reason.
-    while(!acquire_tree_lock(num_trees));
-
-    uint64_t alloc_index = segment_tree->gather_multiple(num_segments_required);
-
-    if (alloc_index != veb_tree::fail()){
-
-      if (!table->set_tree_id(alloc_index, num_trees + 1+ num_segments_required)){
-
-        #if GALLATIN_DEBUG_PRINTS
-        printf("Failed to set tree id for segment %llu with %llu segments trailing\n", alloc_index, num_segments_required);
-        #endif
-
-        //catastropic - how could we fail to set tree id on bit grabbed from segment tree?
-        #if GALLATIN_TRAP_ON_ERR
-        asm volatile ("trap;");
-        #endif
-
-      }
-
-    } else {
-
+    uint64_t group_alloc_index = veb_tree::fail();
+    if (my_rank == 0) {
+      while (!acquire_tree_lock(num_trees));
+      group_alloc_index = segment_tree->gather_multiple(total_segments);
       release_tree_lock(num_trees);
-      return ~0ULL;
+    }
+    group_alloc_index = team.shfl(group_alloc_index, 0);
 
+    if (group_alloc_index == veb_tree::fail()) {
+      return ~0ULL;
     }
 
-    release_tree_lock(num_trees);
+    // Each thread carves out its own contiguous slice from the group.
+    const uint64_t alloc_index =
+        group_alloc_index + (uint64_t)my_rank * num_segments_required;
 
-    return alloc_index*table->blocks_per_segment*4096;
+    // Each thread publishes its own first-segment tree_id (no inter-thread
+    // serialization — each thread's first segment is distinct).
+    if (!table->set_tree_id(alloc_index,
+                            num_trees + 1 + num_segments_required)) {
+      // set_tree_id is a release-CAS from ~0; failure means this thread's
+      // first-segment slot wasn't ~0 when we tried to publish. In correct
+      // operation impossible (we just claimed it via gather_multiple).
+      // Return *our* slice to segment_tree; sibling threads keep theirs.
+      segment_tree->return_multiple(alloc_index, num_segments_required);
 
+      #if GALLATIN_DEBUG_PRINTS
+      printf("malloc_segment_allocation: set_tree_id raced on segment %llu "
+             "(span=%u). Returned segments to tree; alloc failed.\n",
+             (unsigned long long)alloc_index, num_segments_required);
+      #endif
+      #if GALLATIN_TRAP_ON_ERR
+      asm volatile ("trap;");
+      #endif
+
+      return ~0ULL;
+    }
+
+    return alloc_index * table->blocks_per_segment * 4096;
   }
   
   __device__ uint64_t malloc_block_allocation(uint16_t & tree_id){
@@ -1346,6 +1365,25 @@ struct Gallatin {
     if (tree_id > num_trees && (tree_id != (uint16_t)~0)){
 
       uint16_t size = tree_id - num_trees - 1;
+
+      // Sanity-check the decoded span before touching segment_tree. A
+      // corrupted tree_id (e.g., a use-after-free or a write through a
+      // bad pointer) could decode to a size of 0 or one that runs past
+      // the allocator's last segment, and silently `return_multiple`'ing
+      // that range would corrupt the segment bitmap. Refuse instead.
+      if (size == 0 || segment + size > table->num_segments) {
+        #if GALLATIN_DEBUG_PRINTS
+        printf("free: implausible multi-segment span tree_id=%u -> size=%u "
+               "at segment %llu of %llu; refusing\n",
+               (unsigned)tree_id, (unsigned)size,
+               (unsigned long long)segment,
+               (unsigned long long)table->num_segments);
+        #endif
+        #if GALLATIN_TRAP_ON_ERR
+        asm volatile ("trap;");
+        #endif
+        return;
+      }
 
       // Order matters: clear ownership FIRST, then republish the segment.
       // Both are release-ordered, so any consumer that subsequently observes

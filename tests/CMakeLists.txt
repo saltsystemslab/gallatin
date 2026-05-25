@@ -50,6 +50,10 @@ ConfigureExecutable(managed_mode_test "${CMAKE_CURRENT_SOURCE_DIR}/src/managed_m
 # from by isolating the variables (fixed vs random size, marker scheme).
 ConfigureExecutable(churn_diagnostics_test "${CMAKE_CURRENT_SOURCE_DIR}/src/churn_diagnostics_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+# Validates correctness + perf of the multi-segment alloc path under
+# concurrent large requests (exercises the warp-coalesce gather).
+ConfigureExecutable(segment_alloc_concurrent_test "${CMAKE_CURRENT_SOURCE_DIR}/src/segment_alloc_concurrent_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
 
 #optional tests
 #these are used for development of new features.
