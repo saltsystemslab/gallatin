@@ -477,6 +477,15 @@ struct Gallatin {
     uint64_t blocks_per_pinned_block = 128;
     uint64_t geom = blocks_per_pinned_block;
     bool any_reduced = false;
+    // Deterministic boot claims one segment per slot, so the sum across
+    // trees must fit in max_chunks. Track remaining pool capacity and
+    // cap each tree's slot count against it. Without this, a small pool
+    // (e.g. tests using 1 GB → 64 segments × 9 trees × MIN_PINNED_CUTOFF=32
+    // wants 288) would exceed max_chunks and the boot would refuse to
+    // start. Pre-deterministic-boot the random-walk path tolerated this
+    // by simply leaving extra slots empty; deterministic boot needs the
+    // budget tight up front.
+    uint64_t remaining_pool = max_chunks;
     for (uint16_t t = 0; t < num_trees; ++t) {
       uint64_t blocks_per_seg =
           alloc_table<bytes_per_segment, smallest>::get_blocks_per_segment(t);
@@ -487,20 +496,34 @@ struct Gallatin {
       uint64_t target =
           geom < MIN_PINNED_CUTOFF ? (uint64_t)MIN_PINNED_CUTOFF : geom;
       uint64_t actual = target < budget_cap ? target : budget_cap;
+      // Clamp to remaining pool capacity so the deterministic boot can
+      // claim each slot's segment without overrunning the segment_tree.
+      // Reserve at least 1 segment per remaining tree if possible, so
+      // every tree gets at least one bootstrapped slot; otherwise leave
+      // a tree with zero boot slots (it'll claim segments at first use).
+      uint64_t trees_left = num_trees - t;
+      uint64_t reserve_for_others = trees_left > 1 ? (trees_left - 1) : 0;
+      uint64_t cap_from_pool = remaining_pool > reserve_for_others
+                                   ? (remaining_pool - reserve_for_others)
+                                   : 0;
+      if (actual > cap_from_pool) actual = cap_from_pool;
       if (actual < target) any_reduced = true;
       tree_slot_counts[t] = (uint16_t)actual;
+      remaining_pool -= actual;
 
       if (print_info && actual < target) {
         fprintf(stderr,
                 "gallatin: tree %u (slice %llu B) wavefront reduced %llu "
-                "-> %llu slots (%llu segments × %llu blocks/seg / %llu)\n",
+                "-> %llu slots (%llu segments × %llu blocks/seg / %llu, "
+                "remaining pool %llu)\n",
                 (unsigned)t,
                 (unsigned long long)
                     alloc_table<bytes_per_segment, smallest>::get_tree_alloc_size(t),
                 (unsigned long long)target, (unsigned long long)actual,
                 (unsigned long long)max_chunks,
                 (unsigned long long)blocks_per_seg,
-                (unsigned long long)WAVEFRONT_BUDGET_FRACTION);
+                (unsigned long long)WAVEFRONT_BUDGET_FRACTION,
+                (unsigned long long)remaining_pool);
       }
 
       geom = geom / 2;
@@ -542,18 +565,11 @@ struct Gallatin {
           boot_segment_offsets_host[t] + (uint64_t)tree_slot_counts[t];
     }
     uint64_t total_boot_segments = boot_segment_offsets_host[num_trees];
-    // The pre-flight OOM check earlier guarantees max_chunks >= num_trees,
-    // and tree_slot_counts is capped at max_chunks * blocks_per_seg / 4
-    // per tree, so total_boot_segments should fit comfortably below
-    // max_chunks. Sanity-check anyway.
-    if (total_boot_segments > max_chunks) {
-      fprintf(stderr,
-              "gallatin: deterministic boot wants %llu segments but pool only "
-              "has %llu. Reduce MIN_PINNED_CUTOFF or grow the pool.\n",
-              (unsigned long long)total_boot_segments,
-              (unsigned long long)max_chunks);
-      return nullptr;
-    }
+    // Invariant: the per-tree slot-count loop above clamps each tree's
+    // tree_slot_counts[t] to the remaining pool capacity, so the prefix
+    // sum total_boot_segments is always <= max_chunks. Keep a defensive
+    // assert in debug builds; releasing builds skip the check.
+    assert(total_boot_segments <= max_chunks);
     uint64_t *boot_segment_offsets_dev =
         gallatin::utils::move_to_device<uint64_t>(
             boot_segment_offsets_host, num_trees + 1);
