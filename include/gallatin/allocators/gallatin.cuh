@@ -1765,6 +1765,25 @@ struct Gallatin {
       if (new_block != nullptr) {
         return new_block;
       }
+
+      // get_block rejected a segment that find_random_valid_index reported as
+      // valid: the segment has no free block right now (active_counts
+      // exhausted) yet is still listed in sub_trees[tree]. Without doing
+      // anything here, find_random keeps re-selecting that same dead segment
+      // and we spin forever (this path does not increment `attempts`).
+      //
+      // This is reachable for the largest tree, where a segment holds exactly
+      // one block (bytes_per_segment == tree alloc size * 4096): once that
+      // block is taken — e.g. pre-consumed by the boot wavefront — the segment
+      // is exhausted but remains listed, violating the invariant "a segment in
+      // sub_trees[tree] has a free block of tree `tree`."
+      //
+      // Evict it from the sub-tree (a freed block re-inserts the segment) and
+      // count an attempt so the loop is bounded and falls through to
+      // gather_new_segment for a fresh segment.
+      sub_trees[tree]->remove(segment);
+      __threadfence();
+      attempts++;
     }
 
     // on attempt failures, allocator is full
