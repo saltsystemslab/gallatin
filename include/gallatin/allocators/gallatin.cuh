@@ -848,6 +848,17 @@ struct Gallatin {
       return;
     }
 
+    // If this boot grab consumed the segment's only block — true for the
+    // largest tree, where blocks_per_segment == 1 — the segment is now
+    // exhausted. boot_segments_deterministic published it into sub_trees[tree],
+    // so we must detach it here, mirroring the runtime last_block path in
+    // request_new_block_from_tree. Otherwise the segment stays listed with no
+    // free block and the first runtime request livelocks re-selecting it.
+    if (last_block) {
+      sub_trees[tree_id]->remove(segment_id);
+      __threadfence();
+    }
+
     if (!local_shared_block_storage->swap_out_nullptr(smid, new_block)) {
       printf("Boot (deterministic): slot %d for tree %u already initialized\n",
              smid, (unsigned)tree_id);
