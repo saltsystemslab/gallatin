@@ -123,6 +123,27 @@ static __global__ void gallatin_init_counters_kernel(
 }
 
 
+#ifdef GALLATIN_CONST_BASE
+// Optimization #1: cache the heap base and block-array base in __constant__
+// memory so address translation on the malloc/free hot path reads from the
+// (broadcast, cached) constant bank instead of chasing table-> dependent global
+// loads. NOTE: one __constant__ instance => valid for ONE live Gallatin
+// allocator at a time (fine for single-allocator workloads / benchmarking).
+namespace gallatin_const {
+struct table_bases {
+  char *memory;
+  Block *blocks;
+};
+__constant__ table_bases g_table_bases;
+__host__ inline void set_table_bases(char *memory, Block *blocks) {
+  table_bases h;
+  h.memory = memory;
+  h.blocks = blocks;
+  cudaMemcpyToSymbol(g_table_bases, &h, sizeof(table_bases));
+}
+}  // namespace gallatin_const
+#endif
+
 // The alloc table owns all blocks live in the system
 // and information for each segment
 template <uint64_t bytes_per_segment, uint64_t min_size>
@@ -285,6 +306,10 @@ struct alloc_table {
 
     cudaDeviceSynchronize();
 
+#ifdef GALLATIN_CONST_BASE
+    gallatin_const::set_table_bases(host_version->memory, host_version->blocks);
+#endif
+
     cudaFreeHost(host_version);
 
     return dev_version;
@@ -405,6 +430,10 @@ struct alloc_table {
 
     //cudaDeviceSynchronize();
 
+#ifdef GALLATIN_CONST_BASE
+    gallatin_const::set_table_bases(host_version->memory, host_version->blocks);
+#endif
+
     cudaFreeHost(host_version);
 
     return dev_version;
@@ -441,7 +470,11 @@ struct alloc_table {
 
   // get the void pointer to the start of a segment.
   __device__ char *get_segment_memory_start(uint64_t segment) {
+#ifdef GALLATIN_CONST_BASE
+    return gallatin_const::g_table_bases.memory + bytes_per_segment * segment;
+#else
     return memory + bytes_per_segment * segment;
+#endif
   }
 
   // Claim a segment for a tree.
@@ -660,7 +693,11 @@ struct alloc_table {
 
   // given a pointer, get the segment the pointer belongs to
   __device__ uint64_t get_segment_from_ptr(void *ptr) {
+#ifdef GALLATIN_CONST_BASE
+    uint64_t offset = ((char *)ptr) - gallatin_const::g_table_bases.memory;
+#else
     uint64_t offset = ((char *)ptr) - memory;
+#endif
 
     return offset / bytes_per_segment;
   }
@@ -684,7 +721,11 @@ struct alloc_table {
 
   // get relative position of block in list of all blocks
   __device__ uint64_t get_global_block_offset(Block *block) {
+#ifdef GALLATIN_CONST_BASE
+    return block - gallatin_const::g_table_bases.blocks;
+#else
     return block - blocks;
+#endif
   }
 
   // get max blocks per segment when formatted to a given tree size.

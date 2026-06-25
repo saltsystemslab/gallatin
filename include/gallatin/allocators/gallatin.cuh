@@ -353,6 +353,46 @@ __global__ void print_segment_fill_kernel(allocator * alloc){
 //  - size of each segment in bytes
 //  - size of smallest segment allocatable
 //  - size of largest segment allocatable
+#ifdef GALLATIN_FLAT_BUFFER
+// Phase B: per-tree pinned-slot descriptors cached in __constant__ memory, set
+// once at init (gallatin_flat_publish). Collapses the per-malloc navigation
+// chain (global_gallatin -> local_blocks -> block_containers[tree] -> blocks)
+// into a single constant-cache read of {blocks base, num_blocks} for the tree.
+// Single-instance (one live allocator per __constant__). Pairs with
+// GALLATIN_CONST_BASE for constant-based address translation.
+namespace gallatin_flat {
+struct tree_slot_desc {
+  Block **blocks;
+  uint64_t num_blocks;
+};
+static constexpr int MAX_TREES = 16;
+__constant__ tree_slot_desc g_tree_slots[MAX_TREES];
+__device__ tree_slot_desc g_tree_slots_staging[MAX_TREES];
+}  // namespace gallatin_flat
+
+template <typename galloc_t>
+__global__ void gallatin_flat_fill_kernel(galloc_t *alloc) {
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    int nt = alloc->num_trees;
+    if (nt > gallatin_flat::MAX_TREES) nt = gallatin_flat::MAX_TREES;
+    for (int t = 0; t < nt; t++) {
+      auto *st = alloc->local_blocks->get_tree_local_blocks(t);
+      gallatin_flat::g_tree_slots_staging[t].blocks = st->blocks;
+      gallatin_flat::g_tree_slots_staging[t].num_blocks = st->num_blocks;
+    }
+  }
+}
+
+template <typename galloc_t>
+__host__ inline void gallatin_flat_publish(galloc_t *dev_alloc) {
+  gallatin_flat_fill_kernel<<<1, 1>>>(dev_alloc);
+  cudaDeviceSynchronize();
+  gallatin_flat::tree_slot_desc tmp[gallatin_flat::MAX_TREES];
+  cudaMemcpyFromSymbol(tmp, gallatin_flat::g_tree_slots_staging, sizeof(tmp));
+  cudaMemcpyToSymbol(gallatin_flat::g_tree_slots, tmp, sizeof(tmp));
+}
+#endif
+
 template <uint64_t bytes_per_segment, uint64_t smallest, uint64_t biggest>
 struct Gallatin {
   using my_type = Gallatin<bytes_per_segment, smallest, biggest>;
@@ -1108,6 +1148,282 @@ struct Gallatin {
     }
 
     return ~0ULL;
+  }
+
+  // Single-thread fast path: same slice reservation as malloc_slice_one but for
+  // a caller that allocates one object from one lane (e.g. a data structure
+  // allocating one node per warp-op). Skips cg::coalesced_threads() +
+  // labeled_partition + the shfl broadcasts, which are pure overhead when the
+  // active group is a single thread. MUST be called by a single thread.
+  __device__ uint64_t malloc_slice_one_single(uint16_t tree_id) {
+
+    per_size_pinned_blocks *local_shared_block_storage =
+        local_blocks->get_tree_local_blocks(tree_id);
+
+    int shared_block_storage_index;
+    int num_attempts = 0;
+
+    while (num_attempts < GALLATIN_MAX_ATTEMPTS) {
+
+      Block *my_block = local_shared_block_storage->get_valid_block(
+          shared_block_storage_index);
+
+      if (my_block == nullptr) {
+        if (sub_trees[tree_id]->is_empty() && segment_tree->is_empty()) {
+          return ~0ULL;
+        }
+        num_attempts++;
+        continue;
+      }
+
+      uint64_t global_block_id = table->get_global_block_offset(my_block);
+
+      uint merged_count =
+          atomicAdd((unsigned int *)&my_block->malloc_counter, 1u);
+      uint true_count = merged_count & BITMASK(GALLATIN_BLOCK_TREE_OFFSET);
+
+      uint64_t allocation = true_count;  // single thread, rank 0
+      bool valid = allocation < 4096;
+
+      if (allocation == 4095) {
+        replace_block(tree_id, shared_block_storage_index, my_block,
+                      local_shared_block_storage);
+      }
+
+      if (valid) {
+        if (!my_block->check_valid(merged_count, tree_id)) {
+          free_offset(allocation + global_block_id * 4096);
+        } else {
+          return allocation + global_block_id * 4096;
+        }
+      }
+
+      num_attempts++;
+    }
+
+    return ~0ULL;
+  }
+
+  // Single-thread malloc. Routes the common single-slice case through the
+  // uncoalesced fast path; falls back to the cooperative malloc() for larger
+  // sizes and on transient failure. MUST be called by a single thread.
+#ifdef GALLATIN_CACHED_BLOCK
+  // Phase C': register/context-cached active block. Steady state is ONE
+  // atomicAdd on the cached block with NO preceding slot load (the slab model);
+  // the ld.acquire(slot) happens only on refill. Stale-safe via tag-in-counter:
+  // if the cached block was recycled to another size, the atomicAdd returns a
+  // foreign tag -> roll back the phantom increment and refill. Requires
+  // GALLATIN_FLAT_BUFFER (slot table) + GALLATIN_CONST_BASE. Single-thread.
+  __device__ void *malloc_cached(void *&cblk_raw, char *&cbase, int &csmid,
+                                 uint64_t size) {
+    uint16_t tree_id = get_tree_id_from_size(size);
+    if (tree_id >= num_trees) return malloc(size);
+    const uint64_t alloc_size = table->get_tree_alloc_size(tree_id);
+
+    // ---- fast path: reserve from the cached block, no slot load ----
+    Block *cblk = reinterpret_cast<Block *>(cblk_raw);
+    if (cblk != nullptr) {
+      uint merged = atomicAdd((unsigned int *)&cblk->malloc_counter, 1u);
+      uint slice = merged & BITMASK(GALLATIN_BLOCK_TREE_OFFSET);
+      bool ok = cblk->check_valid(merged, tree_id);
+      if (ok && slice < 4096) {
+        void *p = cbase + static_cast<uint64_t>(slice) * alloc_size;
+        if (slice == 4095) {
+          per_size_pinned_blocks *container =
+              local_blocks->get_tree_local_blocks(tree_id);
+          replace_block(tree_id, csmid, cblk, container);
+          cblk_raw = nullptr;
+        }
+        return p;
+      }
+      if (!ok) {
+        // recycled to a different tree: undo the phantom increment.
+        uint64_t gbid = table->get_global_block_offset(cblk);
+        free_offset(slice + gbid * 4096);
+      }
+      cblk_raw = nullptr;
+    }
+
+    // ---- refill: pull a block from the flat slot table, then cache it ----
+    Block **slots = gallatin_flat::g_tree_slots[tree_id].blocks;
+    uint64_t nblk = gallatin_flat::g_tree_slots[tree_id].num_blocks;
+    int num_attempts = 0;
+    while (num_attempts < GALLATIN_MAX_ATTEMPTS * GALLATIN_MALLOC_LOOP_ATTEMPTS) {
+#ifdef GALLATIN_POW2_BLOCKS
+      int smid = gallatin::utils::get_smid() & (int)(nblk - 1);
+#else
+      int smid = gallatin::utils::get_smid() % nblk;
+#endif
+      Block *my_block = gallatin::utils::load_acquire(&slots[smid]);
+      int probe = 0;
+      while (my_block == nullptr && probe < SHARED_BLOCK_COUNTER_CUTOFF) {
+#ifdef GALLATIN_POW2_BLOCKS
+        smid = (smid + 1) & (int)(nblk - 1);
+#else
+        smid = (smid + 1) % nblk;
+#endif
+        my_block = gallatin::utils::load_acquire(&slots[smid]);
+        probe++;
+      }
+      if (my_block == nullptr) {
+        if (sub_trees[tree_id]->is_empty() && segment_tree->is_empty())
+          return malloc(size);
+        num_attempts++;
+        continue;
+      }
+      uint64_t gbid = table->get_global_block_offset(my_block);
+      char *block_base =
+          reinterpret_cast<char *>(offset_to_allocation(gbid * 4096, tree_id));
+      uint merged = atomicAdd((unsigned int *)&my_block->malloc_counter, 1u);
+      uint slice = merged & BITMASK(GALLATIN_BLOCK_TREE_OFFSET);
+      if (slice == 4095) {
+        per_size_pinned_blocks *container =
+            local_blocks->get_tree_local_blocks(tree_id);
+        replace_block(tree_id, smid, my_block, container);
+      }
+      if (slice < 4096) {
+        if (!my_block->check_valid(merged, tree_id)) {
+          free_offset(slice + gbid * 4096);
+        } else {
+          if (slice < 4095) {  // cache only a block that still has slices
+            cblk_raw = my_block;
+            cbase = block_base;
+            csmid = smid;
+          }
+          return block_base + static_cast<uint64_t>(slice) * alloc_size;
+        }
+      }
+      num_attempts++;
+    }
+    return malloc(size);
+  }
+#endif
+
+#ifdef GALLATIN_FLAT_BUFFER
+  // O(1) flat-buffer malloc: routes to the pinned-slot array via the
+  // __constant__ descriptor table (no local_blocks->block_containers chase).
+  // Re-reads the slot every call and tag-validates (never caches the Block*) so
+  // cross-size recycling stays safe. Single-thread (call from one lane). Pairs
+  // with GALLATIN_CONST_BASE so address translation is constant-based too.
+  __device__ void *malloc_flat(uint64_t size) {
+    uint16_t tree_id = get_tree_id_from_size(size);
+    if (tree_id >= num_trees) return malloc(size);
+
+    Block **slots = gallatin_flat::g_tree_slots[tree_id].blocks;
+    uint64_t nblk = gallatin_flat::g_tree_slots[tree_id].num_blocks;
+    const uint64_t alloc_size = table->get_tree_alloc_size(tree_id);
+
+    int num_attempts = 0;
+    while (num_attempts < GALLATIN_MAX_ATTEMPTS * GALLATIN_MALLOC_LOOP_ATTEMPTS) {
+#ifdef GALLATIN_POW2_BLOCKS
+      int smid = gallatin::utils::get_smid() & (int)(nblk - 1);
+#else
+      int smid = gallatin::utils::get_smid() % nblk;
+#endif
+      Block *my_block = gallatin::utils::load_acquire(&slots[smid]);
+      int probe = 0;
+      while (my_block == nullptr && probe < SHARED_BLOCK_COUNTER_CUTOFF) {
+#ifdef GALLATIN_POW2_BLOCKS
+        smid = (smid + 1) & (int)(nblk - 1);
+#else
+        smid = (smid + 1) % nblk;
+#endif
+        my_block = gallatin::utils::load_acquire(&slots[smid]);
+        probe++;
+      }
+      if (my_block == nullptr) {
+        if (sub_trees[tree_id]->is_empty() && segment_tree->is_empty()) {
+          return malloc(size);
+        }
+        num_attempts++;
+        continue;
+      }
+
+      uint64_t global_block_id = table->get_global_block_offset(my_block);
+      char *block_base = reinterpret_cast<char *>(
+          offset_to_allocation(global_block_id * 4096, tree_id));
+
+      uint merged_count =
+          atomicAdd((unsigned int *)&my_block->malloc_counter, 1u);
+      uint slice = merged_count & BITMASK(GALLATIN_BLOCK_TREE_OFFSET);
+
+      if (slice == 4095) {
+        // rare (1/4096): navigate to the container only here for replace_block.
+        per_size_pinned_blocks *container =
+            local_blocks->get_tree_local_blocks(tree_id);
+        replace_block(tree_id, smid, my_block, container);
+      }
+
+      if (slice < 4096) {
+        if (!my_block->check_valid(merged_count, tree_id)) {
+          free_offset(slice + global_block_id * 4096);
+        } else {
+          return block_base + static_cast<uint64_t>(slice) * alloc_size;
+        }
+      }
+      num_attempts++;
+    }
+    return malloc(size);
+  }
+#endif
+
+  __device__ void *malloc_single(uint64_t size) {
+    uint16_t tree_id = get_tree_id_from_size(size);
+    if (tree_id >= num_trees) {
+      return malloc(size);
+    }
+
+    // Hoist per-allocation invariants OUT of the retry loop (computed once,
+    // not on every attempt / not chained behind the atomic).
+    per_size_pinned_blocks *local_shared_block_storage =
+        local_blocks->get_tree_local_blocks(tree_id);
+    const uint64_t alloc_size = table->get_tree_alloc_size(tree_id);
+
+    int num_attempts = 0;
+    while (num_attempts < GALLATIN_MAX_ATTEMPTS * GALLATIN_MALLOC_LOOP_ATTEMPTS) {
+
+      int shared_block_storage_index;
+      Block *my_block = local_shared_block_storage->get_valid_block(
+          shared_block_storage_index);
+
+      if (my_block == nullptr) {
+        if (sub_trees[tree_id]->is_empty() && segment_tree->is_empty()) {
+          return malloc(size);  // genuine pressure -> cooperative fallback
+        }
+        num_attempts++;
+        continue;
+      }
+
+      uint64_t global_block_id = table->get_global_block_offset(my_block);
+
+      // The block's base address depends only on the block, NOT on the slice we
+      // are about to reserve (slice < 4096 never crosses a segment boundary).
+      // Compute it BEFORE the atomicAdd so its address-translation loads overlap
+      // the atomic's latency; only a single FMA is left on the post-atomic path.
+      char *block_base = reinterpret_cast<char *>(
+          offset_to_allocation(global_block_id * 4096, tree_id));
+
+      uint merged_count =
+          atomicAdd((unsigned int *)&my_block->malloc_counter, 1u);
+      uint slice = merged_count & BITMASK(GALLATIN_BLOCK_TREE_OFFSET);
+
+      if (slice == 4095) {
+        replace_block(tree_id, shared_block_storage_index, my_block,
+                      local_shared_block_storage);
+      }
+
+      if (slice < 4096) {
+        if (!my_block->check_valid(merged_count, tree_id)) {
+          free_offset(slice + global_block_id * 4096);
+        } else {
+          return block_base + static_cast<uint64_t>(slice) * alloc_size;
+        }
+      }
+
+      num_attempts++;
+    }
+
+    return malloc(size);
   }
 
   // General multi-slice slice allocator. Used when a single request needs more

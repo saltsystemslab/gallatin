@@ -51,6 +51,9 @@ struct per_size_pinned_blocks {
   static __host__ per_size_pinned_blocks *generate_on_device(
       uint64_t num_blocks) {
     if (num_blocks == 0) num_blocks = 1;
+#ifdef GALLATIN_POW2_BLOCKS
+    { uint64_t p = 1; while ((p << 1) <= num_blocks) p <<= 1; num_blocks = p; }
+#endif
 
     per_size_pinned_blocks *host_version =
         gallatin::utils::get_host_version<per_size_pinned_blocks>();
@@ -70,6 +73,9 @@ struct per_size_pinned_blocks {
   static __host__ per_size_pinned_blocks * generate_on_device_nowait(
       uint64_t num_blocks) {
     if (num_blocks == 0) num_blocks = 1;
+#ifdef GALLATIN_POW2_BLOCKS
+    { uint64_t p = 1; while ((p << 1) <= num_blocks) p <<= 1; num_blocks = p; }
+#endif
 
     per_size_pinned_blocks *host_version =
         gallatin::utils::get_host_version<per_size_pinned_blocks>();
@@ -108,13 +114,21 @@ struct per_size_pinned_blocks {
   // Per-warp keying needs a much larger pool to pay off; revisit when the
   // boot-cost / per-tree cutoff design lands.
   __device__ Block *get_valid_block(int &out_smid) {
+#ifdef GALLATIN_POW2_BLOCKS
+    int my_smid = gallatin::utils::get_smid() & (int)(num_blocks - 1);
+#else
     int my_smid = gallatin::utils::get_smid() % num_blocks;
+#endif
     int original_smid = my_smid;
     int counter = 0;
 
     Block *block = gallatin::utils::load_acquire(&blocks[my_smid]);
     while (block == nullptr && my_smid != (original_smid - 1)) {
+#ifdef GALLATIN_POW2_BLOCKS
+      my_smid = (my_smid + 1) & (int)(num_blocks - 1);
+#else
       my_smid = (my_smid + 1) % num_blocks;
+#endif
       counter += 1;
       if (counter >= SHARED_BLOCK_COUNTER_CUTOFF) break;
       block = gallatin::utils::load_acquire(&blocks[my_smid]);
