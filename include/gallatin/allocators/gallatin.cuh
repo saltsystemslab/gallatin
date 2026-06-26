@@ -1367,14 +1367,31 @@ struct Gallatin {
   __device__ void *grouped_alloc_static(int &cidx, uint64_t &cbase,
                                         unsigned int &cgen, uint16_t tree_id,
                                         uint64_t size) {
-    cg::coalesced_group warp_team = cg::coalesced_threads();
-    cg::coalesced_group team = labeled_partition(warp_team, (uint)tree_id);
+    cg::coalesced_group g = cg::coalesced_threads();
+    uint n = g.size();
 
-    int lcidx = team.shfl(cidx, 0);
-    uint64_t lcbase = team.shfl(cbase, 0);
-    unsigned int lcgen = team.shfl(cgen, 0);
-    uint n = team.size();
-    uint rank = team.thread_rank();
+    // Group of one (e.g. a tile-leader-only caller): nothing to coalesce, so
+    // take the plain single-lane path -- no shfl/partition/sync overhead. This
+    // keeps the common case as cheap as the per-lane cached fast path.
+    if (n == 1) {
+      void *p = fast_alloc_static<ALLOC_SIZE>(cidx, cbase, cgen);
+      if (p != nullptr) return p;
+      ss_t r = slow_alloc_static<ALLOC_SIZE>(cidx, cbase, cgen, tree_id, size);
+      cidx = r.cidx;
+      cbase = r.cbase;
+      cgen = r.cgen;
+      return r.ptr;
+    }
+
+    // n > 1: coalesce. The group leader reserves a CONTIGUOUS run of n slices
+    // with ONE atomicAdd(n) on its resident slot (the slab-style lane-
+    // distributed claim), and the run is split by lane rank. No labeled_partition
+    // (a fixed-size caller's lanes share one tree) and no barrier (returned
+    // pointers don't depend on the rare swap).
+    uint rank = g.thread_rank();
+    int lcidx = g.shfl(cidx, 0);
+    uint64_t lcbase = g.shfl(cbase, 0);
+    unsigned int lcgen = g.shfl(cgen, 0);
 
     bool ok = false;
     unsigned int start = 0;
@@ -1386,8 +1403,8 @@ struct Gallatin {
         ok = true;
       }
     }
-    ok = team.shfl(ok, 0);
-    start = team.shfl(start, 0);
+    ok = g.shfl(ok, 0);
+    start = g.shfl(start, 0);
 
     if (ok) {
       uint64_t slice = (uint64_t)start + rank;
@@ -1397,11 +1414,9 @@ struct Gallatin {
         swap_static_locked(tree_id, lcidx,
                            lcidx - tree_id * gallatin_static::MAX_N, lcgen);
       }
-      team.sync();
       if (slice < 4096) {
-        // adopt the leader's slot as our resident cache; invalidate if the slot
-        // just filled (this batch reached/crossed 4096) so the next call
-        // re-resolves a fresh slot.
+        // adopt the leader's slot as our resident cache; invalidate if the batch
+        // reached/crossed 4096 so the next call re-resolves a fresh slot.
         cidx = (start + n >= 4096) ? -1 : lcidx;
         cbase = lcbase;
         cgen = lcgen;
