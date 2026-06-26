@@ -127,7 +127,11 @@ namespace allocators {
 
 //Team free controls if opportunistic coalescing is used for frees
 #define REREGISTER_CUTOFF .1
+// Overridable from the compiler (-DMIN_PINNED_CUTOFF=N) so the boot-wavefront
+// segment budget can be swept without editing source. Default stays 32.
+#ifndef MIN_PINNED_CUTOFF
 #define MIN_PINNED_CUTOFF 32
+#endif
 #define GALLATIN_TEAM_FREE 1
 
 
@@ -160,9 +164,11 @@ static __global__ void boot_segment_trees(veb_tree **segment_trees,
 // `boot_segment_offsets` is a uint64_t array of size num_trees+1. Tree t
 // owns segments [boot_segment_offsets[t], boot_segment_offsets[t+1]).
 // total_boot_segments == boot_segment_offsets[num_trees].
+template <typename table_t>
 static __global__ void boot_segments_deterministic(
     veb_tree *segment_tree,
     veb_tree **sub_trees,
+    table_t *table,
     uint64_t max_chunks,
     int num_trees,
     uint64_t total_boot_segments,
@@ -176,9 +182,13 @@ static __global__ void boot_segments_deterministic(
     sub_trees[i]->remove(tid);
   }
 
-  // Pre-claim boot segments from segment_tree and publish them into the
-  // owning tree's sub_tree. Single thread per segment, deterministic
-  // addresses — no contention beyond the natural per-64bit-word atomic.
+  // Pre-claim boot segments from segment_tree, initialize their metadata, and
+  // publish them into the owning tree's sub_tree. Single thread per segment,
+  // deterministic addresses — no contention beyond the natural per-64bit-word
+  // atomic. setup_segment runs here (not per slot) so that all of a segment's
+  // metadata + tree_id are published before boot_shared_block_container's slot
+  // threads call get_block — the kernel boundary between the two launches is
+  // the barrier that lets multiple slots safely pack onto one segment.
   if (tid < total_boot_segments) {
     segment_tree->remove(tid);
 
@@ -191,6 +201,16 @@ static __global__ void boot_segments_deterministic(
         owning_tree = t;
         break;
       }
+    }
+
+    if (!table->setup_segment(tid, owning_tree)) {
+      // chunk_ids is ~0 from table init, so the release-CAS must win. A failure
+      // is a hard invariant violation (duplicate segment id).
+      printf("Boot (deterministic): setup_segment failed for segment %llu (tree %d)\n",
+             (unsigned long long)tid, owning_tree);
+      #if GALLATIN_TRAP_ON_ERR
+      asm volatile("trap;");
+      #endif
     }
     sub_trees[owning_tree]->insert(tid);
   }
@@ -246,7 +266,13 @@ __global__ void boot_shared_block_container(
     uint64_t slot_count =
         alloc->local_blocks->get_tree_local_blocks(tree_id)->num_blocks;
     if (tid < slot_count) {
-      uint64_t segment_id = boot_segment_offsets[tree_id] + tid;
+      // Pack blocks_per_segment slots onto each boot segment: slot `tid` pulls
+      // a block from segment offset[tree] + tid/blocks_per_segment. Several
+      // slots therefore share a segment and each get a distinct block via
+      // get_block's atomic active_counts reservation.
+      uint64_t blocks_per_seg = alloc->table->get_blocks_per_segment(tree_id);
+      uint64_t segment_id =
+          boot_segment_offsets[tree_id] + (tid / blocks_per_seg);
       alloc->boot_block_deterministic(tree_id, (int)tid, segment_id);
     }
   }
@@ -463,66 +489,78 @@ struct Gallatin {
       }
     }
 
-    // Per-tree wavefront sizing. Start from the historical geometric
-    // recipe (blocks_per_pinned_block=128, halve per tree, floor at
-    // MIN_PINNED_CUTOFF), then cap each tree at (num_segments *
-    // blocks_per_segment[tree]) / 4 so the wavefront takes at most ~1/4
-    // of any tree's potential blocks — the rest stays available for
-    // user allocations. The cap matters for large-slice trees where
-    // each slot consumes a whole segment.
+    // Per-tree wavefront sizing. The wavefront keeps `slots` pinned blocks hot
+    // per tree (geometric recipe: 128, halve per tree, floored at
+    // MIN_PINNED_CUTOFF, capped at 1/WAVEFRONT_BUDGET_FRACTION of the tree's
+    // blocks). Those blocks come from segments the tree owns — and CRITICALLY
+    // a single segment yields blocks_per_segment[t] blocks, so `slots` blocks
+    // need only ceil(slots / blocks_per_segment[t]) SEGMENTS, not one segment
+    // per slot.
+    //
+    // The deterministic boot used to grab one whole segment per slot. For
+    // small-slice trees (blocks_per_segment up to 256) that withheld
+    // (slots - segs) extra segments per tree from the pool — on a 9-tree /
+    // 800-segment config it pinned 416 segments instead of ~66, starving any
+    // single-size workload (a size-16 run wanting 90% of the pool missed
+    // ~26%). We now pack blocks_per_segment slots into each boot segment and
+    // grant only the segments actually needed.
     constexpr uint64_t WAVEFRONT_BUDGET_FRACTION = 4;
     uint16_t *tree_slot_counts =
         gallatin::utils::get_host_version<uint16_t>(num_trees);
+    uint64_t *tree_segment_counts =
+        gallatin::utils::get_host_version<uint64_t>(num_trees);
 
     uint64_t blocks_per_pinned_block = 128;
     uint64_t geom = blocks_per_pinned_block;
     bool any_reduced = false;
-    // Deterministic boot claims one segment per slot, so the sum across
-    // trees must fit in max_chunks. Track remaining pool capacity and
-    // cap each tree's slot count against it. Without this, a small pool
-    // (e.g. tests using 1 GB → 64 segments × 9 trees × MIN_PINNED_CUTOFF=32
-    // wants 288) would exceed max_chunks and the boot would refuse to
-    // start. Pre-deterministic-boot the random-walk path tolerated this
-    // by simply leaving extra slots empty; deterministic boot needs the
-    // budget tight up front.
+    // Boot segments are removed from segment_tree and dedicated to a tree, so
+    // the running total must fit max_chunks. Track remaining pool capacity in
+    // SEGMENTS and reserve one per still-unsized tree so every tree can boot
+    // at least one slot on small pools.
     uint64_t remaining_pool = max_chunks;
     for (uint16_t t = 0; t < num_trees; ++t) {
       uint64_t blocks_per_seg =
           alloc_table<bytes_per_segment, smallest>::get_blocks_per_segment(t);
-      uint64_t budget_cap =
-          (max_chunks * blocks_per_seg) / WAVEFRONT_BUDGET_FRACTION;
-      if (budget_cap == 0) budget_cap = 1;  // always at least one slot
 
+      // Wavefront slot target.
       uint64_t target =
           geom < MIN_PINNED_CUTOFF ? (uint64_t)MIN_PINNED_CUTOFF : geom;
-      uint64_t actual = target < budget_cap ? target : budget_cap;
-      // Clamp to remaining pool capacity so the deterministic boot can
-      // claim each slot's segment without overrunning the segment_tree.
-      // Reserve at least 1 segment per remaining tree if possible, so
-      // every tree gets at least one bootstrapped slot; otherwise leave
-      // a tree with zero boot slots (it'll claim segments at first use).
+      uint64_t slot_cap =
+          (max_chunks * blocks_per_seg) / WAVEFRONT_BUDGET_FRACTION;
+      if (slot_cap == 0) slot_cap = 1;  // always at least one slot
+      if (target > slot_cap) target = slot_cap;
+
+      // Segments needed to back `target` slots (pack blocks_per_seg per segment).
+      uint64_t segs_needed = (target + blocks_per_seg - 1) / blocks_per_seg;
+
+      // Clamp granted segments to the remaining pool, reserving 1 per
+      // still-unsized tree. A tree clamped to 0 segments simply boots with an
+      // empty wavefront (get_valid_block probes forward at first use).
       uint64_t trees_left = num_trees - t;
       uint64_t reserve_for_others = trees_left > 1 ? (trees_left - 1) : 0;
-      uint64_t cap_from_pool = remaining_pool > reserve_for_others
-                                   ? (remaining_pool - reserve_for_others)
-                                   : 0;
-      if (actual > cap_from_pool) actual = cap_from_pool;
-      if (actual < target) any_reduced = true;
-      tree_slot_counts[t] = (uint16_t)actual;
-      remaining_pool -= actual;
+      uint64_t cap_segs = remaining_pool > reserve_for_others
+                              ? (remaining_pool - reserve_for_others)
+                              : 0;
+      if (segs_needed > cap_segs) segs_needed = cap_segs;
 
-      if (print_info && actual < target) {
+      // Slots can't exceed what the granted segments can back.
+      uint64_t actual_slots = segs_needed * blocks_per_seg;
+      if (actual_slots > target) actual_slots = target;
+
+      if (actual_slots < target) any_reduced = true;
+      tree_slot_counts[t] = (uint16_t)actual_slots;
+      tree_segment_counts[t] = segs_needed;
+      remaining_pool -= segs_needed;
+
+      if (print_info && actual_slots < target) {
         fprintf(stderr,
-                "gallatin: tree %u (slice %llu B) wavefront reduced %llu "
-                "-> %llu slots (%llu segments × %llu blocks/seg / %llu, "
-                "remaining pool %llu)\n",
+                "gallatin: tree %u (slice %llu B) wavefront reduced to %llu "
+                "slots / %llu segments (remaining pool %llu)\n",
                 (unsigned)t,
                 (unsigned long long)
                     alloc_table<bytes_per_segment, smallest>::get_tree_alloc_size(t),
-                (unsigned long long)target, (unsigned long long)actual,
-                (unsigned long long)max_chunks,
-                (unsigned long long)blocks_per_seg,
-                (unsigned long long)WAVEFRONT_BUDGET_FRACTION,
+                (unsigned long long)actual_slots,
+                (unsigned long long)segs_needed,
                 (unsigned long long)remaining_pool);
       }
 
@@ -551,32 +589,41 @@ struct Gallatin {
     host_version->sub_trees =
         move_to_device<sub_tree_type *>(ext_sub_trees, num_trees);
 
-    // Deterministic boot setup: compute prefix-sum of per-tree slot counts
-    // so each boot thread can be assigned a fixed segment_id. boot_segments_
+    // Deterministic boot setup: compute prefix-sum of per-tree SEGMENT counts
+    // so tree t owns boot segments [offset[t], offset[t+1]). boot_segments_
     // deterministic uses this to (a) clear sub_trees as before, (b) clear
-    // the [0, total_boot_segments) range of segment_tree (those segments
-    // are now owned by trees), and (c) insert each boot segment into its
-    // owning sub_tree.
+    // the [0, total_boot_segments) range of segment_tree (those segments are
+    // now owned by trees), (c) setup_segment each boot segment (init metadata
+    // + publish tree_id), and (d) insert it into its owning sub_tree. The
+    // per-slot boot then packs blocks_per_segment slots into each segment.
     uint64_t *boot_segment_offsets_host =
         gallatin::utils::get_host_version<uint64_t>(num_trees + 1);
     boot_segment_offsets_host[0] = 0;
     for (uint16_t t = 0; t < num_trees; ++t) {
       boot_segment_offsets_host[t + 1] =
-          boot_segment_offsets_host[t] + (uint64_t)tree_slot_counts[t];
+          boot_segment_offsets_host[t] + tree_segment_counts[t];
     }
     uint64_t total_boot_segments = boot_segment_offsets_host[num_trees];
-    // Invariant: the per-tree slot-count loop above clamps each tree's
-    // tree_slot_counts[t] to the remaining pool capacity, so the prefix
-    // sum total_boot_segments is always <= max_chunks. Keep a defensive
-    // assert in debug builds; releasing builds skip the check.
+    cudaFreeHost(tree_segment_counts);
+    // Invariant: the sizing loop clamps granted segments to remaining pool
+    // capacity, so the prefix sum is always <= max_chunks. Defensive assert
+    // in debug builds; release builds skip the check.
     assert(total_boot_segments <= max_chunks);
     uint64_t *boot_segment_offsets_dev =
         gallatin::utils::move_to_device<uint64_t>(
             boot_segment_offsets_host, num_trees + 1);
 
+    // Table must exist before boot_segments_deterministic so that kernel can
+    // setup_segment (init per-segment metadata + publish tree_id) under the
+    // kernel-boundary barrier, before any slot thread calls get_block on it.
+    host_version->table =
+        alloc_table<bytes_per_segment, smallest>::generate_on_device_nowait(
+            max_bytes, memory_control);
+
     boot_segments_deterministic<<<(max_chunks - 1) / 512 + 1, 512>>>(
-        host_version->segment_tree, host_version->sub_trees, max_chunks,
-        num_trees, total_boot_segments, boot_segment_offsets_dev);
+        host_version->segment_tree, host_version->sub_trees,
+        host_version->table, max_chunks, num_trees, total_boot_segments,
+        boot_segment_offsets_dev);
 
     #if GALLATIN_DEBUG_PRINTS
     cudaDeviceSynchronize();
@@ -591,10 +638,6 @@ struct Gallatin {
         gallatin::utils::get_device_version<padded_lock>(num_trees + 1);
     cudaMemset(host_version->tree_locks, 0,
                sizeof(padded_lock) * (num_trees + 1));
-
-    host_version->table =
-        alloc_table<bytes_per_segment, smallest>::generate_on_device_nowait(
-            max_bytes, memory_control);
 
     if (print_info) {
       const char *kind = (memory_control == device_only)
@@ -795,11 +838,12 @@ struct Gallatin {
   // walks forward when it sees a null slot, so functionally the allocator
   // just runs with a sparser wavefront for that tree.
   // Deterministic boot path. The caller (boot_shared_block_container) has
-  // already computed `segment_id` from the prefix-sum table and the kernel
+  // already computed `segment_id` (offset[tree] + slot/blocks_per_segment), and
   // boot_segments_deterministic has already cleared this segment from
-  // segment_tree and inserted it into sub_trees[tree_id]. We just need to
-  // initialize the segment's metadata, pull a block from it, and publish
-  // into the per-tree pinned slot.
+  // segment_tree, run setup_segment on it, and inserted it into
+  // sub_trees[tree_id]. Multiple slot threads may share a segment_id; each
+  // pulls a distinct block via get_block's atomic active_counts reservation.
+  // We just pull a block and publish it into the per-tree pinned slot.
   //
   // No segment_tree contention, no random walk, no retry loop — boot is
   // O(threads). This is the sanitizer-friendly path (the random-walk
@@ -820,20 +864,6 @@ struct Gallatin {
       return;
     }
 
-    // Each thread has a unique segment_id → no contention on chunk_ids
-    // (other than the natural per-32-bit-word atomic; uint16_t still works).
-    if (!table->setup_segment(segment_id, tree_id)) {
-      // setup_segment's release-CAS only fails if the slot wasn't ~0 at
-      // entry. Pre-boot cudaMemset(~0U) guarantees it is, so this is a
-      // hard invariant violation if it triggers.
-      printf("Boot (deterministic): setup_segment failed for segment %llu (tree %u)\n",
-             (unsigned long long)segment_id, (unsigned)tree_id);
-      #if GALLATIN_TRAP_ON_ERR
-      asm volatile("trap;");
-      #endif
-      return;
-    }
-
     bool last_block = false;
     Block *new_block = table->get_block(segment_id, tree_id, last_block);
 
@@ -848,12 +878,15 @@ struct Gallatin {
       return;
     }
 
-    // If this boot grab consumed the segment's only block — true for the
-    // largest tree, where blocks_per_segment == 1 — the segment is now
-    // exhausted. boot_segments_deterministic published it into sub_trees[tree],
-    // so we must detach it here, mirroring the runtime last_block path in
-    // request_new_block_from_tree. Otherwise the segment stays listed with no
-    // free block and the first runtime request livelocks re-selecting it.
+    // If this boot grab consumed the segment's last free block, the segment is
+    // now exhausted. This happens when blocks_per_segment slots packed onto one
+    // segment (so all its blocks are pinned) or for the largest tree where
+    // blocks_per_segment == 1. boot_segments_deterministic published it into
+    // sub_trees[tree], so we detach it here, mirroring the runtime last_block
+    // path in request_new_block_from_tree. Otherwise the segment stays listed
+    // with no free block and the first runtime request livelocks re-selecting
+    // it. A partially-filled boot segment (the remainder of a tree, < bps slots)
+    // is NOT exhausted and correctly stays listed with its free blocks.
     if (last_block) {
       sub_trees[tree_id]->remove(segment_id);
       __threadfence();
