@@ -130,6 +130,14 @@ namespace allocators {
 #ifndef MIN_PINNED_CUTOFF
 #define MIN_PINNED_CUTOFF 32
 #endif
+// Geometric START of the per-tree pinned wavefront: tree 0 (smallest slice) gets
+// this many pinned blocks, halving per larger tree down to MIN_PINNED_CUTOFF. The
+// fast path needs a wide wavefront on the hot (smallest) tree to spread the
+// warp-private slot mapping; the halving keeps large-slice trees' memory bounded
+// (so this does NOT balloon pinned memory the way raising MIN_PINNED_CUTOFF would).
+#ifndef GALLATIN_PINNED_WAVEFRONT
+#define GALLATIN_PINNED_WAVEFRONT 256
+#endif
 #define GALLATIN_TEAM_FREE 1
 
 
@@ -640,7 +648,7 @@ struct Gallatin {
     uint16_t *tree_slot_counts =
         gallatin::utils::get_host_version<uint16_t>(num_trees);
 
-    uint64_t blocks_per_pinned_block = 128;
+    uint64_t blocks_per_pinned_block = GALLATIN_PINNED_WAVEFRONT;
     uint64_t geom = blocks_per_pinned_block;
     bool any_reduced = false;
     // Deterministic boot claims one segment per slot, so the sum across
