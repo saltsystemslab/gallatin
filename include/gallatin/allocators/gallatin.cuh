@@ -127,7 +127,9 @@ namespace allocators {
 
 //Team free controls if opportunistic coalescing is used for frees
 #define REREGISTER_CUTOFF .1
+#ifndef MIN_PINNED_CUTOFF
 #define MIN_PINNED_CUTOFF 32
+#endif
 #define GALLATIN_TEAM_FREE 1
 
 
@@ -390,6 +392,110 @@ __host__ inline void gallatin_flat_publish(galloc_t *dev_alloc) {
   gallatin_flat::tree_slot_desc tmp[gallatin_flat::MAX_TREES];
   cudaMemcpyFromSymbol(tmp, gallatin_flat::g_tree_slots_staging, sizeof(tmp));
   cudaMemcpyToSymbol(gallatin_flat::g_tree_slots, tmp, sizeof(tmp));
+}
+#endif
+
+#ifdef GALLATIN_PERWARP_ATOMIC_DIAG
+namespace gallatin_perwarp {
+// per-warp, cacheline-padded scratch counters (diagnostic only): up to 64K
+// warps, one counter per 128B line so distinct warps never share a sector.
+__device__ unsigned int g_scratch[65536 * 32];
+}  // namespace gallatin_perwarp
+#endif
+
+#ifdef GALLATIN_STATIC_COUNTER
+// Phase D (increment 1): per-slot malloc counters live in a static device array
+// (NOT inside the Block), so the reserving atomicAdd targets a static address
+// with no Block* load. g_counter packs [generation:12 | count:20]; g_base/g_block
+// shadow the underlying pinned block. Populated once at init (gallatin_static_publish).
+// Generation is bumped on swap as an ABA/version guard. Single live allocator.
+namespace gallatin_static {
+static constexpr int MAX_TREES = 16;
+#ifndef GALLATIN_MAX_N
+#define GALLATIN_MAX_N 512
+#endif
+static constexpr int MAX_N = GALLATIN_MAX_N;  // max pinned slots per tree (must cover num_blocks)
+#ifdef GALLATIN_PAD_COUNTERS
+static constexpr int CSTRIDE = 32;  // 128B / sizeof(uint): one counter per cacheline
+#else
+static constexpr int CSTRIDE = 1;
+#endif
+__device__ unsigned int g_counter[MAX_TREES * MAX_N * 32];
+__device__ uint64_t g_base[MAX_TREES * MAX_N];
+__device__ void *g_block[MAX_TREES * MAX_N];
+__device__ int g_nblk[MAX_TREES];
+#ifdef GALLATIN_SLOT_BITMAP
+// Per-slot reservation bitmap: 128 words (4096 bits = 4096 slices) per pinned
+// slot. Lives in the slot storage, so overhead is constant (trees * slots *
+// 128 words), independent of pool size / allocation size. The reserving atomicOr
+// distributes across the 128 words -> an SM's warps stop funneling to one counter.
+static constexpr int BM_WORDS = 128;
+__device__ unsigned int g_bitmap[MAX_TREES * MAX_N * BM_WORDS];
+#endif
+#ifdef GALLATIN_SHARD_COUNTER
+// Sharded monotonic counters: NSHARD counters per slot, each owning a
+// contiguous SLICES_PER_SHARD range of the block's 4096 slices. O(1) reserve
+// (atomicAdd, no scan, no extra load) AND distributed (warp hashes to a shard).
+// Shard-major layout (k * trees*slots + slot) spreads a slot's shards across
+// the array -> different L2 slices, no false sharing, no explicit padding.
+static constexpr int NSHARD = 32;
+static constexpr int SLICES_PER_SHARD = 4096 / NSHARD;  // 128
+__device__ unsigned int g_shard[NSHARD * MAX_TREES * MAX_N];
+#endif
+}  // namespace gallatin_static
+
+template <typename galloc_t>
+__global__ void gallatin_static_fill_kernel(galloc_t *alloc) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) return;
+  int nt = alloc->num_trees;
+  if (nt > gallatin_static::MAX_TREES) nt = gallatin_static::MAX_TREES;
+  for (int t = 0; t < nt; t++) {
+    auto *st = alloc->local_blocks->get_tree_local_blocks(t);
+    int n = (int)st->num_blocks;
+    if (n > gallatin_static::MAX_N) n = gallatin_static::MAX_N;
+    gallatin_static::g_nblk[t] = n;
+    for (int s = 0; s < n; s++) {
+      int idx = t * gallatin_static::MAX_N + s;
+      Block *b = st->blocks[s];
+      if (b != nullptr) {
+        uint64_t gbid = alloc->table->get_global_block_offset(b);
+        uint64_t base =
+            (uint64_t)alloc->offset_to_allocation(gbid * 4096, (uint16_t)t);
+        gallatin_static::g_block[idx] = b;
+        gallatin_static::g_base[idx] = base;
+        gallatin_static::g_counter[idx * gallatin_static::CSTRIDE] = 0u;  // gen 0, count 0
+#ifdef GALLATIN_SLOT_BITMAP
+        for (int w = 0; w < gallatin_static::BM_WORDS; w++)
+          gallatin_static::g_bitmap[idx * gallatin_static::BM_WORDS + w] = 0u;
+#endif
+#ifdef GALLATIN_SHARD_COUNTER
+        for (int k = 0; k < gallatin_static::NSHARD; k++)
+          gallatin_static::g_shard[k * (gallatin_static::MAX_TREES *
+                                        gallatin_static::MAX_N) + idx] = 0u;
+#endif
+      } else {
+        gallatin_static::g_block[idx] = nullptr;
+        gallatin_static::g_base[idx] = 0;
+        gallatin_static::g_counter[idx * gallatin_static::CSTRIDE] = 4096u;  // empty slot -> forces refill
+#ifdef GALLATIN_SLOT_BITMAP
+        for (int w = 0; w < gallatin_static::BM_WORDS; w++)
+          gallatin_static::g_bitmap[idx * gallatin_static::BM_WORDS + w] = 0xFFFFFFFFu;  // empty -> full -> fallback
+#endif
+#ifdef GALLATIN_SHARD_COUNTER
+        for (int k = 0; k < gallatin_static::NSHARD; k++)
+          gallatin_static::g_shard[k * (gallatin_static::MAX_TREES *
+                                        gallatin_static::MAX_N) + idx] =
+              gallatin_static::SLICES_PER_SHARD;  // empty -> full -> fallback
+#endif
+      }
+    }
+  }
+}
+
+template <typename galloc_t>
+__host__ inline void gallatin_static_publish(galloc_t *dev_alloc) {
+  gallatin_static_fill_kernel<<<1, 1>>>(dev_alloc);
+  cudaDeviceSynchronize();
 }
 #endif
 
@@ -1207,52 +1313,299 @@ struct Gallatin {
   // Single-thread malloc. Routes the common single-slice case through the
   // uncoalesced fast path; falls back to the cooperative malloc() for larger
   // sizes and on transient failure. MUST be called by a single thread.
-#ifdef GALLATIN_CACHED_BLOCK
-  // Phase C': register/context-cached active block. Steady state is ONE
-  // atomicAdd on the cached block with NO preceding slot load (the slab model);
-  // the ld.acquire(slot) happens only on refill. Stale-safe via tag-in-counter:
-  // if the cached block was recycled to another size, the atomicAdd returns a
-  // foreign tag -> roll back the phantom increment and refill. Requires
-  // GALLATIN_FLAT_BUFFER (slot table) + GALLATIN_CONST_BASE. Single-thread.
-  __device__ void *malloc_cached(void *&cblk_raw, char *&cbase, int &csmid,
-                                 uint64_t size) {
+#ifdef GALLATIN_STATIC_COUNTER
+  // Phase D: retire a full static slot — stamp the old block full so its
+  // free/recycle accounting still matches, pull a fresh block into the
+  // underlying pinned slot, then republish base + bump generation (release).
+  __device__ void swap_static_slot(uint16_t tree_id, int idx, int slot) {
+    Block *old = reinterpret_cast<Block *>(gallatin_static::g_block[idx]);
+    per_size_pinned_blocks *container = local_blocks->get_tree_local_blocks(tree_id);
+    if (old != nullptr) {
+      atomicExch((unsigned int *)&old->malloc_counter,
+                 (((unsigned int)tree_id) << GALLATIN_BLOCK_TREE_OFFSET) | 4096u);
+      replace_block(tree_id, slot, old, container);
+    }
+    Block *fresh = gallatin::utils::load_acquire(&container->blocks[slot]);
+    unsigned int next_gen =
+        (gallatin_static::g_counter[idx * gallatin_static::CSTRIDE] >> GALLATIN_BLOCK_TREE_OFFSET) + 1u;
+    if (fresh != nullptr) {
+      uint64_t gbid = table->get_global_block_offset(fresh);
+      gallatin_static::g_block[idx] = fresh;
+      gallatin_static::g_base[idx] =
+          (uint64_t)offset_to_allocation(gbid * 4096, tree_id);
+      __threadfence();  // publish base before the generation bump
+      atomicExch(&gallatin_static::g_counter[idx * gallatin_static::CSTRIDE],
+                 next_gen << GALLATIN_BLOCK_TREE_OFFSET);  // count 0, new gen
+    } else {
+      gallatin_static::g_block[idx] = nullptr;
+      atomicExch(&gallatin_static::g_counter[idx * gallatin_static::CSTRIDE],
+                 (next_gen << GALLATIN_BLOCK_TREE_OFFSET) | 4096u);
+    }
+  }
+
+  // Phase D hot path: atomicAdd on a STATIC per-slot counter (no Block* load).
+  // The acquire-load of g_counter pairs with swap's release-exch; gen==gen0
+  // confirms no swap occurred in the window, so `base` matches the slice.
+  // Single-thread (call from one lane). Assumes pow2 nblk (true at boot).
+  __device__ void *malloc_static(uint64_t size) {
     uint16_t tree_id = get_tree_id_from_size(size);
     if (tree_id >= num_trees) return malloc(size);
     const uint64_t alloc_size = table->get_tree_alloc_size(tree_id);
+    int nblk = gallatin_static::g_nblk[tree_id];
+    int base_idx = tree_id * gallatin_static::MAX_N;
 
-    // ---- fast path: reserve from the cached block, no slot load ----
-    Block *cblk = reinterpret_cast<Block *>(cblk_raw);
-    if (cblk != nullptr) {
-      uint merged = atomicAdd((unsigned int *)&cblk->malloc_counter, 1u);
-      uint slice = merged & BITMASK(GALLATIN_BLOCK_TREE_OFFSET);
-      bool ok = cblk->check_valid(merged, tree_id);
-      if (ok && slice < 4096) {
-        void *p = cbase + static_cast<uint64_t>(slice) * alloc_size;
-        if (slice == 4095) {
-          per_size_pinned_blocks *container =
-              local_blocks->get_tree_local_blocks(tree_id);
-          replace_block(tree_id, csmid, cblk, container);
-          cblk_raw = nullptr;
+    int attempts = 0;
+    while (attempts < GALLATIN_MAX_ATTEMPTS * GALLATIN_MALLOC_LOOP_ATTEMPTS) {
+#ifdef GALLATIN_SPREAD_ATOMIC
+      int slot = (gallatin::utils::get_smid() + (int)((threadIdx.x >> 5) * 17u)) &
+                 (nblk - 1);
+#else
+      int slot = gallatin::utils::get_smid() & (nblk - 1);
+#endif
+      int idx = base_idx + slot;
+
+      unsigned int gen0 =
+          gallatin::utils::load_acquire(&gallatin_static::g_counter[idx * gallatin_static::CSTRIDE]) >>
+          GALLATIN_BLOCK_TREE_OFFSET;
+      uint64_t base = gallatin_static::g_base[idx];
+      unsigned int merged = atomicAdd(&gallatin_static::g_counter[idx * gallatin_static::CSTRIDE], 1u);
+      unsigned int count = merged & BITMASK(GALLATIN_BLOCK_TREE_OFFSET);
+      unsigned int gen = merged >> GALLATIN_BLOCK_TREE_OFFSET;
+
+      if (gen == gen0 && count < 4096) {
+        if (count == 4095) {
+          swap_static_slot(tree_id, idx, slot);
+        }
+        return reinterpret_cast<void *>(base + (uint64_t)count * alloc_size);
+      }
+      attempts++;
+    }
+    return malloc(size);
+  }
+
+  // Phase D increment 2: cached static counter. Caches {slot idx, base, gen} in
+  // the caller's context. Steady state = ONE atomicAdd on the static counter at
+  // a cached index, ZERO loads (no gen0 acquire-load). Refill (rare) re-resolves
+  // the slot with the gen-checked path. Single-thread.
+  // tree_id + alloc_size are hoisted in by the caller (loop-invariant for a
+  // fixed-size allocator) so the hot path issues ZERO resolution loads.
+  __device__ void *malloc_static_cached(int &cidx, uint64_t &cbase,
+                                        unsigned int &cgen, uint16_t tree_id,
+                                        uint64_t alloc_size, uint64_t size) {
+    if (tree_id >= num_trees) return malloc(size);
+
+    if (cidx >= 0) {
+      unsigned int merged = atomicAdd(&gallatin_static::g_counter[cidx * gallatin_static::CSTRIDE], 1u);
+      unsigned int count = merged & BITMASK(GALLATIN_BLOCK_TREE_OFFSET);
+      unsigned int gen = merged >> GALLATIN_BLOCK_TREE_OFFSET;
+      if (gen == cgen && count < 4096) {
+        void *p = reinterpret_cast<void *>(cbase + (uint64_t)count * alloc_size);
+        if (count == 4095) {
+          swap_static_slot(tree_id, cidx,
+                           cidx - tree_id * gallatin_static::MAX_N);
+          cidx = -1;
         }
         return p;
       }
-      if (!ok) {
-        // recycled to a different tree: undo the phantom increment.
-        uint64_t gbid = table->get_global_block_offset(cblk);
-        free_offset(slice + gbid * 4096);
-      }
-      cblk_raw = nullptr;
+      cidx = -1;  // gen mismatch (swapped) or full -> refill
     }
 
+    int nblk = gallatin_static::g_nblk[tree_id];
+    int base_idx = tree_id * gallatin_static::MAX_N;
+    int attempts = 0;
+    while (attempts < GALLATIN_MAX_ATTEMPTS * GALLATIN_MALLOC_LOOP_ATTEMPTS) {
+#ifdef GALLATIN_SPREAD_ATOMIC
+      int slot = (gallatin::utils::get_smid() + (int)((threadIdx.x >> 5) * 17u)) &
+                 (nblk - 1);
+#else
+      int slot = gallatin::utils::get_smid() & (nblk - 1);
+#endif
+      int idx = base_idx + slot;
+      unsigned int gen0 =
+          gallatin::utils::load_acquire(&gallatin_static::g_counter[idx * gallatin_static::CSTRIDE]) >>
+          GALLATIN_BLOCK_TREE_OFFSET;
+      uint64_t base = gallatin_static::g_base[idx];
+      unsigned int merged = atomicAdd(&gallatin_static::g_counter[idx * gallatin_static::CSTRIDE], 1u);
+      unsigned int count = merged & BITMASK(GALLATIN_BLOCK_TREE_OFFSET);
+      unsigned int gen = merged >> GALLATIN_BLOCK_TREE_OFFSET;
+      if (gen == gen0 && count < 4096) {
+        void *p = reinterpret_cast<void *>(base + (uint64_t)count * alloc_size);
+        if (count == 4095) {
+          swap_static_slot(tree_id, idx, slot);
+        } else {
+          cidx = idx;
+          cbase = base;
+          cgen = gen;  // cache for the next allocation
+        }
+        return p;
+      }
+      attempts++;
+    }
+    return malloc(size);
+  }
+
+#ifdef GALLATIN_MINIMAL
+  // MINIMAL Gallatin-pool allocate: warp-private static counter over the
+  // pre-pinned blocks, referencing NONE of the cold machinery (no malloc()
+  // fallback, no replace_block, no refill loop) so nvcc has nothing big to
+  // inline -> the kernel collapses toward slab's ~160 instructions -> ~19 regs
+  // -> high occupancy. ALLOC_SIZE is a compile-time immediate (slice*size ->
+  // shift). Caches {slot,base}. Returns nullptr if a slot block overflows
+  // (benchmark pre-sizes MIN_PINNED so warp-private slots never fill).
+  template <uint64_t ALLOC_SIZE>
+  __device__ void *malloc_minimal(int &cidx, uint64_t &cbase, uint16_t tree_id) {
+    if (cidx >= 0) {
+      unsigned int count =
+          atomicAdd(&gallatin_static::g_counter[cidx * gallatin_static::CSTRIDE],
+                    1u) & BITMASK(GALLATIN_BLOCK_TREE_OFFSET);
+      if (count < 4096)
+        return reinterpret_cast<void *>(cbase + (uint64_t)count * ALLOC_SIZE);
+      cidx = -1;
+    }
+    unsigned int gwid = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    int nblk = gallatin_static::g_nblk[tree_id];
+    int slot =
+        tree_id * gallatin_static::MAX_N + (int)(gwid & (unsigned)(nblk - 1));
+    unsigned int count =
+        atomicAdd(&gallatin_static::g_counter[slot * gallatin_static::CSTRIDE],
+                  1u) & BITMASK(GALLATIN_BLOCK_TREE_OFFSET);
+    if (count < 4096) {
+      cidx = slot;
+      cbase = gallatin_static::g_base[slot];
+      return reinterpret_cast<void *>(cbase + (uint64_t)count * ALLOC_SIZE);
+    }
+    return nullptr;
+  }
+#endif
+
+#ifdef GALLATIN_SLOT_BITMAP
+  // Per-slot bitmap reservation. The reserving atomicOr is distributed across
+  // BM_WORDS words per slot, so an SM's warps spread instead of funneling to one
+  // counter (the proven contention cost). Caches {slot idx, base, word} in the
+  // caller's context; tree_id + alloc_size hoisted in (loop-invariant).
+  // v1: no swap -- on block-full, fall back to cooperative malloc(). Single-thread.
+  __device__ void *malloc_slot_bitmap(int &cidx, uint64_t &cbase, int &cword,
+                                      uint16_t tree_id, uint64_t alloc_size,
+                                      uint64_t size) {
+    if (tree_id >= num_trees) return malloc(size);
+    // global warp id: spread the starting word across ALL BM_WORDS (not just
+    // the 0..7 warp-in-block id) so warps don't pile onto a few words.
+    unsigned int gwid = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    if (cidx < 0) {
+      int nblk = gallatin_static::g_nblk[tree_id];
+      int slot = (gallatin::utils::get_smid()
+#ifdef GALLATIN_SPREAD_ATOMIC
+                  + (int)((threadIdx.x >> 5) * 17u)
+#endif
+                  ) & (nblk - 1);
+      cidx = tree_id * gallatin_static::MAX_N + slot;
+      cbase = gallatin_static::g_base[cidx];
+#ifdef GALLATIN_SHARD_COUNTER
+      cword = (int)(gwid & (gallatin_static::NSHARD - 1));
+#else
+      cword = (int)(gwid & (gallatin_static::BM_WORDS - 1));
+#endif
+    }
+#ifdef GALLATIN_SHARD_COUNTER
+    // sharded monotonic counters: O(1) atomicAdd on the warp's cached shard,
+    // distributed across NSHARD per-slot counters (shard-major -> no false share).
+    const int TS = gallatin_static::MAX_TREES * gallatin_static::MAX_N;
+    for (int probe = 0; probe < gallatin_static::NSHARD; probe++) {
+      int k = cword & (gallatin_static::NSHARD - 1);
+      unsigned int count =
+          atomicAdd(&gallatin_static::g_shard[k * TS + cidx], 1u);
+      if (count < (unsigned)gallatin_static::SLICES_PER_SHARD) {
+        uint64_t slice =
+            (uint64_t)k * gallatin_static::SLICES_PER_SHARD + count;
+        return reinterpret_cast<void *>(cbase + slice * alloc_size);
+      }
+      cword = (cword + 1) & (gallatin_static::NSHARD - 1);  // shard full, advance
+    }
+    cidx = -1;  // block full -> refill next call
+    return malloc(size);
+#else
+    // per-warp bit rotation: start the in-word search at a warp-dependent bit
+    // so warps sharing a word don't all collide on __ffs's lowest free bit.
+    const unsigned int brot = gwid & 31u;
+    unsigned int *bm =
+        &gallatin_static::g_bitmap[(uint64_t)cidx * gallatin_static::BM_WORDS];
+    for (int probe = 0; probe < gallatin_static::BM_WORDS; probe++) {
+      int w = cword & (gallatin_static::BM_WORDS - 1);
+      unsigned int word = bm[w];
+      while (word != 0xFFFFFFFFu) {
+        // rotate free-bit selection by brot to de-correlate warps on this word.
+        unsigned int free = ~word;
+        unsigned int rotfree = (free >> brot) | (free << (32u - brot));
+        int rbit = __ffs(rotfree) - 1;
+        int bit = (int)((rbit + brot) & 31u);
+        unsigned int mask = 1u << bit;
+        unsigned int old = atomicOr(&bm[w], mask);
+        if (!(old & mask)) {
+          uint64_t slice = (uint64_t)w * 32u + (uint64_t)bit;
+          return reinterpret_cast<void *>(cbase + slice * alloc_size);
+        }
+        word = old | mask;  // bit was taken; try another bit in this word
+      }
+      cword = (cword + 1) & (gallatin_static::BM_WORDS - 1);  // word full, advance
+    }
+    cidx = -1;  // block full -> refill next call
+    return malloc(size);
+#endif
+  }
+#endif
+#endif
+
+#ifdef GALLATIN_CACHED_BLOCK
+#ifdef GALLATIN_NOINLINE_REFILL
+#define GALLATIN_REFILL_ATTR __noinline__
+#else
+#define GALLATIN_REFILL_ATTR __forceinline__
+#endif
+#ifdef GALLATIN_OUTLINE_COLD
+  // Outline the giant cooperative malloc() fallback so it does NOT get inlined
+  // into alloc_kernel and inflate its register footprint / cause spilling. It
+  // runs only under genuine pool pressure (essentially never on the hot path).
+  __noinline__ __device__ void *malloc_cold(uint64_t size) { return malloc(size); }
+#define GALLATIN_COLD_MALLOC(sz) malloc_cold(sz)
+#else
+#define GALLATIN_COLD_MALLOC(sz) malloc(sz)
+#endif
+#ifdef GALLATIN_OUTLINE_ALL
+  // Outline the rare block-swap (hit ~1/4096 allocs) so replace_block + the
+  // pinned-buffer machinery don't inline into the hot kernel (the SASS bloat
+  // that pins registers/occupancy). __noinline__ keeps alloc_kernel tiny.
+  __noinline__ __device__ void replace_block_cold(int tree_id, int csmid,
+                                                  Block *cblk) {
+    per_size_pinned_blocks *container =
+        local_blocks->get_tree_local_blocks(tree_id);
+    replace_block(tree_id, csmid, cblk, container);
+  }
+#endif
+  // Cold refill for malloc_cached, optionally outlined (__noinline__) so its
+  // 64-bit locals don't inflate the whole fast-path/kernel register count.
+  GALLATIN_REFILL_ATTR __device__ void *malloc_cached_refill(
+      void *&cblk_raw, char *&cbase, int &csmid, uint16_t tree_id,
+      uint64_t alloc_size, uint64_t size) {
     // ---- refill: pull a block from the flat slot table, then cache it ----
     Block **slots = gallatin_flat::g_tree_slots[tree_id].blocks;
     uint64_t nblk = gallatin_flat::g_tree_slots[tree_id].num_blocks;
     int num_attempts = 0;
     while (num_attempts < GALLATIN_MAX_ATTEMPTS * GALLATIN_MALLOC_LOOP_ATTEMPTS) {
-#ifdef GALLATIN_POW2_BLOCKS
-      int smid = gallatin::utils::get_smid() & (int)(nblk - 1);
+#ifdef GALLATIN_WARP_PRIVATE_BLOCK
+      // map each warp to a (near-)private block by global warp id, so warps
+      // stop sharing one per-SM block counter (reaches the per-warp-private
+      // contention-free floor when nblk >= concurrent warps).
+      int base_smid = (int)((blockIdx.x * blockDim.x + threadIdx.x) >> 5);
+#elif defined(GALLATIN_SPREAD_ATOMIC)
+      int base_smid =
+          gallatin::utils::get_smid() + (int)((threadIdx.x >> 5) * 17u);
 #else
-      int smid = gallatin::utils::get_smid() % nblk;
+      int base_smid = gallatin::utils::get_smid();
+#endif
+#ifdef GALLATIN_POW2_BLOCKS
+      int smid = base_smid & (int)(nblk - 1);
+#else
+      int smid = base_smid % nblk;
 #endif
       Block *my_block = gallatin::utils::load_acquire(&slots[smid]);
       int probe = 0;
@@ -1267,7 +1620,7 @@ struct Gallatin {
       }
       if (my_block == nullptr) {
         if (sub_trees[tree_id]->is_empty() && segment_tree->is_empty())
-          return malloc(size);
+          return GALLATIN_COLD_MALLOC(size);
         num_attempts++;
         continue;
       }
@@ -1295,8 +1648,119 @@ struct Gallatin {
       }
       num_attempts++;
     }
-    return malloc(size);
+    return GALLATIN_COLD_MALLOC(size);
   }
+
+  // Phase C': register/context-cached active block. Steady state is ONE
+  // atomicAdd on the cached block with NO preceding slot load (the slab model);
+  // the ld.acquire(slot) happens only on refill. Stale-safe via tag-in-counter:
+  // if the cached block was recycled to another size, the atomicAdd returns a
+  // foreign tag -> roll back the phantom increment and refill. Requires
+  // GALLATIN_FLAT_BUFFER (slot table) + GALLATIN_CONST_BASE. Single-thread.
+  __device__ void *malloc_cached(void *&cblk_raw, char *&cbase, int &csmid,
+                                 uint64_t size) {
+    uint16_t tree_id = get_tree_id_from_size(size);
+    if (tree_id >= num_trees) return malloc(size);
+    const uint64_t alloc_size = table->get_tree_alloc_size(tree_id);
+
+    // ---- fast path: reserve from the cached block, no slot load ----
+    Block *cblk = reinterpret_cast<Block *>(cblk_raw);
+    if (cblk != nullptr) {
+#ifdef GALLATIN_PERWARP_ATOMIC_DIAG
+      // DIAGNOSTIC ONLY (unsafe): point the reserving atomic at a per-warp,
+      // cacheline-padded private counter -> ZERO cross-warp contention, every
+      // other instruction/load identical to cp2. Isolates the cost due purely
+      // to atomic contention on the shared block counter.
+      unsigned int gwid = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+      uint merged =
+          atomicAdd(&gallatin_perwarp::g_scratch[(gwid & 65535u) * 32u], 1u);
+      uint slice = merged & BITMASK(GALLATIN_BLOCK_TREE_OFFSET);
+      bool ok = true;
+#else
+      uint merged = atomicAdd((unsigned int *)&cblk->malloc_counter, 1u);
+      uint slice = merged & BITMASK(GALLATIN_BLOCK_TREE_OFFSET);
+      bool ok = cblk->check_valid(merged, tree_id);
+#endif
+      if (ok && slice < 4096) {
+        void *p = cbase + static_cast<uint64_t>(slice) * alloc_size;
+        if (slice == 4095) {
+          per_size_pinned_blocks *container =
+              local_blocks->get_tree_local_blocks(tree_id);
+          replace_block(tree_id, csmid, cblk, container);
+          cblk_raw = nullptr;
+        }
+        return p;
+      }
+      if (!ok) {
+        // recycled to a different tree: undo the phantom increment.
+        uint64_t gbid = table->get_global_block_offset(cblk);
+        free_offset(slice + gbid * 4096);
+      }
+      cblk_raw = nullptr;
+    }
+
+    return malloc_cached_refill(cblk_raw, cbase, csmid, tree_id, alloc_size,
+                                size);
+  }
+
+#ifdef GALLATIN_CACHED_HOISTED
+  // Same as malloc_cached but tree_id + alloc_size are compile-time/cached, so
+  // the hot path issues ZERO resolution loads and keeps fewer 64-bit values
+  // live. ALLOC_SIZE is a template constant (the fixed slice size), so
+  // slice*ALLOC_SIZE folds to an immediate shift and no 8-byte alloc_size lives
+  // across the loop -> fewer registers / less spill. Single-thread.
+  template <uint64_t ALLOC_SIZE>
+  __device__ void *malloc_cached_hoisted(void *&cblk_raw, char *&cbase,
+                                         int &csmid, uint16_t tree_id,
+                                         uint64_t size) {
+    Block *cblk = reinterpret_cast<Block *>(cblk_raw);
+    if (cblk != nullptr) {
+      uint merged = atomicAdd((unsigned int *)&cblk->malloc_counter, 1u);
+      uint slice = merged & BITMASK(GALLATIN_BLOCK_TREE_OFFSET);
+#ifdef GALLATIN_ARENA
+      // Single-size arena: this allocator only ever serves one tree, so a
+      // cached block never recycles to a DIFFERENT size -> the tag check is
+      // always true. Strip check_valid (the tag compare + branch + rollback)
+      // to approach slab's instruction count. ONLY valid for single-size use.
+      if (slice < 4096) {
+        void *p = cbase + static_cast<uint64_t>(slice) * ALLOC_SIZE;
+        if (slice == 4095) {
+#ifdef GALLATIN_OUTLINE_ALL
+          replace_block_cold(tree_id, csmid, cblk);
+#else
+          per_size_pinned_blocks *container =
+              local_blocks->get_tree_local_blocks(tree_id);
+          replace_block(tree_id, csmid, cblk, container);
+#endif
+          cblk_raw = nullptr;
+        }
+        return p;
+      }
+      cblk_raw = nullptr;
+#else
+      bool ok = cblk->check_valid(merged, tree_id);
+      if (ok && slice < 4096) {
+        void *p = cbase + static_cast<uint64_t>(slice) * ALLOC_SIZE;
+        if (slice == 4095) {
+          per_size_pinned_blocks *container =
+              local_blocks->get_tree_local_blocks(tree_id);
+          replace_block(tree_id, csmid, cblk, container);
+          cblk_raw = nullptr;
+        }
+        return p;
+      }
+      if (!ok) {  // recycled to another tree: undo the phantom increment
+        uint64_t gbid = table->get_global_block_offset(cblk);
+        free_offset(slice + gbid * 4096);
+      }
+      cblk_raw = nullptr;
+#endif
+    }
+    return malloc_cached_refill(cblk_raw, cbase, csmid, tree_id, ALLOC_SIZE,
+                                size);
+  }
+#endif
+#undef GALLATIN_REFILL_ATTR
 #endif
 
 #ifdef GALLATIN_FLAT_BUFFER
@@ -1315,10 +1779,19 @@ struct Gallatin {
 
     int num_attempts = 0;
     while (num_attempts < GALLATIN_MAX_ATTEMPTS * GALLATIN_MALLOC_LOOP_ATTEMPTS) {
-#ifdef GALLATIN_POW2_BLOCKS
-      int smid = gallatin::utils::get_smid() & (int)(nblk - 1);
+#ifdef GALLATIN_SPREAD_ATOMIC
+      // spread an SM's warps across distinct slots so they cache different
+      // blocks -> the reserving atomicAdd distributes instead of funneling to
+      // one per-SM block counter. 17 is coprime with pow2 nblk => good spread.
+      int base_smid =
+          gallatin::utils::get_smid() + (int)((threadIdx.x >> 5) * 17u);
 #else
-      int smid = gallatin::utils::get_smid() % nblk;
+      int base_smid = gallatin::utils::get_smid();
+#endif
+#ifdef GALLATIN_POW2_BLOCKS
+      int smid = base_smid & (int)(nblk - 1);
+#else
+      int smid = base_smid % nblk;
 #endif
       Block *my_block = gallatin::utils::load_acquire(&slots[smid]);
       int probe = 0;
