@@ -429,6 +429,18 @@ __device__ int g_nblk[MAX_TREES];
 // so concurrent overflowing warps don't race in swap_static_slot.
 __device__ int g_swaplock[MAX_TREES * MAX_N];
 #endif
+// Lightweight integer hash (fmix32) used to map a caller id -> slot. Hashing the
+// thread id (not warp id) spreads consecutive callers across slots, so distinct
+// tiles -- even 16-lane tiles sharing a 32-lane warp -- land on distinct slots,
+// removing the systematic collision that made small pinned-block counts contend.
+__device__ __forceinline__ unsigned int slot_hash(unsigned int x) {
+  x ^= x >> 16;
+  x *= 0x7feb352du;
+  x ^= x >> 15;
+  x *= 0x846ca68bu;
+  x ^= x >> 16;
+  return x;
+}
 #ifdef GALLATIN_SLOT_BITMAP
 // Per-slot reservation bitmap: 128 words (4096 bits = 4096 slices) per pinned
 // slot. Lives in the slot storage, so overhead is constant (trees * slots *
@@ -1428,7 +1440,10 @@ struct Gallatin {
     int attempts = 0;
     while (attempts < GALLATIN_MAX_ATTEMPTS * GALLATIN_MALLOC_LOOP_ATTEMPTS) {
 #if defined(GALLATIN_WARP_PRIVATE_BLOCK)
-      int slot = (int)(((blockIdx.x * blockDim.x + threadIdx.x) >> 5) &
+      // hash the caller's global thread id -> slot (per-tile distinct, well
+      // distributed even for sub-warp tiles; the calling lane is the tile lead).
+      int slot = (int)(gallatin_static::slot_hash(
+                           blockIdx.x * blockDim.x + threadIdx.x) &
                        (unsigned)(nblk - 1));
 #elif defined(GALLATIN_SPREAD_ATOMIC)
       int slot = (gallatin::utils::get_smid() + (int)((threadIdx.x >> 5) * 17u)) &
@@ -1565,7 +1580,10 @@ struct Gallatin {
     int attempts = 0;
     while (attempts < GALLATIN_MAX_ATTEMPTS * GALLATIN_MALLOC_LOOP_ATTEMPTS) {
 #if defined(GALLATIN_WARP_PRIVATE_BLOCK)
-      int slot = (int)(((blockIdx.x * blockDim.x + threadIdx.x) >> 5) &
+      // hash the caller's global thread id -> slot (per-tile distinct, well
+      // distributed even for sub-warp tiles; the calling lane is the tile lead).
+      int slot = (int)(gallatin_static::slot_hash(
+                           blockIdx.x * blockDim.x + threadIdx.x) &
                        (unsigned)(nblk - 1));
 #elif defined(GALLATIN_SPREAD_ATOMIC)
       int slot = (gallatin::utils::get_smid() + (int)((threadIdx.x >> 5) * 17u)) &
