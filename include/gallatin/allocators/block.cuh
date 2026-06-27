@@ -320,9 +320,6 @@ struct Block {
     #if GALLATIN_BLOCK_DEBUG
 
     if (old_count != 0){
-
-      //we fucked up, but it's ok! just need to add to the free counter so the block cycles
-
       
 
       printf("Block for full segment already malloced. Not an error but concerning.\n");

@@ -1645,6 +1645,9 @@ struct Gallatin {
   // Push the old block into the per-gen ring so a torn gen-G reservation can still
   // roll back on it (R1), then pull a fresh block via the proven replace_block,
   // publish base/block, and bump gen with count reset (release via atomicExch).
+  // Cold (~1/4096 of reservations): out-of-line so it doesn't inflate the hot
+  // gstatic_fast/grouped register footprint.
+  GALLATIN_COLD_ATTR
   __device__ void swap_slot_static(uint16_t tree_id, int sidx, int slot, unsigned int gen) {
     per_size_pinned_blocks *container = local_blocks->get_tree_local_blocks(tree_id);
     Block *old_block = block_cache::g_block[sidx];
@@ -1812,6 +1815,9 @@ struct Gallatin {
   // R5 (probe past full), R6 (rollback keeps free_counter exact). On the slice that
   // fills a slot (count==4095) it swaps and returns cidx=-1 so the caller does NOT
   // cache a just-swapped slot.
+  // Cold (only on cache miss / slot full / swap): out-of-line so the re-resolve
+  // loop's registers never burden the hot gstatic_fast path inlined into allocate().
+  GALLATIN_COLD_ATTR
   __device__ void *gstatic_slow(uint16_t tree_id, uint64_t alloc_size,
                                 int &o_cidx, uint64_t &o_cbase, unsigned int &o_cgen) {
     o_cidx = -1; o_cbase = 0; o_cgen = 0;
@@ -1846,6 +1852,75 @@ struct Gallatin {
       return (void *)(sbase + (uint64_t)count * alloc_size);
     }
     return nullptr;  // genuine exhaustion
+  }
+
+  // Software-pipelined fast path: hides the atomicAdd-return latency (the only
+  // remaining gap to slab once instructions are below slab's). Each call CONSUMES
+  // the reservation issued by the PREVIOUS call (its atomic has had a full insert
+  // iteration to retire, so decoding it doesn't stall) and ISSUES the next
+  // reservation WITHOUT decoding it -- so that atomic's latency overlaps the
+  // caller's between-allocation work. The raw result lives undecoded in pf_merged.
+  //
+  // SAFETY (impossible to lose an allocation):
+  //  * Every call returns a valid slice (consume-hit, else gstatic_fast, else
+  //    gstatic_slow) -- the caller never starves.
+  //  * At most ONE reservation is ever outstanding (pf_valid). It is consumed on
+  //    the next call, or returned at context teardown via free() on its address
+  //    (identical to an app alloc+free -> R6 recycle accounting stays exact).
+  //  * A stale prefetch (slot swapped/full before consume) is a harmless wasted
+  //    increment (wiped by the swap's atomicExch, R5); the caller still gets a
+  //    fresh valid slice. No double-alloc: each (slot,gen,count) is unique.
+  __device__ void *gstatic_prefetch(int &cidx, uint64_t &cbase, unsigned int &cgen,
+                                    unsigned long long &pf_merged, int &pf_cidx,
+                                    uint64_t &pf_cbase, unsigned int &pf_cgen,
+                                    bool &pf_valid, uint16_t tree_id,
+                                    uint64_t alloc_size) {
+    void *result = nullptr;
+    // ---- consume the previously-issued reservation (decode last call's atomic) --
+    if (pf_valid) {
+      unsigned int gen = (unsigned int)(pf_merged >> 32);
+      unsigned int count = (unsigned int)(pf_merged & 0xffffffffu);
+      if (gen == pf_cgen && count < 4096) {
+        if (count == 4095)
+          swap_slot_static(tree_id, pf_cidx, pf_cidx % block_cache::MAX_N, gen);
+        result = (void *)(pf_cbase + (uint64_t)count * alloc_size);
+        cidx = (count == 4095) ? -1 : pf_cidx;  // keep caching unless it filled
+        cbase = pf_cbase;
+        cgen = pf_cgen;
+      } else {
+        cidx = -1;  // our slot swapped/full -> re-resolve below
+      }
+      pf_valid = false;
+    }
+    // ---- synchronous fallback so the caller never starves ----
+    if (result == nullptr) {
+      result = gstatic_fast(cidx, cbase, cgen, alloc_size);
+      if (result == nullptr)
+        result = gstatic_slow(tree_id, alloc_size, cidx, cbase, cgen);
+    }
+    // ---- issue the NEXT reservation; DO NOT decode it (latency hidden) ----
+    if (cidx >= 0) {
+      pf_merged = atomicAdd(
+          &block_cache::g_ctr64[cidx * block_cache::CSTRIDE64], 1ULL);
+      pf_cidx = cidx;
+      pf_cbase = cbase;
+      pf_cgen = cgen;
+      pf_valid = true;
+    }
+    return result;
+  }
+
+  // Decode an outstanding prefetched reservation to its slice address, or null if
+  // it was stale (already wiped). Used by the context destructor to return the
+  // unconsumed reservation so no allocation is ever lost.
+  __device__ void *gstatic_prefetch_drain(unsigned long long pf_merged,
+                                          uint64_t pf_cbase, unsigned int pf_cgen,
+                                          uint64_t alloc_size) {
+    unsigned int gen = (unsigned int)(pf_merged >> 32);
+    unsigned int count = (unsigned int)(pf_merged & 0xffffffffu);
+    if (gen == pf_cgen && count < 4096)
+      return (void *)(pf_cbase + (uint64_t)count * alloc_size);
+    return nullptr;
   }
 #endif
 
