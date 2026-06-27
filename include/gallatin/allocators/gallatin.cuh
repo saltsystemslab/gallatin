@@ -1788,20 +1788,41 @@ struct Gallatin {
   // slot just misses -> caller drops into gstatic_slow (the safe re-resolve). This
   // is the safe analogue of the broken a792 fastslow: same one-atomic hot path,
   // but cbase/cgen are register-resident so no torn base read can occur.
-  __device__ void *gstatic_fast(int cidx, uint64_t cbase, unsigned int cgen,
+  __device__ void *gstatic_fast(int cidx, uint64_t &cbase, unsigned int &cgen,
                                 uint64_t alloc_size) {
     if (cidx < 0) return nullptr;
     unsigned long long merged = atomicAdd(
         &block_cache::g_ctr64[cidx * block_cache::CSTRIDE64], 1ULL);
     unsigned int gen = (unsigned int)(merged >> 32);
     unsigned int count = (unsigned int)(merged & 0xffffffffu);
-    if (gen == cgen && count < 4096) {
-      if (count == 4095)
+    if (count >= 4096)
+      return nullptr;  // full: the past-full increment is wiped by the swap (R5) -> no leak
+    if (gen == cgen) {  // WARM cache (common path): byte-identical to the original,
+      if (count == 4095)  // no extra load -> no IndexinGPU regression.
         swap_slot_static((uint16_t)(cidx / block_cache::MAX_N), cidx,
                          cidx % block_cache::MAX_N, gen);
       return (void *)(cbase + (uint64_t)count * alloc_size);
     }
-    return nullptr;  // swapped or full -> caller re-resolves via gstatic_slow
+    // STALE cache (slot swapped since we cached it): we reserved a REAL slice on
+    // gen's block. NEVER leak it -- resolve exactly like gstatic_slow (R1): load the
+    // new base + re-verify gen, then either USE the slice (gen still live) or ROLL IT
+    // BACK on the ring. The rollback targets `gen` (the gen our atomicAdd landed on);
+    // if it has retired since, it JUST retired -> it is in g_prev -> ring-safe.
+    // cbase/cgen self-heal so the next call is warm again.
+    uint64_t sbase = gallatin::utils::load_acquire(&block_cache::g_sbase[cidx]);
+    if ((unsigned int)(gallatin::utils::load_acquire(
+            &block_cache::g_ctr64[cidx * block_cache::CSTRIDE64]) >> 32) != gen) {
+      Block *bg = block_cache::g_prev[cidx * block_cache::RING + (gen % block_cache::RING)];
+      if (bg != nullptr)
+        free_offset(table->get_global_block_offset(bg) * 4096 + count);
+      return nullptr;  // -> caller re-resolves via gstatic_slow
+    }
+    if (count == 4095)
+      swap_slot_static((uint16_t)(cidx / block_cache::MAX_N), cidx,
+                       cidx % block_cache::MAX_N, gen);
+    cbase = sbase;
+    cgen = gen;
+    return (void *)(sbase + (uint64_t)count * alloc_size);
   }
 
   // Warp-coalesced fast path -- Gallatin's defining behavior, applied to the
@@ -1833,33 +1854,60 @@ struct Gallatin {
     uint64_t lcbase = team.shfl(cbase, 0);
     unsigned int lcgen = team.shfl(cgen, 0);
 
+    // Leader reserves the run with ONE atomicAdd(n). On a WARM slot the run is used
+    // directly (no extra load). On a STALE slot the run is resolved like gstatic_slow
+    // (use if the gen is still live, else roll the whole run back on the ring) so a
+    // swapped slot's reservation is never leaked.
     bool ok = false;
     unsigned int start = 0;
+    uint64_t use_base = lcbase;
+    unsigned int use_gen = lcgen;
     if (rank == 0 && lcidx >= 0) {
       unsigned long long merged =
           atomicAdd(&block_cache::g_ctr64[lcidx * block_cache::CSTRIDE64],
                     (unsigned long long)n);
-      if ((unsigned int)(merged >> 32) == lcgen) {
-        start = (unsigned int)(merged & 0xffffffffu);
-        ok = true;
+      unsigned int rgen = (unsigned int)(merged >> 32);
+      start = (unsigned int)(merged & 0xffffffffu);
+      if (start >= 4096) {
+        // full: past-full increments are wiped by the swap (R5) -> no slice, no leak.
+      } else if (rgen == lcgen) {
+        ok = true;  // WARM cache
+      } else {
+        // STALE: the run [start,start+n) is REAL on rgen's block. Resolve safely --
+        // if rgen still live USE it on the swapped-in block; else roll the run back
+        // on the ring (rgen just-retired -> in g_prev -> safe).
+        uint64_t sbase = gallatin::utils::load_acquire(&block_cache::g_sbase[lcidx]);
+        if ((unsigned int)(gallatin::utils::load_acquire(
+                &block_cache::g_ctr64[lcidx * block_cache::CSTRIDE64]) >> 32) == rgen) {
+          ok = true; use_base = sbase; use_gen = rgen;
+        } else {
+          unsigned int end = (start + n < 4096u) ? (start + n) : 4096u;
+          Block *bg = block_cache::g_prev[lcidx * block_cache::RING + (rgen % block_cache::RING)];
+          if (bg != nullptr) {
+            uint64_t gbid = table->get_global_block_offset(bg) * 4096;
+            for (unsigned int s = start; s < end; s++) free_offset(gbid + s);
+          }
+        }
       }
     }
     ok = team.shfl(ok, 0);
     start = team.shfl(start, 0);
+    use_base = team.shfl(use_base, 0);
+    use_gen = team.shfl(use_gen, 0);
 
     void *result = nullptr;
     if (ok) {
       unsigned int slice = start + rank;
       // sole replacer: at most one lane per coalesced batch lands on 4095.
       if (slice == 4095)
-        swap_slot_static(tree_id, lcidx, lcidx % block_cache::MAX_N, lcgen);
+        swap_slot_static(tree_id, lcidx, lcidx % block_cache::MAX_N, use_gen);
       team.sync();
       if (slice < 4096) {
         // adopt the leader's slot; invalidate if the batch reached/crossed 4096.
         cidx = (start + n >= 4096) ? -1 : lcidx;
-        cbase = lcbase;
-        cgen = lcgen;
-        result = (void *)(lcbase + (uint64_t)slice * alloc_size);
+        cbase = use_base;
+        cgen = use_gen;
+        result = (void *)(use_base + (uint64_t)slice * alloc_size);
       } else {
         cidx = -1;  // past block end -> re-resolve on the next call
       }

@@ -339,22 +339,18 @@ int main(int argc, char** argv) {
     printf("gallatin_context_test[isolated]: %s\n", fails == 0 ? "PASS" : "FAIL");
     return fails ? 1 : 0;
   }
-  // Run every pattern (single + grouped) on a FRESH allocator each. A single
-  // shared allocator across all 8 subtests (~100M sustained ops) degrades capacity
-  // cumulatively (a general fragmentation effect that also hits stateless malloc,
-  // NOT a per-pattern correctness issue) and masks each pattern's real behavior.
-  // Per-subtest fresh allocators measure each pattern's own multi-size safety.
-  gallatin_type::free_on_device(g);
-  cudaDeviceSynchronize();
+  // Run every pattern (single + grouped) on ONE shared allocator. With the stale-
+  // slot leak fixed (gstatic_fast/grouped resolve a swapped reservation instead of
+  // discarding it) sustained multi-size churn no longer degrades capacity, so a
+  // single allocator stays at 0% miss across all subtests -- which also exercises
+  // cross-pattern coexistence on the same live counters/blocks.
   for (int grouped = 0; grouped <= 1; grouped++) {
     for (int pat = 0; pat < 4; pat++) {
-      gallatin_type* gp = gallatin_type::generate_on_device(num_bytes, 111);
-      cudaDeviceSynchronize();
-      fails += run_one(kPatternNames[pat], gp, nthreads, rounds, pat, grouped);
-      gallatin_type::free_on_device(gp);
-      cudaDeviceSynchronize();
+      fails += run_one(kPatternNames[pat], g, nthreads, rounds, pat, grouped);
     }
   }
+  gallatin_type::free_on_device(g);
+  cudaDeviceSynchronize();
 
   if (fails == 0) {
     printf("gallatin_context_test: PASS (0 double-alloc; all multi-size + mixed patterns give allocations)\n");
