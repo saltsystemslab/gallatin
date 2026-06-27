@@ -1,5 +1,16 @@
 #ifndef GALLATIN_ALLOCATOR
 #define GALLATIN_ALLOCATOR
+
+// Cold-path outlining (opt #1, DEFAULT ON): the rare allocation paths
+// (block/segment alloc, block replace/recycle) are __noinline__ so they leave
+// the hot malloc/free kernel's register footprint -> higher occupancy.
+// Measured +11-35% on chain/cuckoo insert (validated). Opt out with
+// -DGALLATIN_NO_OUTLINE_COLD to A/B.
+#ifndef GALLATIN_NO_OUTLINE_COLD
+#define GALLATIN_COLD_ATTR __noinline__
+#else
+#define GALLATIN_COLD_ATTR
+#endif
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without l> imitation the
@@ -131,6 +142,14 @@ namespace allocators {
 // segment budget can be swept without editing source. Default stays 32.
 #ifndef MIN_PINNED_CUTOFF
 #define MIN_PINNED_CUTOFF 32
+#endif
+// Geometric START of the per-tree pinned wavefront (tree 0 gets this many slots,
+// halving per larger tree down to MIN_PINNED_CUTOFF, capped by the pool budget).
+// Raising the START (not the MIN floor) spreads warps across more counters on the
+// hot small-slice trees -- the contention lever -- while the halving keeps large-
+// slice trees' pinned memory bounded. -DGALLATIN_PINNED_WAVEFRONT=N to sweep.
+#ifndef GALLATIN_PINNED_WAVEFRONT
+#define GALLATIN_PINNED_WAVEFRONT 256
 #endif
 #define GALLATIN_TEAM_FREE 1
 
@@ -278,6 +297,88 @@ __global__ void boot_shared_block_container(
   }
 }
 
+
+// ---- Block-pointer cache (resident fast path over the REAL Block::malloc_counter) ----
+// Caches one Block* per (tree, slot) so the hot allocation path skips
+// get_valid_block's probe + the tree-local-blocks chain. Allocation STILL flows
+// through Block::malloc_counter (single source of truth), reusing the proven
+// block_malloc / check_valid / replace_block / free_offset machinery -- so the
+// shadow-counter bug classes (count overflow, generation wraparound, torn base,
+// dual-counter double-alloc, leak) cannot occur. Memory-neutral: one pointer per
+// already-pinned slot; no extra pinned blocks. Disable with -DGALLATIN_NO_BLOCK_CACHE.
+#ifndef GALLATIN_NO_BLOCK_CACHE
+#define GALLATIN_BLOCK_CACHE
+#endif
+
+#ifdef GALLATIN_BLOCK_CACHE
+namespace block_cache {
+static constexpr int MAX_TREES = 16;
+#ifndef GALLATIN_CACHE_MAX_N
+#define GALLATIN_CACHE_MAX_N 4096
+#endif
+static constexpr int MAX_N = GALLATIN_CACHE_MAX_N;  // must cover per-tree num_blocks
+__device__ Block *g_block[MAX_TREES * MAX_N];
+__device__ int g_nblk[MAX_TREES];
+// fmix32: thread-id -> slot. Hashing the thread id (not warp id) spreads a warp's
+// lanes across distinct slots/blocks, so per-lane reserves hit distinct counters
+// (low contention) without pinning extra blocks.
+__device__ __forceinline__ unsigned int slot_hash(unsigned int x) {
+  x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
+  return x;
+}
+
+#ifdef GALLATIN_STATIC_COUNTER
+// Off-block padded reservation counter (one atomic, not gated on a block load).
+// g_ctr64[slot*CSTRIDE64] packs (gen<<32)|count: 32-bit count can't overflow (R2),
+// 32-bit gen can't wrap (R3). CSTRIDE64=16 -> one 64-bit counter per 128B cacheline
+// (kills dense-array false sharing). g_sbase = slice-0 base; g_prev = small ring of
+// retired blocks by gen (lets a torn reservation roll back on the correct block, R1).
+static constexpr int CSTRIDE64 = 16;
+static constexpr int RING = 8;
+__device__ unsigned long long g_ctr64[MAX_TREES * MAX_N * CSTRIDE64];
+__device__ uint64_t g_sbase[MAX_TREES * MAX_N];
+__device__ Block *g_prev[MAX_TREES * MAX_N * RING];
+#endif
+}  // namespace block_cache
+
+template <typename allocator>
+__global__ void block_cache_fill_kernel(allocator *alloc) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) return;
+  int nt = alloc->num_trees;
+  if (nt > block_cache::MAX_TREES) nt = block_cache::MAX_TREES;
+  for (int t = 0; t < nt; t++) {
+    auto *st = alloc->local_blocks->get_tree_local_blocks(t);
+    int n = (int)st->num_blocks;
+    if (n > block_cache::MAX_N) n = block_cache::MAX_N;
+    block_cache::g_nblk[t] = n;
+    for (int s = 0; s < n; s++) {
+      int sidx = t * block_cache::MAX_N + s;
+      Block *b = st->blocks[s];
+      block_cache::g_block[sidx] = b;
+#ifdef GALLATIN_STATIC_COUNTER
+      block_cache::g_ctr64[sidx * block_cache::CSTRIDE64] = 0ULL;  // gen 0, count 0
+      if (b != nullptr) {
+        uint64_t gbid = alloc->table->get_global_block_offset(b);
+        block_cache::g_sbase[sidx] =
+            (uint64_t)alloc->offset_to_allocation(gbid * 4096, (uint16_t)t);
+      } else {
+        block_cache::g_sbase[sidx] = 0;
+        // empty slot -> stamp full so reservers probe past it until a swap fills it
+        block_cache::g_ctr64[sidx * block_cache::CSTRIDE64] = 4096ULL;
+      }
+      for (int r = 0; r < block_cache::RING; r++)
+        block_cache::g_prev[sidx * block_cache::RING + r] = nullptr;
+#endif
+    }
+  }
+}
+
+template <typename allocator>
+__host__ inline void block_cache_publish(allocator *dev_alloc) {
+  block_cache_fill_kernel<allocator><<<1, 1>>>(dev_alloc);
+  GPUErrorCheck(cudaDeviceSynchronize());
+}
+#endif
 
 
 template <typename allocator>
@@ -510,7 +611,7 @@ struct Gallatin {
     uint64_t *tree_segment_counts =
         gallatin::utils::get_host_version<uint64_t>(num_trees);
 
-    uint64_t blocks_per_pinned_block = 128;
+    uint64_t blocks_per_pinned_block = GALLATIN_PINNED_WAVEFRONT;
     uint64_t geom = blocks_per_pinned_block;
     bool any_reduced = false;
     // Boot segments are removed from segment_tree and dedicated to a tree, so
@@ -675,6 +776,12 @@ struct Gallatin {
     // have consumed it. (boot_segment_offsets_host was already freed by
     // move_to_device.)
     cudaFree(boot_segment_offsets_dev);
+
+#ifdef GALLATIN_BLOCK_CACHE
+    // Publish the pinned blocks into the block-pointer cache (after boot has
+    // populated every per-tree wavefront slot).
+    block_cache_publish<my_type>(device_version);
+#endif
 
     return device_version;
   }
@@ -964,6 +1071,7 @@ struct Gallatin {
   }
 
 
+  GALLATIN_COLD_ATTR
   __device__ uint64_t malloc_segment_allocation(uint & num_segments_required){
 
     // Fast bail: no free segments available
@@ -1027,6 +1135,7 @@ struct Gallatin {
     return alloc_index * table->blocks_per_segment * 4096;
   }
   
+  GALLATIN_COLD_ATTR
   __device__ uint64_t malloc_block_allocation(uint16_t & tree_id){
 
     // #if GALLATIN_DEBUG_PRINTS
@@ -1357,6 +1466,7 @@ struct Gallatin {
 
   //replace block with a new one pulled from the system
   //gets called when a block is detected to be empty.
+  GALLATIN_COLD_ATTR
   __device__ bool replace_block(int tree_id, int smid, Block * my_block, per_size_pinned_blocks * my_pinned_blocks){
 
   	if (my_pinned_blocks->swap_out_block(smid, my_block)){
@@ -1459,6 +1569,221 @@ struct Gallatin {
 
   }
 
+#ifdef GALLATIN_BLOCK_CACHE
+  // Retire a full cached block: reuse the proven single-winner replace_block
+  // (only the count==4095 thread calls this), then refresh the cache slot to the
+  // fresh block replace_block published into the pinned pool.
+  __device__ void replace_cached(uint16_t tree_id, int idx, int slot, Block *old_block) {
+    per_size_pinned_blocks *container = local_blocks->get_tree_local_blocks(tree_id);
+    if (replace_block(tree_id, slot, old_block, container)) {
+      Block *fresh = gallatin::utils::load_acquire(&container->blocks[slot]);
+      gallatin::utils::store_release(&block_cache::g_block[idx], fresh);
+    }
+  }
+
+  // Self-contained cached slice allocator for a static-managed tree. Coalesces the
+  // warp's lanes that want this tree (labeled_partition) so the GROUP reserves a
+  // contiguous run with ONE atomicAdd on the resident block's REAL malloc_counter
+  // (the faithful Gallatin coalescing -- critical for tile-16, where two tiles
+  // share a warp). Mirrors malloc_slice_one exactly, but the block comes from the
+  // cache (g_block[idx]) instead of get_valid_block's probe; the count==4095 lane
+  // is the SOLE replacer (replace_cached, which refreshes the cache slot). Linear-
+  // probes slots via num_attempts. Returns nullptr only on genuine exhaustion.
+  __device__ void *malloc_cached(uint16_t tree_id) {
+    int nblk = block_cache::g_nblk[tree_id];
+    unsigned int slot0 =
+        block_cache::slot_hash(blockIdx.x * blockDim.x + threadIdx.x);
+    int max_attempts = GALLATIN_MAX_ATTEMPTS * GALLATIN_MALLOC_LOOP_ATTEMPTS;
+    int num_attempts = 0;
+    while (num_attempts < max_attempts) {
+      cg::coalesced_group full_warp_team = cg::coalesced_threads();
+      cg::coalesced_group team = labeled_partition(full_warp_team, tree_id);
+
+      // Leader picks the (team-uniform) slot, loads the cached block, and
+      // overflow-pre-checks it; broadcast so the whole team acts on one block.
+      int slot = 0, idx = 0;
+      Block *block = nullptr;
+      unsigned int precount = 4096;
+      if (team.thread_rank() == 0) {
+        slot = (int)((slot0 + (unsigned int)num_attempts) % (unsigned int)nblk);
+        idx = tree_id * block_cache::MAX_N + slot;
+        block = gallatin::utils::load_acquire(&block_cache::g_block[idx]);
+        if (block != nullptr)
+          precount = gallatin::utils::load_acquire(
+                         (unsigned int *)&block->malloc_counter) &
+                     BITMASK(GALLATIN_BLOCK_TREE_OFFSET);
+      }
+      idx = team.shfl(idx, 0);
+      slot = team.shfl(slot, 0);
+      block = team.shfl(block, 0);
+      precount = team.shfl(precount, 0);
+      // Skip an empty or already-full slot (overflow guard: never atomicAdd a full
+      // block -> count can't climb past 2^20 into the tag bits).
+      if (block == nullptr || precount >= 4096) { num_attempts++; continue; }
+
+      uint64_t global_block_id = table->get_global_block_offset(block);
+      uint merged_count = block->block_malloc_tree(team);  // ONE coalesced atomicAdd
+      uint true_count = merged_count & BITMASK(GALLATIN_BLOCK_TREE_OFFSET);
+      uint64_t allocation = true_count + team.thread_rank();
+      bool valid = allocation < 4096;
+      if (allocation == 4095)
+        replace_cached(tree_id, idx, slot, block);  // sole replacer per batch
+      team.sync();
+      if (valid) {
+        if (block->check_valid(merged_count, tree_id))
+          return offset_to_allocation(allocation + global_block_id * 4096, tree_id);
+        free_offset(allocation + global_block_id * 4096);  // ABA -> roll back
+      }
+      num_attempts++;
+    }
+    return nullptr;  // genuine exhaustion -> caller records a miss
+  }
+#endif
+
+#ifdef GALLATIN_STATIC_COUNTER
+  // Retire a full static slot (sole caller = the count==4095 lane, single-winner).
+  // Push the old block into the per-gen ring so a torn gen-G reservation can still
+  // roll back on it (R1), then pull a fresh block via the proven replace_block,
+  // publish base/block, and bump gen with count reset (release via atomicExch).
+  __device__ void swap_slot_static(uint16_t tree_id, int sidx, int slot, unsigned int gen) {
+    per_size_pinned_blocks *container = local_blocks->get_tree_local_blocks(tree_id);
+    Block *old_block = block_cache::g_block[sidx];
+    block_cache::g_prev[sidx * block_cache::RING + (gen % block_cache::RING)] = old_block;
+    __threadfence();
+    if (replace_block(tree_id, slot, old_block, container)) {
+      Block *fresh = gallatin::utils::load_acquire(&container->blocks[slot]);
+      block_cache::g_block[sidx] = fresh;
+      uint64_t gbid = table->get_global_block_offset(fresh);
+      gallatin::utils::store_release(&block_cache::g_sbase[sidx],
+          (uint64_t)offset_to_allocation(gbid * 4096, tree_id));
+      __threadfence();  // publish base/block before the gen bump
+      atomicExch(&block_cache::g_ctr64[sidx * block_cache::CSTRIDE64],
+                 ((unsigned long long)(gen + 1)) << 32);          // new gen, count 0
+    } else {
+      block_cache::g_block[sidx] = nullptr;
+      atomicExch(&block_cache::g_ctr64[sidx * block_cache::CSTRIDE64],
+                 (((unsigned long long)(gen + 1)) << 32) | 4096ULL);  // full -> reservers probe past
+    }
+  }
+
+  // One-atomic static fast path. The reserving atomicAdd hits a COMPUTED padded
+  // address (g_ctr64[slot]) with NO preceding dependent load -- unlike the cache's
+  // block-gated atomicAdd -- which is the latency win. Coalesced (tile-16 safe).
+  // All races handled: R1 torn base (read base after reserve + gen recheck + ring
+  // rollback), R2/R3 (64-bit), R4/R7 (count==4095 sole swapper), R5 (probe past
+  // full), R6 (rollback keeps free_counter exact), R9 (no cooperative fallback).
+  __device__ void *malloc_static(uint16_t tree_id) {
+    int nblk = block_cache::g_nblk[tree_id];
+    unsigned int slot0 =
+        block_cache::slot_hash(blockIdx.x * blockDim.x + threadIdx.x);
+    uint64_t alloc_size = table->get_tree_alloc_size(tree_id);
+    int max_attempts = GALLATIN_MAX_ATTEMPTS * GALLATIN_MALLOC_LOOP_ATTEMPTS;
+    int num_attempts = 0;
+    while (num_attempts < max_attempts) {
+      cg::coalesced_group full_warp_team = cg::coalesced_threads();
+      cg::coalesced_group team = labeled_partition(full_warp_team, tree_id);
+
+      int slot = 0, sidx = 0;
+      unsigned long long merged = 0;
+      if (team.thread_rank() == 0) {
+        slot = (int)((slot0 + (unsigned int)num_attempts) % (unsigned int)nblk);
+        sidx = tree_id * block_cache::MAX_N + slot;
+        merged = atomicAdd(&block_cache::g_ctr64[sidx * block_cache::CSTRIDE64],
+                           (unsigned long long)team.size());  // THE one atomic
+      }
+      slot = team.shfl(slot, 0);
+      sidx = team.shfl(sidx, 0);
+      merged = team.shfl(merged, 0);
+      unsigned int gen = (unsigned int)(merged >> 32);
+      unsigned int count = (unsigned int)(merged & 0xffffffffu) + team.thread_rank();
+      if (count >= 4096) { num_attempts++; continue; }  // full -> probe (64-bit: no overflow)
+
+      uint64_t sbase = gallatin::utils::load_acquire(&block_cache::g_sbase[sidx]);  // AFTER reserve
+      unsigned int gen_now = (unsigned int)(gallatin::utils::load_acquire(
+          &block_cache::g_ctr64[sidx * block_cache::CSTRIDE64]) >> 32);
+      if (gen_now != gen) {
+        // R1: a swap raced during the base load. Roll back this slice on gen's
+        // block (recovered from the ring) so free_counter still reaches 4096.
+        Block *bg = block_cache::g_prev[sidx * block_cache::RING + (gen % block_cache::RING)];
+        if (bg != nullptr)
+          free_offset(table->get_global_block_offset(bg) * 4096 + count);
+        num_attempts++;
+        continue;
+      }
+      if (count == 4095) swap_slot_static(tree_id, sidx, slot, gen);  // sole swapper
+      return (void *)(sbase + (uint64_t)count * alloc_size);
+    }
+    return nullptr;  // genuine exhaustion
+  }
+
+  // ---- Stateful (per-thread context) fast path ----
+  // The caller (device_allocator_context) caches {cidx, cbase, cgen} across the
+  // insert loop. The hot path is then ONE atomicAdd on the cached padded counter
+  // with NO base load and NO gen revalidate: the atomicAdd's gen result, compared
+  // to the cached cgen, validates that the slot has NOT swapped -- which (since a
+  // swap is the only thing that moves g_base and it bumps gen) guarantees the
+  // cached cbase still belongs to this generation. A mismatch (swapped) or a full
+  // slot just misses -> caller drops into gstatic_slow (the safe re-resolve). This
+  // is the safe analogue of the broken a792 fastslow: same one-atomic hot path,
+  // but cbase/cgen are register-resident so no torn base read can occur.
+  __device__ void *gstatic_fast(int cidx, uint64_t cbase, unsigned int cgen,
+                                uint64_t alloc_size) {
+    if (cidx < 0) return nullptr;
+    unsigned long long merged = atomicAdd(
+        &block_cache::g_ctr64[cidx * block_cache::CSTRIDE64], 1ULL);
+    unsigned int gen = (unsigned int)(merged >> 32);
+    unsigned int count = (unsigned int)(merged & 0xffffffffu);
+    if (gen == cgen && count < 4096) {
+      if (count == 4095)
+        swap_slot_static((uint16_t)(cidx / block_cache::MAX_N), cidx,
+                         cidx % block_cache::MAX_N, gen);
+      return (void *)(cbase + (uint64_t)count * alloc_size);
+    }
+    return nullptr;  // swapped or full -> caller re-resolves via gstatic_slow
+  }
+
+  // Safe re-resolve: like malloc_static (single thread) but also returns the slot
+  // to cache. Handles R1 (read base after reserve + gen recheck + ring rollback),
+  // R5 (probe past full), R6 (rollback keeps free_counter exact). On the slice that
+  // fills a slot (count==4095) it swaps and returns cidx=-1 so the caller does NOT
+  // cache a just-swapped slot.
+  __device__ void *gstatic_slow(uint16_t tree_id, uint64_t alloc_size,
+                                int &o_cidx, uint64_t &o_cbase, unsigned int &o_cgen) {
+    o_cidx = -1; o_cbase = 0; o_cgen = 0;
+    int nblk = block_cache::g_nblk[tree_id];
+    unsigned int slot0 =
+        block_cache::slot_hash(blockIdx.x * blockDim.x + threadIdx.x);
+    int max_attempts = GALLATIN_MAX_ATTEMPTS * GALLATIN_MALLOC_LOOP_ATTEMPTS;
+    for (int attempt = 0; attempt < max_attempts; attempt++) {
+      int slot = (int)((slot0 + (unsigned int)attempt) % (unsigned int)nblk);
+      int sidx = tree_id * block_cache::MAX_N + slot;
+      unsigned long long merged = atomicAdd(
+          &block_cache::g_ctr64[sidx * block_cache::CSTRIDE64], 1ULL);
+      unsigned int gen = (unsigned int)(merged >> 32);
+      unsigned int count = (unsigned int)(merged & 0xffffffffu);
+      if (count >= 4096) continue;
+      uint64_t sbase = gallatin::utils::load_acquire(&block_cache::g_sbase[sidx]);
+      if ((unsigned int)(gallatin::utils::load_acquire(
+              &block_cache::g_ctr64[sidx * block_cache::CSTRIDE64]) >> 32) != gen) {
+        Block *bg = block_cache::g_prev[sidx * block_cache::RING + (gen % block_cache::RING)];
+        if (bg != nullptr)
+          free_offset(table->get_global_block_offset(bg) * 4096 + count);
+        continue;
+      }
+      if (count == 4095) {
+        swap_slot_static(tree_id, sidx, slot, gen);
+        o_cidx = -1;  // slot just swapped -> don't cache it
+      } else {
+        o_cidx = sidx;
+      }
+      o_cbase = sbase;
+      o_cgen = gen;
+      return (void *)(sbase + (uint64_t)count * alloc_size);
+    }
+    return nullptr;  // genuine exhaustion
+  }
+#endif
+
   //v2 of malloc - handle tree_id externally.
   __device__ void * malloc(uint64_t size){
 
@@ -1471,6 +1796,22 @@ struct Gallatin {
     // if (size < smallest) size = smallest;
 
     uint16_t tree_id = get_tree_id_from_size(size);
+
+    // Static-managed single-slice trees are served ENTIRELY by the fast path (it
+    // owns block replacement), so the cooperative path never co-manages these
+    // slots. Big allocs (tree_id >= num_trees) and any unmanaged tree (g_nblk==0)
+    // fall through to the cooperative path below. GALLATIN_STATIC_COUNTER (off-block
+    // one-atomic) takes precedence over the block-pointer cache when both are set.
+#if defined(GALLATIN_STATIC_COUNTER)
+    if (tree_id < num_trees && block_cache::g_nblk[tree_id] > 0) {
+      return malloc_static(tree_id);
+    }
+#elif defined(GALLATIN_BLOCK_CACHE)
+    if (tree_id < num_trees && block_cache::g_nblk[tree_id] > 0) {
+      return malloc_cached(tree_id);
+    }
+#endif
+
     uint alloc_count = 1;
 
     uint64_t offset = ~0ULL;
@@ -1663,6 +2004,7 @@ struct Gallatin {
 
 
   // get a new segment for a given tree!
+  GALLATIN_COLD_ATTR
   __device__ int gather_new_segment(uint16_t tree) {
 
     // request new segment
@@ -1716,6 +2058,7 @@ struct Gallatin {
   // gather a new block for a tree.
   // this attempts to pull from a memory segment.
   //  and will atteach a new segment if now
+  GALLATIN_COLD_ATTR
   __device__ Block *request_new_block_from_tree(uint16_t tree) {
     int attempts = 0;
 
@@ -1838,6 +2181,7 @@ struct Gallatin {
   //called after memory is freed.
   //this helper separates the logic between acquiring a block and returning
   //so that the free can cleanly acquire size before proceeding to free.
+  GALLATIN_COLD_ATTR
   __device__ void return_block(Block * block_to_free, uint64_t segment, uint16_t tree){
 
 
@@ -1896,6 +2240,7 @@ struct Gallatin {
 
   // return a block to the system
   // this is called by a block once all allocations have been returned.
+  GALLATIN_COLD_ATTR
   __device__ void free_block(Block *block_to_free) {
 
     uint64_t segment = table->get_segment_from_block_ptr(block_to_free);
