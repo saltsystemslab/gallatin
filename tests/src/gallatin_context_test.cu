@@ -81,6 +81,68 @@ __device__ __forceinline__ void use_and_free(allocator* g, void* p, uint64_t tid
   g->free(p);
 }
 
+// Breakdown variant: also records per-size misses (permiss[sidx]) to show WHICH
+// trees starve. Used by the per-size context-vs-stateless comparison below.
+template <typename allocator>
+__device__ __forceinline__ void use_and_free_bd(allocator* g, void* p, uint64_t tid,
+                                                uint64_t* doubles, uint64_t* misses,
+                                                uint64_t* permiss, int sidx) {
+  if (p == nullptr) {
+    atomicAdd((unsigned long long*)misses, 1ULL);
+    atomicAdd((unsigned long long*)&permiss[sidx], 1ULL);
+    return;
+  }
+  unsigned long long me = (unsigned long long)(tid + 1);
+  unsigned long long old = atomicExch((unsigned long long*)p, me);
+  if (old != 0ULL) { atomicAdd((unsigned long long*)doubles, 1ULL);
+    printf("DOUBLE-ALLOC: tid %llu found %llu\n", (unsigned long long)tid, old); }
+  unsigned long long cur = atomicExch((unsigned long long*)p, 0ULL);
+  if (cur != me) { atomicAdd((unsigned long long*)doubles, 1ULL); }
+  g->free(p);
+}
+
+// Per-size via the CONTEXT path (one context per size), with per-tree breakdown.
+template <typename allocator>
+__global__ void per_size_ctx_bd_kernel(allocator* g, uint64_t nthreads, int rounds,
+                                      bool grouped, uint64_t* doubles, uint64_t* misses,
+                                      uint64_t* permiss) {
+  uint64_t tid = threadIdx.x + (uint64_t)blockIdx.x * blockDim.x;
+  if (tid >= nthreads) return;
+  sctx ctxs[kNumSizes];
+  uint16_t trees[kNumSizes];
+  uint64_t tallocs[kNumSizes];
+  for (int s = 0; s < kNumSizes; s++) {
+    ctxs[s] = sctx{-1, 0, 0};
+    trees[s] = g->get_tree_id_from_size(g_sizes[s]);
+    tallocs[s] = g->table->get_tree_alloc_size(trees[s]);
+  }
+  uint64_t hash = tid;
+  for (int r = 0; r < rounds; r++) {
+    hash = gallatin::hashers::MurmurHash64A(&hash, sizeof(uint64_t), r);
+    int s = hash % kNumSizes;
+    void* p = ctx_alloc(g, ctxs[s], trees[s], tallocs[s], grouped);
+    use_and_free_bd(g, p, tid, doubles, misses, permiss, s);
+  }
+}
+
+// Per-size via the STATELESS general malloc (no context), with per-tree breakdown.
+// Same access pattern -> isolates whether per-size starvation is a static-allocator
+// property (shows here too) or a context-mechanism artifact (only in the ctx kernel).
+template <typename allocator>
+__global__ void per_size_stateless_bd_kernel(allocator* g, uint64_t nthreads, int rounds,
+                                            uint64_t* doubles, uint64_t* misses,
+                                            uint64_t* permiss) {
+  uint64_t tid = threadIdx.x + (uint64_t)blockIdx.x * blockDim.x;
+  if (tid >= nthreads) return;
+  uint64_t hash = tid;
+  for (int r = 0; r < rounds; r++) {
+    hash = gallatin::hashers::MurmurHash64A(&hash, sizeof(uint64_t), r);
+    int s = hash % kNumSizes;
+    void* p = g->malloc(g_sizes[s]);
+    use_and_free_bd(g, p, tid, doubles, misses, permiss, s);
+  }
+}
+
 // (1) Each thread is pinned to ONE size (-> one tree) for all rounds. Across the
 //     grid, ALL sizes/trees run concurrently through the static path. Tests that
 //     concurrent multi-tree context use does not cross-corrupt.
@@ -214,6 +276,36 @@ static int run_one(const char* name, gallatin_type* g, uint64_t nthreads, int ro
 static const char* kPatternNames[4] = {"concurrent-multisize", "per-size-contexts",
                                        "changing-size+reset", "mixed-ctx+stateless"};
 
+// Per-size comparison: run a 5-sizes-per-thread workload via three methods, EACH on
+// a fresh allocator, and report total + per-tree miss breakdown. Answers whether
+// per-size starvation is a static-allocator property (stateless shows it too) or a
+// context artifact.
+static void run_persize_bd(int method, uint64_t num_bytes, uint64_t nthreads, int rounds) {
+  const char* name = method == 0 ? "ctx-single" : method == 1 ? "ctx-grouped" : "stateless";
+  gallatin_type* g = gallatin_type::generate_on_device(num_bytes, 111);
+  cudaDeviceSynchronize();
+  uint64_t* c;  // [0]=doubles [1]=misses [2..6]=per-size misses
+  cudaMallocManaged((void**)&c, (2 + kNumSizes) * sizeof(uint64_t));
+  for (int i = 0; i < 2 + kNumSizes; i++) c[i] = 0;
+  cudaDeviceSynchronize();
+  int block = 256;
+  uint64_t grid = (nthreads - 1) / block + 1;
+  if (method == 2)
+    per_size_stateless_bd_kernel<<<grid, block>>>(g, nthreads, rounds, c, c + 1, c + 2);
+  else
+    per_size_ctx_bd_kernel<<<grid, block>>>(g, nthreads, rounds, method == 1, c, c + 1, c + 2);
+  cudaError_t err = cudaDeviceSynchronize();
+  uint64_t total = nthreads * (uint64_t)rounds;
+  printf("  [%-11s] doubles=%llu miss=%.2f%% per-size{16:%.1f 64:%.1f 256:%.1f 1024:%.1f 4096:%.1f}%% %s\n",
+         name, (unsigned long long)c[0], 100.0 * c[1] / total,
+         100.0 * c[2] * kNumSizes / total, 100.0 * c[3] * kNumSizes / total,
+         100.0 * c[4] * kNumSizes / total, 100.0 * c[5] * kNumSizes / total,
+         100.0 * c[6] * kNumSizes / total, err == cudaSuccess ? "ok" : cudaGetErrorString(err));
+  cudaFree(c);
+  gallatin_type::free_on_device(g);
+  cudaDeviceSynchronize();
+}
+
 int main(int argc, char** argv) {
   uint64_t num_bytes = (argc > 1) ? std::stoull(argv[1]) : (8ULL * 1024 * 1024 * 1024);
   uint64_t nthreads = (argc > 2) ? std::stoull(argv[2]) : 1000000ULL;
@@ -226,6 +318,15 @@ int main(int argc, char** argv) {
   printf("gallatin_context_test: %.1f GB pool, %llu threads, %d rounds%s\n",
          num_bytes / 1.0e9, (unsigned long long)nthreads, rounds,
          only_pat >= 0 ? " [ISOLATED]" : "");
+
+  // Mode 5: per-size context-vs-stateless comparison (each method fresh allocator).
+  if (only_pat == 5) {
+    printf("PER-SIZE COMPARISON (5 sizes/thread, fresh allocator each):\n");
+    run_persize_bd(0, num_bytes, nthreads, rounds);
+    run_persize_bd(1, num_bytes, nthreads, rounds);
+    run_persize_bd(2, num_bytes, nthreads, rounds);
+    return 0;
+  }
 
   gallatin_type* g = gallatin_type::generate_on_device(num_bytes, 111);
   cudaDeviceSynchronize();
