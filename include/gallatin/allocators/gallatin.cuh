@@ -338,6 +338,10 @@ static constexpr int RING = 8;
 __device__ unsigned long long g_ctr64[MAX_TREES * MAX_N * CSTRIDE64];
 __device__ uint64_t g_sbase[MAX_TREES * MAX_N];
 __device__ Block *g_prev[MAX_TREES * MAX_N * RING];
+// Per-slot revival election flag (0=idle, 1=a reviver is acquiring a block). Elects
+// ONE reviver per dead slot so probers don't stampede request_new_block_from_tree.
+// Zero-initialized (device global).
+__device__ int g_reviving[MAX_TREES * MAX_N];
 #endif
 }  // namespace block_cache
 
@@ -1665,8 +1669,60 @@ struct Gallatin {
     } else {
       block_cache::g_block[sidx] = nullptr;
       atomicExch(&block_cache::g_ctr64[sidx * block_cache::CSTRIDE64],
-                 (((unsigned long long)(gen + 1)) << 32) | 4096ULL);  // full -> reservers probe past
+                 (((unsigned long long)(gen + 1)) << 32) | 4096ULL);  // dead -> revive_slot_static recovers it
     }
+  }
+
+  // Recover a DEAD static slot. A slot dies when swap_slot_static's replace_block
+  // failed (the tree was momentarily empty): g_block==null and g_ctr64 is stuck
+  // full, so probers skip it forever and capacity is permanently lost. Once frees
+  // recycle blocks back to the tree, a prober that lands on the dead slot re-drives
+  // acquisition the SAME way the cooperative path does -- request a fresh block and
+  // publish it through the container's single-winner swap_out_nullptr (null->block).
+  // Exactly one publisher wins; losers free their block (no leak, no double-publish).
+  // The winner re-syncs the cache and resets the off-block counter (gen+1, count 0).
+  // Cold/rare; gated on the confirmed-dead state so live/mid-swap slots are untouched.
+  GALLATIN_COLD_ATTR
+  __device__ void revive_slot_static(uint16_t tree_id, int sidx, int slot) {
+    // Confirmed-dead only: a non-null cached block means live or mid-swap (the
+    // count==4095 lane owns that transition) -> never touch it here.
+    if (gallatin::utils::load_acquire(&block_cache::g_block[sidx]) != nullptr) return;
+    if ((block_cache::g_ctr64[sidx * block_cache::CSTRIDE64] & 0xffffffffu) < 4096)
+      return;  // already revived
+
+    // Elect ONE reviver per slot. Losers return immediately (they keep probing
+    // other slots) -- this is what prevents a request_new_block_from_tree stampede
+    // when many lanes land on the same dead slot. The flag is always released.
+    if (atomicCAS(&block_cache::g_reviving[sidx], 0, 1) != 0) return;
+
+    // Re-check under the election: only act if still dead.
+    if (gallatin::utils::load_acquire(&block_cache::g_block[sidx]) == nullptr) {
+      unsigned long long old = block_cache::g_ctr64[sidx * block_cache::CSTRIDE64];
+      if ((old & 0xffffffffu) >= 4096) {
+        unsigned int gen = (unsigned int)(old >> 32);
+        Block *fresh = request_new_block_from_tree(tree_id);  // sole requester
+        if (fresh != nullptr) {
+          // Publish into the (null) container slot, then re-sync the cache and
+          // reset the off-block counter (gen+1, count 0) to bring the slot live.
+          per_size_pinned_blocks *container =
+              local_blocks->get_tree_local_blocks(tree_id);
+          if (container->swap_out_nullptr(slot, fresh)) {
+            block_cache::g_block[sidx] = fresh;
+            uint64_t gbid = table->get_global_block_offset(fresh);
+            gallatin::utils::store_release(&block_cache::g_sbase[sidx],
+                (uint64_t)offset_to_allocation(gbid * 4096, tree_id));
+            __threadfence();  // publish base/block before the gen bump
+            atomicExch(&block_cache::g_ctr64[sidx * block_cache::CSTRIDE64],
+                       ((unsigned long long)(gen + 1)) << 32);  // alive
+          } else {
+            free_block(fresh);  // container slot already filled -> return block
+          }
+        }
+        // fresh == nullptr: tree still empty; leave dead, a later probe retries.
+      }
+    }
+    __threadfence();
+    atomicExch(&block_cache::g_reviving[sidx], 0);  // release election
   }
 
   // One-atomic static fast path. The reserving atomicAdd hits a COMPUTED padded
@@ -1699,7 +1755,10 @@ struct Gallatin {
       merged = team.shfl(merged, 0);
       unsigned int gen = (unsigned int)(merged >> 32);
       unsigned int count = (unsigned int)(merged & 0xffffffffu) + team.thread_rank();
-      if (count >= 4096) { num_attempts++; continue; }  // full -> probe (64-bit: no overflow)
+      if (count >= 4096) {  // full -> try to revive a dead slot, then probe on
+        if (team.thread_rank() == 0) revive_slot_static(tree_id, sidx, slot);
+        num_attempts++; continue;  // (64-bit count: no overflow)
+      }
 
       uint64_t sbase = gallatin::utils::load_acquire(&block_cache::g_sbase[sidx]);  // AFTER reserve
       unsigned int gen_now = (unsigned int)(gallatin::utils::load_acquire(
@@ -1832,7 +1891,10 @@ struct Gallatin {
           &block_cache::g_ctr64[sidx * block_cache::CSTRIDE64], 1ULL);
       unsigned int gen = (unsigned int)(merged >> 32);
       unsigned int count = (unsigned int)(merged & 0xffffffffu);
-      if (count >= 4096) continue;
+      if (count >= 4096) {  // full -> recover a dead slot (recycled blocks), then probe on
+        revive_slot_static(tree_id, sidx, slot);
+        continue;
+      }
       uint64_t sbase = gallatin::utils::load_acquire(&block_cache::g_sbase[sidx]);
       if ((unsigned int)(gallatin::utils::load_acquire(
               &block_cache::g_ctr64[sidx * block_cache::CSTRIDE64]) >> 32) != gen) {

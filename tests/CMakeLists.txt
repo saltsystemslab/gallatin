@@ -8,6 +8,10 @@ ConfigureExecutable(gallatin_test "${CMAKE_CURRENT_SOURCE_DIR}/src/gallatin_test
 
 ConfigureExecutable(gallatin_churn "${CMAKE_CURRENT_SOURCE_DIR}/src/gallatin_churn.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+# Context-based static fast-path safety: multi-size context use (concurrent,
+# per-size, changing-size+reset) + mixed context/stateless interference.
+ConfigureExecutable(gallatin_context_test "${CMAKE_CURRENT_SOURCE_DIR}/src/gallatin_context_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
 
 ConfigureExecutable(global_test "${CMAKE_CURRENT_SOURCE_DIR}/src/global_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
