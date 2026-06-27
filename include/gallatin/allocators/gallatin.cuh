@@ -1742,6 +1742,71 @@ struct Gallatin {
     return nullptr;  // swapped or full -> caller re-resolves via gstatic_slow
   }
 
+  // Warp-coalesced fast path -- Gallatin's defining behavior, applied to the
+  // static counter. Mirrors malloc_slice_one exactly: cg::coalesced_threads()
+  // + labeled_partition(tree_id) groups the warp's active same-tree callers; the
+  // partition LEADER's resident slot serves the whole group with ONE
+  // atomicAdd(team.size()); the contiguous run is split by lane rank; the lane
+  // landing on 4095 is the sole replacer; team.sync() after the swap. This cuts
+  // the per-warp atomic count from (#active lanes) to 1 and -- crucially --
+  // removes the atomicAdd-return latency from every non-leader lane's critical
+  // path (they read the broadcast start, no atomic of their own).
+  __device__ void *gstatic_fast_grouped(int &cidx, uint64_t &cbase,
+                                        unsigned int &cgen, uint16_t tree_id,
+                                        uint64_t alloc_size) {
+    cg::coalesced_group full = cg::coalesced_threads();
+    cg::coalesced_group team = labeled_partition(full, (uint)tree_id);
+    uint n = team.size();
+
+    // Nothing to coalesce (lone active leader): take the plain single-atomic
+    // path -- no shfl/sync overhead. Keeps the common case as cheap as the
+    // per-lane fast path (matches a792's n==1 bypass).
+    if (n == 1) return gstatic_fast(cidx, cbase, cgen, alloc_size);
+
+    uint rank = team.thread_rank();
+
+    // The team leader's cached slot serves the group (like the partition leader's
+    // block in malloc_slice_one). Broadcast it to all lanes.
+    int lcidx = team.shfl(cidx, 0);
+    uint64_t lcbase = team.shfl(cbase, 0);
+    unsigned int lcgen = team.shfl(cgen, 0);
+
+    bool ok = false;
+    unsigned int start = 0;
+    if (rank == 0 && lcidx >= 0) {
+      unsigned long long merged =
+          atomicAdd(&block_cache::g_ctr64[lcidx * block_cache::CSTRIDE64],
+                    (unsigned long long)n);
+      if ((unsigned int)(merged >> 32) == lcgen) {
+        start = (unsigned int)(merged & 0xffffffffu);
+        ok = true;
+      }
+    }
+    ok = team.shfl(ok, 0);
+    start = team.shfl(start, 0);
+
+    void *result = nullptr;
+    if (ok) {
+      unsigned int slice = start + rank;
+      // sole replacer: at most one lane per coalesced batch lands on 4095.
+      if (slice == 4095)
+        swap_slot_static(tree_id, lcidx, lcidx % block_cache::MAX_N, lcgen);
+      team.sync();
+      if (slice < 4096) {
+        // adopt the leader's slot; invalidate if the batch reached/crossed 4096.
+        cidx = (start + n >= 4096) ? -1 : lcidx;
+        cbase = lcbase;
+        cgen = lcgen;
+        result = (void *)(lcbase + (uint64_t)slice * alloc_size);
+      } else {
+        cidx = -1;  // past block end -> re-resolve on the next call
+      }
+    } else {
+      cidx = -1;  // leader slot empty/full/gen-miss -> caller drops to slow path
+    }
+    return result;  // null -> caller calls gstatic_slow (per-lane)
+  }
+
   // Safe re-resolve: like malloc_static (single thread) but also returns the slot
   // to cache. Handles R1 (read base after reserve + gen recheck + ring rollback),
   // R5 (probe past full), R6 (rollback keeps free_counter exact). On the slice that
