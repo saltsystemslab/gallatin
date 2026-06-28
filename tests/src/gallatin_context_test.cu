@@ -47,6 +47,9 @@ struct sctx {
 template <typename allocator>
 __device__ __forceinline__ void* ctx_alloc(allocator* g, sctx& c, uint16_t tree,
                                             uint64_t talloc, bool grouped) {
+#ifdef GALLATIN_TEST_SYNC
+  __syncwarp(__activemask());  // converge before the cg-collective alloc path
+#endif
   void* p;
   if (grouped) {
     p = g->gstatic_fast_grouped(c.cidx, c.cbase, c.cgen, tree, talloc);
@@ -345,6 +348,9 @@ int main(int argc, char** argv) {
   // single allocator stays at 0% miss across all subtests -- which also exercises
   // cross-pattern coexistence on the same live counters/blocks.
   for (int grouped = 0; grouped <= 1; grouped++) {
+#ifdef GALLATIN_TEST_SINGLE_ONLY
+    if (grouped) break;  // diagnostic: skip the grouped (labeled_partition) path
+#endif
     for (int pat = 0; pat < 4; pat++) {
       fails += run_one(kPatternNames[pat], g, nthreads, rounds, pat, grouped);
     }
