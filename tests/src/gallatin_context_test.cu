@@ -19,7 +19,11 @@
  * Built with the static counter + const base so it exercises exactly the shipped
  * primitives. Does NOT touch the general malloc/free path semantics.
  */
+// Define GALLATIN_TEST_NO_STATIC to build the block-pointer-cache arm (stateless
+// malloc) instead of the static counter -- used to A/B safety at oversubscription.
+#ifndef GALLATIN_TEST_NO_STATIC
 #define GALLATIN_STATIC_COUNTER
+#endif
 #define GALLATIN_CONST_BASE
 
 #include <gallatin/allocators/gallatin.cuh>
@@ -51,6 +55,7 @@ __device__ __forceinline__ void* ctx_alloc(allocator* g, sctx& c, uint16_t tree,
   __syncwarp(__activemask());  // converge before the cg-collective alloc path
 #endif
   void* p;
+#ifdef GALLATIN_STATIC_COUNTER
   if (grouped) {
     p = g->gstatic_fast_grouped(c.cidx, c.cbase, c.cgen, tree, talloc);
   } else {
@@ -59,6 +64,12 @@ __device__ __forceinline__ void* ctx_alloc(allocator* g, sctx& c, uint16_t tree,
   if (p == nullptr) {
     p = g->gstatic_slow(tree, talloc, c.cidx, c.cbase, c.cgen);
   }
+#else
+  // No static counter -> exercise the block-pointer cache via the stateless
+  // coalesced malloc (the path IndexinGPU uses when GX_STATIC_COUNTER is off).
+  (void)c; (void)tree; (void)grouped;
+  p = g->malloc(talloc);
+#endif
   return p;
 }
 
@@ -333,6 +344,37 @@ int main(int argc, char** argv) {
 
   gallatin_type* g = gallatin_type::generate_on_device(num_bytes, 111);
   cudaDeviceSynchronize();
+
+#if GALLATIN_BLOCK_DEBUG
+  // Wire the per-slice double-free stamp (max global offset = num_bytes/16, since
+  // the smallest slice is 16B). cudaMemcpyToSymbol the device ptr + size.
+  {
+    unsigned long long stamp_sz = num_bytes / 16ULL;   // max #slices (smallest=16B)
+    unsigned int* stamp = nullptr;
+    cudaMalloc(&stamp, stamp_sz * sizeof(unsigned int));
+    cudaMemset(stamp, 0, stamp_sz * sizeof(unsigned int));
+    cudaMemcpyToSymbol(gallatin::allocators::gdbg_free_stamp, &stamp, sizeof(stamp));
+    cudaMemcpyToSymbol(gallatin::allocators::gdbg_free_stamp_sz, &stamp_sz, sizeof(stamp_sz));
+
+    // Alloc-side context stamp (same size): records the slot that handed each slice.
+    unsigned int* actx = nullptr;
+    cudaMalloc(&actx, stamp_sz * sizeof(unsigned int));
+    cudaMemset(actx, 0, stamp_sz * sizeof(unsigned int));
+    cudaMemcpyToSymbol(gallatin::allocators::gdbg_alloc_ctx, &actx, sizeof(actx));
+
+    // Block-level double-allocation detector: one slot per physical block. Max
+    // blocks = pool / min_block_bytes (min block = 16B slice * 4096 = 65536B).
+    unsigned long long owner_n = num_bytes / 65536ULL + 1024ULL;
+    unsigned int* owner = nullptr;
+    cudaMalloc(&owner, owner_n * sizeof(unsigned int));
+    cudaMemset(owner, 0, owner_n * sizeof(unsigned int));
+    cudaMemcpyToSymbol(gallatin::allocators::gdbg_block_owner, &owner, sizeof(owner));
+    cudaMemcpyToSymbol(gallatin::allocators::gdbg_block_owner_n, &owner_n, sizeof(owner_n));
+    cudaDeviceSynchronize();
+    printf("[BLOCK_DEBUG] per-slice double-free stamp (%llu slots) + block-owner (%llu blocks) armed\n",
+           stamp_sz, owner_n);
+  }
+#endif
 
   int fails = 0;
   if (only_pat >= 0 && only_pat < 4) {

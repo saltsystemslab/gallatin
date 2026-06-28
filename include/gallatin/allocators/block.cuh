@@ -48,7 +48,9 @@
 #include <cooperative_groups/reduce.h>
 #include <cooperative_groups/scan.h>
 
+#ifndef GALLATIN_BLOCK_DEBUG
 #define GALLATIN_BLOCK_DEBUG 0
+#endif
 
 #define GALLATIN_BLOCK_TREE_OFFSET 20
 
@@ -72,7 +74,11 @@ struct Block {
   // frees must succeed - precondition - fail on double free but print error.
   // uint64_t must be clipped ahead of time. 0 - 4096
   __device__ bool block_free() {
+#ifdef GALLATIN_FENCE_BLOCK
+    uint old = gallatin::utils::fetch_add_acq_rel<uint>((uint *)&free_counter, 1u);
+#else
     uint old = atomicAdd((unsigned int *)&free_counter, 1ULL);
+#endif
 
 
     #if GALLATIN_BLOCK_DEBUG
@@ -85,7 +91,11 @@ struct Block {
   }
 
   __device__ bool block_free_multiple(uint num_frees) {
+#ifdef GALLATIN_FENCE_BLOCK
+    uint old = gallatin::utils::fetch_add_acq_rel<uint>((uint *)&free_counter, num_frees);
+#else
     uint old = atomicAdd((unsigned int *)&free_counter, num_frees);
+#endif
 
 
     #if GALLATIN_BLOCK_DEBUG
@@ -199,7 +209,11 @@ struct Block {
 
   __device__ void reset_free(){
 
+#ifdef GALLATIN_FENCE_BLOCK
+    uint old = gallatin::utils::exchange_acq_rel<uint>((uint *)&free_counter, 0u);
+#else
     uint old = atomicExch((unsigned int *)&free_counter, 0ULL);
+#endif
 
     #if GALLATIN_BLOCK_DEBUG
 
@@ -219,7 +233,11 @@ struct Block {
 
     uint shifted_tree_size = tree_size << GALLATIN_BLOCK_TREE_OFFSET;
 
+#ifdef GALLATIN_FENCE_BLOCK
+    gallatin::utils::exchange_acq_rel<uint>((uint *)&malloc_counter, shifted_tree_size);
+#else
     atomicExch((unsigned int *)&malloc_counter, shifted_tree_size);
+#endif
 
   }
 
@@ -320,6 +338,9 @@ struct Block {
     #if GALLATIN_BLOCK_DEBUG
 
     if (old_count != 0){
+
+      //we fucked up, but it's ok! just need to add to the free counter so the block cycles
+
       
 
       printf("Block for full segment already malloced. Not an error but concerning.\n");

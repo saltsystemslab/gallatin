@@ -95,15 +95,46 @@ The pointer returned must be the same address that was returned -
 #include <gallatin/allocators/shared_block_storage.cuh>
 #include <gallatin/allocators/murmurhash.cuh>
 
+#ifndef GALLATIN_TRAP_ON_ERR
 #define GALLATIN_TRAP_ON_ERR 1
+#endif
 
 #ifndef GALLATIN_DEBUG_PRINTS
 #define GALLATIN_DEBUG_PRINTS 0
 #endif
 
+// CORRECTNESS FIX (default-on with the static counter): tree-private segment
+// recycling. The off-block static counter is unsafe when a drained segment is
+// returned to the global segment_tree and re-typed by another tree -- the shared
+// global Block-metadata index then aliases the same Block::free_counter across two
+// trees, prematurely returning a block whose slices are still live (the
+// FREE-UNOWNED trap, only at extreme oversubscription). Keeping static-tree
+// segments bound to their tree (never deregistered) makes that aliasing impossible
+// by construction, at ZERO hot-path cost (return_block is cold) and zero capacity
+// impact at realistic loads; under extreme oversubscription it degrades to safe
+// misses instead of a crash. Opt out with -DGALLATIN_NO_STATIC_TREE_PRIVATE (only
+// if you need cross-tree segment rebalancing AND never oversubscribe).
+#if defined(GALLATIN_STATIC_COUNTER) && !defined(GALLATIN_NO_STATIC_TREE_PRIVATE)
+#define GALLATIN_STATIC_TREE_PRIVATE
+#endif
+
 namespace gallatin {
 
 namespace allocators {
+
+#if GALLATIN_BLOCK_DEBUG
+// Per-slice free stamp (debug only): catches a slice freed twice -- the
+// over-free that prematurely returns a block/segment. Indexed by the global
+// slice offset (block_id*4096 + slice) = the exact arg to free_offset. Sized and
+// wired from the test via cudaMemcpyToSymbol; cleared per-block on legitimate
+// return so block reuse does not false-positive.
+__device__ unsigned int *gdbg_free_stamp = nullptr;       // element count, not bytes
+__device__ unsigned long long gdbg_free_stamp_sz = 0;
+// Alloc-side context stamp: set at hand-out to (1 | (cidx<<1)), cleared at free.
+// A hand-out finding it already set = the SAME slice handed twice while still
+// live -> prints the two allocating slots so we see same-slot vs two-slot.
+__device__ unsigned int *gdbg_alloc_ctx = nullptr;
+#endif
 
 
 //Change these to set # of times Gallatin attempts allocation ops.
@@ -1479,11 +1510,25 @@ struct Gallatin {
   GALLATIN_COLD_ATTR
   __device__ bool replace_block(int tree_id, int smid, Block * my_block, per_size_pinned_blocks * my_pinned_blocks){
 
-  	if (my_pinned_blocks->swap_out_block(smid, my_block)){
+  	bool dbg_casok = my_pinned_blocks->swap_out_block(smid, my_block);
+  	#if GALLATIN_BLOCK_DEBUG
+  	if (!dbg_casok)
+  	  printf("REPLACE-CASFAIL smid=%d tree=%d old=%p cur=%p (swap_out CAS failed -> returns true w/o swap!)\n",
+  	         smid, tree_id, (void*)my_block, (void*)my_pinned_blocks->blocks[smid]);
+  	#endif
+  	if (dbg_casok){
 
       // swap_out_block is a release-CAS; no extra fence needed before pulling
       // a fresh block.
   		Block * new_block = request_new_block_from_tree(tree_id);
+      #if GALLATIN_BLOCK_DEBUG
+      if (new_block == my_block)
+        printf("REPLACE-REUSED-SAME smid=%d tree=%d block=%p bid=%llu fc=%u mc=%x (get_block returned the retiring block -> it WAS released mid-swap!)\n",
+               smid, tree_id, (void*)new_block,
+               (unsigned long long)table->get_global_block_offset(new_block),
+               ((volatile Block*)new_block)->free_counter,
+               ((volatile Block*)new_block)->malloc_counter);
+      #endif
 
   		if (new_block == nullptr){
 
@@ -1661,6 +1706,26 @@ struct Gallatin {
   __device__ void swap_slot_static(uint16_t tree_id, int sidx, int slot, unsigned int gen) {
     per_size_pinned_blocks *container = local_blocks->get_tree_local_blocks(tree_id);
     Block *old_block = block_cache::g_block[sidx];
+    #if GALLATIN_BLOCK_DEBUG
+    // EXHAUSTIVE PROBE: the swapper holds slice 4095 on the block its g_sbase
+    // points to. If g_block[sidx] (what we retire) != that block, we retire the
+    // WRONG block -> it has no outstanding ref -> can be released mid-swap. Also
+    // dump old_block's free_counter: if it is already at/near 4096 here, it is
+    // about to be released while we still think it is live.
+    if (old_block != nullptr) {
+      uint64_t obid = table->get_global_block_offset(old_block);
+      uint64_t ob_base = (uint64_t)offset_to_allocation(obid * 4096, tree_id);
+      uint64_t sb = block_cache::g_sbase[sidx];
+      unsigned fc = ((volatile Block*)old_block)->free_counter;
+      unsigned mc = ((volatile Block*)old_block)->malloc_counter;
+      if (ob_base != sb)
+        printf("SWAP-INCONSISTENT sidx=%d gen=%u g_block=%p(base=%llx bid=%llu) g_sbase=%llx fc=%u mc=%x\n",
+               sidx, gen, (void*)old_block, ob_base, obid, sb, fc, mc);
+      if (fc >= 4090)
+        printf("SWAP-OLDBLOCK-DRAINING sidx=%d gen=%u bid=%llu fc=%u (about to release mid-swap!)\n",
+               sidx, gen, obid, fc);
+    }
+    #endif
     block_cache::g_prev[sidx * block_cache::RING + (gen % block_cache::RING)] = old_block;
     // Tag the ring entry with its gen (valid bit hi) so a rollback can verify the
     // entry still belongs to `gen` before freeing -- prevents freeing onto a wrong
@@ -1670,17 +1735,57 @@ struct Gallatin {
     __threadfence();
     if (replace_block(tree_id, slot, old_block, container)) {
       Block *fresh = gallatin::utils::load_acquire(&container->blocks[slot]);
+      #if GALLATIN_BLOCK_DEBUG
+      if (fresh == old_block)
+        printf("SWAP-REHAND sidx=%d slot=%d gen=%u block=%p bid=%llu (counter reset on SAME block!)\n",
+               sidx, slot, gen, (void*)fresh,
+               (unsigned long long)table->get_global_block_offset(fresh));
+      if (fresh == nullptr)
+        printf("SWAP-FRESHNULL sidx=%d slot=%d gen=%u (replace true but container null!)\n",
+               sidx, slot, gen);
+      #endif
+#ifdef GALLATIN_SWAP_NOREUSE
+      // Single-writer correctness guard (cold path, ~1/4096 allocs): the swapper
+      // refuses to reinstall the block it is retiring (or a null). Reinstalling it
+      // and resetting the counter would re-hand the SAME block's slices in a new
+      // generation while the prior generation's slices are still draining ->
+      // double-allocation. Detach it and mark the slot dead instead (probers skip;
+      // the block drains and returns to the system normally).
+      if (fresh == old_block || fresh == nullptr) {
+        if (fresh != nullptr) container->swap_out_block(slot, fresh);  // pull it back out
+        block_cache::g_block[sidx] = nullptr;
+        __threadfence();
+        atomicExch(&block_cache::g_ctr64[sidx * block_cache::CSTRIDE64],
+                   (((unsigned long long)(gen + 1)) << 32) | 4096ULL);  // dead/full
+        return;
+      }
+#endif
       block_cache::g_block[sidx] = fresh;
       uint64_t gbid = table->get_global_block_offset(fresh);
       gallatin::utils::store_release(&block_cache::g_sbase[sidx],
           (uint64_t)offset_to_allocation(gbid * 4096, tree_id));
       __threadfence();  // publish base/block before the gen bump
+#ifdef GALLATIN_FENCE_CTR
+      // RELEASE the gen bump so the stale/slow path's acquire-load of g_ctr64
+      // (gen recheck) synchronizes-with it -> the g_sbase/g_block published above
+      // are guaranteed visible to any consumer that observes the new gen.
+      gallatin::utils::exchange_release<unsigned long long>(
+          &block_cache::g_ctr64[sidx * block_cache::CSTRIDE64],
+          ((unsigned long long)(gen + 1)) << 32);
+#else
       atomicExch(&block_cache::g_ctr64[sidx * block_cache::CSTRIDE64],
                  ((unsigned long long)(gen + 1)) << 32);          // new gen, count 0
+#endif
     } else {
       block_cache::g_block[sidx] = nullptr;
+#ifdef GALLATIN_FENCE_CTR
+      gallatin::utils::exchange_release<unsigned long long>(
+          &block_cache::g_ctr64[sidx * block_cache::CSTRIDE64],
+          (((unsigned long long)(gen + 1)) << 32) | 4096ULL);
+#else
       atomicExch(&block_cache::g_ctr64[sidx * block_cache::CSTRIDE64],
                  (((unsigned long long)(gen + 1)) << 32) | 4096ULL);
+#endif
       // Dead slot (tree was momentarily empty): probers skip it; recycle refills the
       // tree and a later swap revives it. The explicit revive_slot_static was removed
       // -- it manipulated the off-block cache (g_block/container/g_ctr64) WITHOUT the
@@ -1688,6 +1793,19 @@ struct Gallatin {
       // primary cause of the __match_any_sync trap). The leak-fix resolve keeps the
       // context path at ~0% miss without it.
     }
+#ifdef GALLATIN_SWAP_HOLD
+    // Release the swap-HOLD on the just-retired block, AFTER the swap has fully
+    // published. While a block is a slot's CURRENT block the fast paths hand out
+    // only slices 0..4094 (slice 4095 is the reserved hold), so a live block can
+    // receive at most 4095 frees and can NEVER hit the 4096 release threshold --
+    // it therefore cannot be freed/recycled (and its segment reassigned to another
+    // tree) while a slot's g_sbase still points into it, which is the root of the
+    // cross-tree slice aliasing. This post-retire free of slice 4095 supplies the
+    // 4096th free so the block recycles once its 4095 real slices are also freed.
+    // Single swapper per gen -> the hold is released exactly once.
+    if (old_block != nullptr)
+      free_offset(table->get_global_block_offset(old_block) * 4096 + 4095, 6);
+#endif
   }
 
   // One-atomic static fast path. The reserving atomicAdd hits a COMPUTED padded
@@ -1734,7 +1852,7 @@ struct Gallatin {
         Block *bg = block_cache::g_prev[ri];
         if (bg != nullptr &&
             block_cache::g_prev_gen[ri] == (((unsigned long long)gen) | (1ULL << 63)))
-          free_offset(table->get_global_block_offset(bg) * 4096 + count);
+          free_offset(table->get_global_block_offset(bg) * 4096 + count, 4);  // malloc_static rollback
         num_attempts++;
         continue;
       }
@@ -1763,11 +1881,43 @@ struct Gallatin {
     unsigned int count = (unsigned int)(merged & 0xffffffffu);
     if (count >= 4096)
       return nullptr;  // full: the past-full increment is wiped by the swap (R5) -> no leak
+#ifdef GALLATIN_SWAP_HOLD
+    if (count == 4095) {  // slice 4095 is the swap-HOLD -> swap, hand out NOTHING
+      swap_slot_static((uint16_t)(cidx / block_cache::MAX_N), cidx,
+                       cidx % block_cache::MAX_N, gen);  // sole swapper for `gen`
+      return nullptr;  // caller re-resolves; the hold is freed at swap retire
+    }
+#endif
     if (gen == cgen) {  // WARM cache (common path): byte-identical to the original,
       if (count == 4095)  // no extra load -> no IndexinGPU regression.
         swap_slot_static((uint16_t)(cidx / block_cache::MAX_N), cidx,
                          cidx % block_cache::MAX_N, gen);
-      return (void *)(cbase + (uint64_t)count * alloc_size);
+#ifdef GALLATIN_STATIC_VALIDATE
+      // Perf-cost probe: validate the cached base still belongs to this slot's
+      // block by loading g_block[cidx] + its on-block tree tag (2 dependent loads
+      // on the hot path). Measures what hot-path validation would cost.
+      {
+        Block *vb = block_cache::g_block[cidx];
+        if (vb == nullptr ||
+            !vb->check_valid((uint)vb->malloc_counter, (uint16_t)(cidx / block_cache::MAX_N)))
+          return nullptr;  // -> caller re-resolves
+      }
+#endif
+      void *res = (void *)(cbase + (uint64_t)count * alloc_size);
+#ifdef GALLATIN_STATIC_VALIDATE_SEG
+      // Validate the slice's SEGMENT is still owned by this slot's tree (the LIVE
+      // ownership, unlike the block-metadata tag which stays stale-consistent). If
+      // the segment was returned + reassigned to another tree, bail -> re-resolve.
+      // (Warm-path check: full coverage but adds a read_tree_id load to the hot
+      // path. GALLATIN_STATIC_VALIDATE_SEG_COLD validates only the cold paths.)
+      if (table->read_tree_id(table->get_segment_from_ptr(res)) !=
+          (uint16_t)(cidx / block_cache::MAX_N))
+        return nullptr;
+#endif
+      #if GALLATIN_BLOCK_DEBUG
+      dbg_mark_alloc(res, (uint16_t)(cidx / block_cache::MAX_N), cidx, gen, 10);  // warm-fast
+      #endif
+      return res;
     }
     // STALE cache (slot swapped since we cached it): we reserved a REAL slice on
     // gen's block. NEVER leak it -- resolve exactly like gstatic_slow (R1): load the
@@ -1782,7 +1932,7 @@ struct Gallatin {
       Block *bg = block_cache::g_prev[ri];
       if (bg != nullptr &&
           block_cache::g_prev_gen[ri] == (((unsigned long long)gen) | (1ULL << 63)))
-        free_offset(table->get_global_block_offset(bg) * 4096 + count);
+        free_offset(table->get_global_block_offset(bg) * 4096 + count, 2);  // gstatic_fast rollback
       return nullptr;  // -> caller re-resolves via gstatic_slow
     }
     if (count == 4095)
@@ -1790,7 +1940,18 @@ struct Gallatin {
                        cidx % block_cache::MAX_N, gen);
     cbase = sbase;
     cgen = gen;
-    return (void *)(sbase + (uint64_t)count * alloc_size);
+    {
+      void *res = (void *)(sbase + (uint64_t)count * alloc_size);
+#if defined(GALLATIN_STATIC_VALIDATE_SEG) || defined(GALLATIN_STATIC_VALIDATE_SEG_COLD)
+      if (table->read_tree_id(table->get_segment_from_ptr(res)) !=
+          (uint16_t)(cidx / block_cache::MAX_N))
+        return nullptr;
+#endif
+      #if GALLATIN_BLOCK_DEBUG
+      dbg_mark_alloc(res, (uint16_t)(cidx / block_cache::MAX_N), cidx, gen, 11);  // stale-use-fast
+      #endif
+      return res;
+    }
   }
 
   // Warp-coalesced fast path -- Gallatin's defining behavior, applied to the
@@ -1809,10 +1970,12 @@ struct Gallatin {
     cg::coalesced_group team = labeled_partition(full, (uint)tree_id);
     uint n = team.size();
 
+#ifndef GALLATIN_NO_N1_BYPASS
     // Nothing to coalesce (lone active leader): take the plain single-atomic
     // path -- no shfl/sync overhead. Keeps the common case as cheap as the
     // per-lane fast path (matches a792's n==1 bypass).
     if (n == 1) return gstatic_fast(cidx, cbase, cgen, alloc_size);
+#endif
 
     uint rank = team.thread_rank();
 
@@ -1840,6 +2003,12 @@ struct Gallatin {
         // full: past-full increments are wiped by the swap (R5) -> no slice, no leak.
       } else if (rgen == lcgen) {
         ok = true;  // WARM cache
+#ifdef GALLATIN_STATIC_VALIDATE
+        Block *vb = block_cache::g_block[lcidx];
+        if (vb == nullptr ||
+            !vb->check_valid((uint)vb->malloc_counter, tree_id))
+          ok = false;  // leader-side validation -> whole group re-resolves
+#endif
       } else {
         // STALE: the run [start,start+n) is REAL on rgen's block. Resolve safely --
         // if rgen still live USE it on the swapped-in block; else roll the run back
@@ -1855,7 +2024,7 @@ struct Gallatin {
           if (bg != nullptr &&
               block_cache::g_prev_gen[ri] == (((unsigned long long)rgen) | (1ULL << 63))) {
             uint64_t gbid = table->get_global_block_offset(bg) * 4096;
-            for (unsigned int s = start; s < end; s++) free_offset(gbid + s);
+            for (unsigned int s = start; s < end; s++) free_offset(gbid + s, 5);  // grouped rollback
           }
         }
       }
@@ -1915,11 +2084,21 @@ struct Gallatin {
               &block_cache::g_ctr64[sidx * block_cache::CSTRIDE64]) >> 32) != gen) {
         int ri = sidx * block_cache::RING + (gen % block_cache::RING);
         Block *bg = block_cache::g_prev[ri];
-        if (bg != nullptr &&
+        bool real_slice = true;
+#ifdef GALLATIN_SWAP_HOLD
+        real_slice = (count < 4095);  // slice 4095 is the hold, never handed -> nothing to roll back
+#endif
+        if (real_slice && bg != nullptr &&
             block_cache::g_prev_gen[ri] == (((unsigned long long)gen) | (1ULL << 63)))
-          free_offset(table->get_global_block_offset(bg) * 4096 + count);
+          free_offset(table->get_global_block_offset(bg) * 4096 + count, 3);  // gstatic_slow rollback
         continue;
       }
+#ifdef GALLATIN_SWAP_HOLD
+      if (count == 4095) {  // hold slice -> swap, hand out nothing, retry for a real slice
+        swap_slot_static(tree_id, sidx, slot, gen);
+        continue;
+      }
+#endif
       if (count == 4095) {
         swap_slot_static(tree_id, sidx, slot, gen);
         o_cidx = -1;  // slot just swapped -> don't cache it
@@ -1928,7 +2107,18 @@ struct Gallatin {
       }
       o_cbase = sbase;
       o_cgen = gen;
-      return (void *)(sbase + (uint64_t)count * alloc_size);
+      {
+        void *res = (void *)(sbase + (uint64_t)count * alloc_size);
+#if defined(GALLATIN_STATIC_VALIDATE_SEG) || defined(GALLATIN_STATIC_VALIDATE_SEG_COLD)
+        if (table->read_tree_id(table->get_segment_from_ptr(res)) != tree_id) {
+          o_cidx = -1; continue;  // segment reassigned -> probe again
+        }
+#endif
+        #if GALLATIN_BLOCK_DEBUG
+        dbg_mark_alloc(res, tree_id, sidx, gen, 12);  // slow-use
+        #endif
+        return res;
+      }
     }
     return nullptr;  // genuine exhaustion
   }
@@ -2186,6 +2376,13 @@ struct Gallatin {
 
       #endif
 
+      #if GALLATIN_BLOCK_DEBUG
+      printf("FREE-UNOWNED: ptr=%llx seg=%llu tree_id=%u (block_global=%llu)\n",
+             (unsigned long long)allocation, (unsigned long long)segment,
+             (unsigned)tree_id,
+             (unsigned long long)((char*)allocation - table->memory) / 4096 /
+                 (table->get_bytes_per_segment() / 4096));
+      #endif
 
       #if GALLATIN_TRAP_ON_ERR
       asm volatile ("trap;");
@@ -2216,7 +2413,7 @@ struct Gallatin {
 
     #endif
 
-    return free_offset(offset);
+    return free_offset(offset, 1);  // dbg_site 1 = app free()
 
 
   }
@@ -2415,6 +2612,21 @@ struct Gallatin {
       sub_trees[tree]->insert_force_update(segment);
     }
 
+#ifdef GALLATIN_STATIC_TREE_PRIVATE
+    // Tree-private recycle: a static-managed segment, once owned by `tree`, is
+    // NEVER deregistered/returned to the global segment_tree -> its tree_id never
+    // resets -> it can never be re-typed by a different tree -> its Block metadata
+    // is never shared across trees -> the cross-tree free_counter aliasing (the
+    // FREE-UNOWNED crash) is impossible by construction. Just return the block's
+    // slot (active_counts++, so the block recycles within `tree` via the queue) and
+    // SKIP the deregister CAS entirely. The segment stays registered + available to
+    // its own tree; the REREGISTER_CUTOFF re-publish above keeps it listed.
+    if (tree < num_trees && block_cache::g_nblk[tree] > 0) {
+      table->return_slot_to_segment(segment);
+      return;
+    }
+#endif
+
     bool need_to_deregister = table->finish_freeing_block(segment, num_blocks);
 
     if (need_to_deregister) {
@@ -2475,10 +2687,30 @@ struct Gallatin {
   //fuckk this doesn't work.
   //needs to be a system variable.
 
-  __device__ void free_offset(uint64_t malloc) {
+  // dbg_site (GALLATIN_BLOCK_DEBUG): which path issued the free --
+  //   1=app free()  2=gstatic_fast rollback  3=gstatic_slow rollback
+  //   4=malloc_static rollback  5=gstatic_fast_grouped rollback
+  __device__ void free_offset(uint64_t malloc, int dbg_site = 0) {
 
     // get block
     uint64_t block_id = malloc/4096;
+
+    #if GALLATIN_BLOCK_DEBUG
+    // Per-thread: stamp this exact slice with its FREE SITE. A second stamp of the
+    // same slice (before the block legitimately returns and clears its range) IS
+    // the over-free -- and prev shows which path did the first free.
+    if (gdbg_free_stamp != nullptr && malloc < gdbg_free_stamp_sz) {
+      unsigned int prev = atomicExch(&gdbg_free_stamp[malloc], (unsigned int)dbg_site + 1u);
+      if (prev != 0)
+        printf("DOUBLE-FREE-SLICE off=%llu blk=%llu slice=%llu prev_site=%u this_site=%d (tid %llu)\n",
+               (unsigned long long)malloc, (unsigned long long)block_id,
+               (unsigned long long)(malloc % 4096), prev - 1u, dbg_site,
+               (unsigned long long)(blockIdx.x * blockDim.x + threadIdx.x));
+    }
+    // NOTE: gdbg_alloc_ctx is cleared on BLOCK RETURN (below), NOT per-free, so it
+    // detects the same "slice re-handed without the block returning" condition as
+    // the free stamp, but carries the allocating slot id for attribution.
+    #endif
 
 
     #if GALLATIN_TEAM_FREE
@@ -2497,6 +2729,16 @@ struct Gallatin {
             my_block->reset_free();
             #endif
 
+            #if GALLATIN_BLOCK_DEBUG
+            if (gdbg_free_stamp != nullptr) {
+              unsigned long long base = block_id * 4096ULL;
+              for (int s = 0; s < 4096; s++) {
+                if (base + s < gdbg_free_stamp_sz) gdbg_free_stamp[base + s] = 0u;
+                if (gdbg_alloc_ctx != nullptr && base + s < gdbg_free_stamp_sz) gdbg_alloc_ctx[base + s] = 0u;
+              }
+            }
+            #endif
+
             free_block(my_block);
         }
       }
@@ -2512,9 +2754,19 @@ struct Gallatin {
         my_block->reset_free();
         #endif
 
+        #if GALLATIN_BLOCK_DEBUG
+        if (gdbg_free_stamp != nullptr) {
+          unsigned long long base = block_id * 4096ULL;
+          for (int s = 0; s < 4096; s++) {
+            if (base + s < gdbg_free_stamp_sz) gdbg_free_stamp[base + s] = 0u;
+            if (gdbg_alloc_ctx != nullptr && base + s < gdbg_free_stamp_sz) gdbg_alloc_ctx[base + s] = 0u;
+          }
+        }
+        #endif
+
         free_block(my_block);
 
-        
+
 
       }
 
@@ -2538,10 +2790,52 @@ struct Gallatin {
   //given a void * and the known size (expressed as tree id), translate to offset in global space.
   __device__ uint64_t allocation_to_offset(void * allocation, uint16_t tree_id){
 
-    
+
       return table->allocation_to_offset(allocation, tree_id);
-    
+
   }
+
+#if GALLATIN_BLOCK_DEBUG && defined(GALLATIN_STATIC_COUNTER)
+  // Hand-out stamp: record the allocating slot for `res`; if it was already live,
+  // the SAME slice is being handed twice -> print both slots (same vs different).
+  // Static-counter only (references the off-block cache arrays).
+  __device__ void dbg_mark_alloc(void *res, uint16_t tree_id, int cidx, unsigned int gen, int who) {
+    if (res == nullptr || gdbg_alloc_ctx == nullptr) return;
+    uint64_t segment = table->get_segment_from_ptr(res);
+    uint16_t tid = table->read_tree_id(segment);
+    if (tid > num_trees) {  // handing out of an unowned segment -- itself a bug
+      printf("ALLOC-INTO-UNOWNED res=%p seg=%llu cidx=%d gen=%u who=%d\n",
+             res, (unsigned long long)segment, cidx, gen, who);
+      return;
+    }
+    uint64_t off = allocation_to_offset(res, tid);
+    if (off >= gdbg_free_stamp_sz) return;
+    // token = marker | gen(15b) | cidx(15b)  -> recover the HAND-OUT gen + slot.
+    unsigned int token = 1u | (((unsigned int)gen & 0x7FFFu) << 1) |
+                         (((unsigned int)cidx & 0x7FFFu) << 16);
+    unsigned int prev = atomicExch(&gdbg_alloc_ctx[off], token);
+    if (prev != 0u) {
+      unsigned int pgen = (prev >> 1) & 0x7FFFu;
+      int pcidx = (int)((prev >> 16) & 0x7FFFu);
+      uint64_t psb = block_cache::g_sbase[pcidx], tsb = block_cache::g_sbase[cidx];
+      uint64_t pseg = table->get_segment_from_ptr((void*)psb);
+      uint64_t tseg = table->get_segment_from_ptr((void*)tsb);
+      printf("DOUBLE-ALLOC-SLICE off=%llu blk=%llu slice=%llu who=%d tid=%llu | "
+             "PREV cidx=%d(tree%d) gen=%u sbase=%llx seg=%llu segtree=%u | "
+             "THIS cidx=%d(tree%d) gen=%u sbase=%llx seg=%llu segtree=%u %s\n",
+             (unsigned long long)off, (unsigned long long)(off / 4096),
+             (unsigned long long)(off % 4096), who,
+             (unsigned long long)(blockIdx.x * blockDim.x + threadIdx.x),
+             pcidx, pcidx / block_cache::MAX_N, pgen, (unsigned long long)psb,
+             (unsigned long long)pseg, (unsigned)table->read_tree_id(pseg),
+             cidx, cidx / block_cache::MAX_N, gen, (unsigned long long)tsb,
+             (unsigned long long)tseg, (unsigned)table->read_tree_id(tseg),
+             (pcidx == cidx && pgen == gen) ? "<<SAME slot+gen"
+             : (pcidx == cidx) ? "<<same slot diff gen"
+             : "<<diff slot alias");
+    }
+  }
+#endif
 
 
 

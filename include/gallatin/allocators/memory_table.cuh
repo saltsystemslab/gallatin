@@ -51,6 +51,16 @@ namespace gallatin {
 
 namespace allocators {
 
+#if GALLATIN_BLOCK_DEBUG
+// Block-level double-allocation detector: gdbg_block_owner[block_id] is set when
+// get_block hands a block out and cleared when reserve_segment_slot returns it.
+// If get_block hands out a block whose owner is ALREADY set, the same physical
+// block is live in two slots at once -> the static counter then hands the same
+// (block,slice) twice = the double-free we are chasing.
+__device__ unsigned int *gdbg_block_owner = nullptr;
+__device__ unsigned long long gdbg_block_owner_n = 0;
+#endif
+
 
 enum Gallatin_memory_type {device_only, host_only, managed};
 
@@ -543,11 +553,19 @@ struct alloc_table {
   //pull a slot from the segment
   //this acts as a gate over the malloc counters.
   __device__ int get_slot_in_segment(uint64_t segment){
+#ifdef GALLATIN_FENCE_ACTIVE
+    return gallatin::utils::fetch_sub_acq_rel<int>(&active_counts[segment], 1);
+#else
     return atomicSub(&active_counts[segment], 1);
+#endif
   }
 
   __device__ int return_slot_to_segment(uint64_t segment){
+#ifdef GALLATIN_FENCE_ACTIVE
+    return gallatin::utils::fetch_add_acq_rel<int>(&active_counts[segment], 1);
+#else
     return atomicAdd(&active_counts[segment], 1);
+#endif
   }
 
   //helper to check if block is entirely free.
@@ -655,6 +673,19 @@ struct alloc_table {
 
 
     my_block->init_malloc(tree_id);
+
+    #if GALLATIN_BLOCK_DEBUG
+    if (gdbg_block_owner != nullptr) {
+      uint64_t bid = (uint64_t)(my_block - blocks);
+      if (bid < gdbg_block_owner_n) {
+        unsigned int prev = atomicExch(&gdbg_block_owner[bid], 1u);
+        if (prev != 0)
+          printf("DOUBLE-BLOCK-ALLOC bid=%llu seg=%llu tree=%u qpos=%d (block live in 2 slots!)\n",
+                 (unsigned long long)bid, (unsigned long long)segment_id,
+                 (unsigned)tree_id, queue_pos);
+      }
+    }
+    #endif
 
     if (active_count == 0) {
       empty = true;
@@ -817,6 +848,13 @@ struct alloc_table {
     uint current_enqueue_position = increment_free_queue_position(segment);
     uint live_enqueue_position = current_enqueue_position % num_blocks;
 
+    #if GALLATIN_BLOCK_DEBUG
+    if (gdbg_block_owner != nullptr) {
+      uint64_t bid = (uint64_t)(block_ptr - blocks);
+      if (bid < gdbg_block_owner_n) atomicExch(&gdbg_block_owner[bid], 0u);
+    }
+    #endif
+
     gallatin::utils::exchange_release<Block *>(
         &queues[segment * blocks_per_segment + live_enqueue_position],
         block_ptr);
@@ -832,11 +870,18 @@ struct alloc_table {
 
     if (all_blocks_free(return_id, num_blocks)){
 
+#ifdef GALLATIN_FENCE_ACTIVE
+      int expected = (int)(num_blocks - 1);
+      if (gallatin::utils::cas_acq_rel<int>(&active_counts[segment], expected, -1)) {
+        return true;  // exclusive owner of the deregister
+      }
+#else
       if (atomicCAS(&active_counts[segment], num_blocks-1, -1) == num_blocks-1){
 
         //exclusive owner
         return true;
       }
+#endif
     }
 
     return false;
