@@ -169,6 +169,22 @@ The pointer returned must be the same address that was returned -
 #define GALLATIN_WIPE_ON_RETYPE
 #endif
 
+// LIVE DESCRIPTOR (default-on): collapse a slot's {gen, base} into ONE 64-bit word
+// (g_live64 = valid|gen|block_id) that the COLD resolve paths read atomically. The
+// old resolve read base (g_sbase) and gen (g_ctr64) as two separate words; because a
+// swap publishes the new base (release) BEFORE bumping the gen (release), an acquire
+// reader could observe {new base, OLD gen} -- the recheck passed and it dispensed an
+// old-gen count on the fresh block => genuine (temporally-separated) double-alloc =>
+// over-free => premature block/segment return => FREE-UNOWNED. Reading gen+block_id as
+// one word makes base+gen a single linearizable unit, so that skew is impossible; the
+// base is derived (offset_to_allocation) from the block_id in the SAME word. The WARM
+// path is untouched (cbase stays register-resident, gated by gen==cgen), so this is
+// cold-path only (~1/4096 reservations) with zero hot-path cost. Opt out for A/B with
+// -DGALLATIN_NO_LIVE_DESCRIPTOR.
+#if defined(GALLATIN_STATIC_COUNTER) && !defined(GALLATIN_NO_LIVE_DESCRIPTOR)
+#define GALLATIN_LIVE_DESCRIPTOR
+#endif
+
 namespace gallatin {
 
 namespace allocators {
@@ -419,6 +435,20 @@ static constexpr int CSTRIDE64 = 16;
 static constexpr int RING = 8;
 __device__ unsigned long long g_ctr64[MAX_TREES * MAX_N * CSTRIDE64];
 __device__ uint64_t g_sbase[MAX_TREES * MAX_N];
+#ifdef GALLATIN_LIVE_DESCRIPTOR
+// Live-slot descriptor: ONE 64-bit word packing valid|gen(31b)|block_id(32b) so the
+// cold resolve paths read a slot's generation and its backing block TOGETHER, atomically
+// (bit63 = valid | bits62..32 = gen | bits31..0 = global_block_id). The swap/seal writers
+// publish this via a single atomicExch; a resolver derives base = offset_to_allocation(
+// block_id*4096, tree) from the same word it validated the gen against, so the historical
+// {new base, old gen} tear across the two separate words (g_sbase vs g_ctr64) cannot
+// happen. Same encoding as g_prev64 (see ring_push). Warm path never reads it.
+__device__ unsigned long long g_live64[MAX_TREES * MAX_N];
+__device__ __forceinline__ unsigned long long make_live64(unsigned int gen, uint64_t bid) {
+  return (1ULL << 63) | (((unsigned long long)(gen & 0x7FFFFFFFu)) << 32) |
+         (bid & 0xFFFFFFFFu);
+}
+#endif
 __device__ Block *g_prev[MAX_TREES * MAX_N * RING];
 // Full gen that each g_prev ring entry was written for. The ring has only RING
 // slots, so gen G and gen G+RING alias the same entry; a rollback preempted across
@@ -507,10 +537,16 @@ __global__ void block_cache_fill_kernel(allocator *alloc) {
         uint64_t gbid = alloc->table->get_global_block_offset(b);
         block_cache::g_sbase[sidx] =
             (uint64_t)alloc->offset_to_allocation(gbid * 4096, (uint16_t)t);
+#ifdef GALLATIN_LIVE_DESCRIPTOR
+        block_cache::g_live64[sidx] = block_cache::make_live64(0u, gbid);  // gen 0
+#endif
       } else {
         block_cache::g_sbase[sidx] = 0;
         // empty slot -> stamp full so reservers probe past it until a swap fills it
         block_cache::g_ctr64[sidx * block_cache::CSTRIDE64] = 4096ULL;
+#ifdef GALLATIN_LIVE_DESCRIPTOR
+        block_cache::g_live64[sidx] = 0ULL;  // invalid -> resolves miss
+#endif
       }
       for (int r = 0; r < block_cache::RING; r++) {
         block_cache::g_prev[sidx * block_cache::RING + r] = nullptr;
@@ -1814,6 +1850,23 @@ struct Gallatin {
 #endif
 
 #ifdef GALLATIN_STATIC_COUNTER
+#ifdef GALLATIN_LIVE_DESCRIPTOR
+  // Resolve a slot's slice-0 base for generation `gen`, reading the live descriptor as
+  // ONE atomic 64-bit word so gen and block-id come from the same instant (no torn
+  // {new base, old gen}). Returns false if the slot has since swapped/sealed (gen
+  // mismatch) or is dead (invalid bit clear) -> the caller rolls back on the ring
+  // exactly as before. Cold path only (resolve / stale / slow -- ~1/4096 reservations);
+  // the warm path uses the register-resident cbase and never calls this.
+  __device__ __forceinline__ bool resolve_live_base(int sidx, unsigned int gen,
+                                                     uint16_t tree_id, uint64_t &base) {
+    unsigned long long w = gallatin::utils::load_acquire(&block_cache::g_live64[sidx]);
+    if (!(w >> 63)) return false;                                       // dead/invalid
+    if (((w >> 32) & 0x7FFFFFFFu) != (gen & 0x7FFFFFFFu)) return false; // swapped/sealed
+    uint64_t bid = w & 0xFFFFFFFFu;
+    base = (uint64_t)offset_to_allocation(bid * 4096, tree_id);
+    return true;
+  }
+#endif
 #ifdef GALLATIN_ATOMIC_RING
   // Atomic ring entry: pack valid|gen|block_id into one 64-bit word so the
   // (block, gen-tag) pair is read/written atomically (no torn read -> no
@@ -1887,6 +1940,11 @@ struct Gallatin {
     // branch below revives the slot to a fresh block (gen+1, count 0); on failure the slot
     // simply stays dead, exactly as the OOM path already handles. Cold path only.
     block_cache::g_block[sidx] = nullptr;
+#ifdef GALLATIN_LIVE_DESCRIPTOR
+    // Invalidate the descriptor while parked: a reserver that lands on the dead gen+1
+    // reads it invalid -> misses (no stale base). The success branch republishes it.
+    atomicExch(&block_cache::g_live64[sidx], 0ULL);
+#endif
     __threadfence();
     atomicExch(&block_cache::g_ctr64[sidx * block_cache::CSTRIDE64],
                (((unsigned long long)(gen + 1)) << 32) | 4096ULL);
@@ -1923,6 +1981,9 @@ struct Gallatin {
       if (fresh == old_block || fresh == nullptr) {
         if (fresh != nullptr) container->swap_out_block(slot, fresh);  // pull it back out
         block_cache::g_block[sidx] = nullptr;
+#ifdef GALLATIN_LIVE_DESCRIPTOR
+        atomicExch(&block_cache::g_live64[sidx], 0ULL);  // dead: resolves miss
+#endif
         __threadfence();
         atomicExch(&block_cache::g_ctr64[sidx * block_cache::CSTRIDE64],
                    (((unsigned long long)(gen + 1)) << 32) | 4096ULL);  // dead/full
@@ -1989,6 +2050,9 @@ struct Gallatin {
               if (gallatin::utils::cas_acquire<Block *>(&block_cache::g_block[osidx],
                                                         gb, nullptr)) {
                 gallatin::utils::store_release<uint64_t>(&block_cache::g_sbase[osidx], (uint64_t)0);
+#ifdef GALLATIN_LIVE_DESCRIPTOR
+                atomicExch(&block_cache::g_live64[osidx], 0ULL);
+#endif
                 __threadfence();
                 unsigned long long oc = block_cache::g_ctr64[osidx * block_cache::CSTRIDE64];
                 unsigned int og = (unsigned int)(oc >> 32);
@@ -2074,7 +2138,14 @@ struct Gallatin {
       uint64_t gbid = table->get_global_block_offset(fresh);
       gallatin::utils::store_release(&block_cache::g_sbase[sidx],
           (uint64_t)offset_to_allocation(gbid * 4096, tree_id));
-      __threadfence();  // publish base/block before the gen bump
+#ifdef GALLATIN_LIVE_DESCRIPTOR
+      // Publish {gen+1, block_id} as ONE atomic word BEFORE arming the counter. Any
+      // resolver that subsequently observes gen+1 in g_ctr64 is guaranteed (threadfence
+      // below) to read this matching descriptor; one that still sees gen rolls back on
+      // the ring -- neither can ever pair the fresh base with the old gen.
+      atomicExch(&block_cache::g_live64[sidx], block_cache::make_live64(gen + 1, gbid));
+#endif
+      __threadfence();  // publish base/block/descriptor before the gen bump
 #ifdef GALLATIN_FENCE_CTR
       // RELEASE the gen bump so the stale/slow path's acquire-load of g_ctr64
       // (gen recheck) synchronizes-with it -> the g_sbase/g_block published above
@@ -2088,6 +2159,10 @@ struct Gallatin {
 #endif
     } else {
       block_cache::g_block[sidx] = nullptr;
+#ifdef GALLATIN_LIVE_DESCRIPTOR
+      atomicExch(&block_cache::g_live64[sidx], 0ULL);  // OOM: slot stays dead
+      __threadfence();
+#endif
 #ifdef GALLATIN_DETECT_OWNER
       if (old_block != nullptr) {
         uint64_t obid = table->get_global_block_offset(old_block);
@@ -2157,10 +2232,18 @@ struct Gallatin {
       unsigned int count = (unsigned int)(merged & 0xffffffffu) + team.thread_rank();
       if (count >= 4096) { num_attempts++; continue; }  // full -> probe next slot (64-bit: no overflow)
 
-      uint64_t sbase = gallatin::utils::load_acquire(&block_cache::g_sbase[sidx]);  // AFTER reserve
-      unsigned int gen_now = (unsigned int)(gallatin::utils::load_acquire(
-          &block_cache::g_ctr64[sidx * block_cache::CSTRIDE64]) >> 32);
-      if (gen_now != gen) {
+      // Resolve base for `gen`. LIVE_DESCRIPTOR reads gen+block_id as ONE atomic word
+      // (no {new base, old gen} tear); the fallback is the historical two-word read.
+      uint64_t sbase = 0;
+      bool stale;
+#ifdef GALLATIN_LIVE_DESCRIPTOR
+      stale = !resolve_live_base(sidx, gen, tree_id, sbase);
+#else
+      sbase = gallatin::utils::load_acquire(&block_cache::g_sbase[sidx]);  // AFTER reserve
+      stale = ((unsigned int)(gallatin::utils::load_acquire(
+          &block_cache::g_ctr64[sidx * block_cache::CSTRIDE64]) >> 32) != gen);
+#endif
+      if (stale) {
         // R1: a swap raced during the base load. Roll back this slice on gen's
         // block (recovered from the ring) so free_counter still reaches 4096 -- but
         // ONLY if the ring entry still belongs to `gen` (else it wrapped/recycled;
@@ -2298,9 +2381,16 @@ struct Gallatin {
     // BACK on the ring. The rollback targets `gen` (the gen our atomicAdd landed on);
     // if it has retired since, it JUST retired -> it is in g_prev -> ring-safe.
     // cbase/cgen self-heal so the next call is warm again.
-    uint64_t sbase = gallatin::utils::load_acquire(&block_cache::g_sbase[cidx]);
-    if ((unsigned int)(gallatin::utils::load_acquire(
-            &block_cache::g_ctr64[cidx * block_cache::CSTRIDE64]) >> 32) != gen) {
+    uint64_t sbase = 0;
+    bool stale;
+#ifdef GALLATIN_LIVE_DESCRIPTOR
+    stale = !resolve_live_base(cidx, gen, (uint16_t)(cidx / block_cache::MAX_N), sbase);
+#else
+    sbase = gallatin::utils::load_acquire(&block_cache::g_sbase[cidx]);
+    stale = ((unsigned int)(gallatin::utils::load_acquire(
+            &block_cache::g_ctr64[cidx * block_cache::CSTRIDE64]) >> 32) != gen);
+#endif
+    if (stale) {
 #ifdef GALLATIN_ATOMIC_RING
       {
         long long bo = ring_lookup(cidx, gen);
@@ -2393,9 +2483,16 @@ struct Gallatin {
         // STALE: the run [start,start+n) is REAL on rgen's block. Resolve safely --
         // if rgen still live USE it on the swapped-in block; else roll the run back
         // on the ring (rgen just-retired -> in g_prev -> safe).
-        uint64_t sbase = gallatin::utils::load_acquire(&block_cache::g_sbase[lcidx]);
-        if ((unsigned int)(gallatin::utils::load_acquire(
-                &block_cache::g_ctr64[lcidx * block_cache::CSTRIDE64]) >> 32) == rgen) {
+        uint64_t sbase = 0;
+        bool live;
+#ifdef GALLATIN_LIVE_DESCRIPTOR
+        live = resolve_live_base(lcidx, rgen, tree_id, sbase);
+#else
+        sbase = gallatin::utils::load_acquire(&block_cache::g_sbase[lcidx]);
+        live = ((unsigned int)(gallatin::utils::load_acquire(
+                &block_cache::g_ctr64[lcidx * block_cache::CSTRIDE64]) >> 32) == rgen);
+#endif
+        if (live) {
           ok = true; use_base = sbase; use_gen = rgen;
         } else {
           unsigned int end = (start + n < 4096u) ? (start + n) : 4096u;
@@ -2476,9 +2573,16 @@ struct Gallatin {
       unsigned int gen = (unsigned int)(merged >> 32);
       unsigned int count = (unsigned int)(merged & 0xffffffffu);
       if (count >= 4096) continue;  // full -> probe next slot
-      uint64_t sbase = gallatin::utils::load_acquire(&block_cache::g_sbase[sidx]);
-      if ((unsigned int)(gallatin::utils::load_acquire(
-              &block_cache::g_ctr64[sidx * block_cache::CSTRIDE64]) >> 32) != gen) {
+      uint64_t sbase = 0;
+      bool stale;
+#ifdef GALLATIN_LIVE_DESCRIPTOR
+      stale = !resolve_live_base(sidx, gen, tree_id, sbase);
+#else
+      sbase = gallatin::utils::load_acquire(&block_cache::g_sbase[sidx]);
+      stale = ((unsigned int)(gallatin::utils::load_acquire(
+              &block_cache::g_ctr64[sidx * block_cache::CSTRIDE64]) >> 32) != gen);
+#endif
+      if (stale) {
         bool real_slice = true;
 #ifdef GALLATIN_SWAP_HOLD
         real_slice = (count < 4095);  // slice 4095 is the hold, never handed -> nothing to roll back
@@ -3219,6 +3323,9 @@ struct Gallatin {
           if (sealed) {
             gallatin::utils::cas_acquire<Block *>(&block_cache::g_block[loc], blk, nullptr);
             gallatin::utils::store_release<uint64_t>(&block_cache::g_sbase[loc], (uint64_t)0);
+#ifdef GALLATIN_LIVE_DESCRIPTOR
+            atomicExch(&block_cache::g_live64[loc], 0ULL);  // invalidate base+gen
+#endif
             __threadfence();
           }
         }
@@ -3323,11 +3430,24 @@ struct Gallatin {
             if (gallatin::utils::cas_acquire<Block *>(&block_cache::g_block[sidx],
                                                       block_to_free, nullptr)) {
               gallatin::utils::store_release<uint64_t>(&block_cache::g_sbase[sidx], (uint64_t)0);
+#ifdef GALLATIN_LIVE_DESCRIPTOR
+              atomicExch(&block_cache::g_live64[sidx], 0ULL);  // invalidate base+gen
+#endif
               __threadfence();
+              // gen-conditional (Break B): advance gen + mark full, but ABORT if a
+              // concurrent swap already advanced the gen -- else this atomicExch would
+              // stomp a freshly-installed live generation dead (orphaned block -> its
+              // home never clears -> its segment can never deregister). Matches the
+              // WIPE_ON_RETYPE CAS loop; the old plain read+atomicExch was the hole.
               unsigned long long c = block_cache::g_ctr64[sidx * block_cache::CSTRIDE64];
               unsigned int g = (unsigned int)(c >> 32);
-              atomicExch(&block_cache::g_ctr64[sidx * block_cache::CSTRIDE64],
-                         (((unsigned long long)(g + 1)) << 32) | 4096ULL);
+              while ((unsigned int)(c >> 32) == g) {
+                unsigned long long want = (((unsigned long long)(g + 1u)) << 32) | 4096ULL;
+                unsigned long long prev = atomicCAS(
+                    &block_cache::g_ctr64[sidx * block_cache::CSTRIDE64], c, want);
+                if (prev == c) break;
+                c = prev;
+              }
               __threadfence();
             }
           }
@@ -3444,6 +3564,9 @@ struct Gallatin {
               block_cache::g_ctr64[sidx * block_cache::CSTRIDE64];
           unsigned int g = (unsigned int)(cur >> 32);
           gallatin::utils::store_release<uint64_t>(&block_cache::g_sbase[sidx], (uint64_t)0);
+#ifdef GALLATIN_LIVE_DESCRIPTOR
+          atomicExch(&block_cache::g_live64[sidx], 0ULL);
+#endif
           __threadfence();
           atomicExch(&block_cache::g_ctr64[sidx * block_cache::CSTRIDE64],
                      (((unsigned long long)(g + 1)) << 32) | 4096ULL);
