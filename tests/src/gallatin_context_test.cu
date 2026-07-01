@@ -379,6 +379,10 @@ int main(int argc, char** argv) {
   int fails = 0;
   if (only_pat >= 0 && only_pat < 4) {
     fails += run_one(kPatternNames[only_pat], g, nthreads, rounds, only_pat, only_grp);
+#ifdef GALLATIN_INVARIANTS
+    gallatin::allocators::gallatin_dump_invariants<<<1,1>>>();
+    cudaDeviceSynchronize();
+#endif
     gallatin_type::free_on_device(g);
     cudaDeviceSynchronize();
     printf("gallatin_context_test[isolated]: %s\n", fails == 0 ? "PASS" : "FAIL");
@@ -397,6 +401,10 @@ int main(int argc, char** argv) {
       fails += run_one(kPatternNames[pat], g, nthreads, rounds, pat, grouped);
     }
   }
+#ifdef GALLATIN_INVARIANTS
+  gallatin::allocators::gallatin_dump_invariants<<<1,1>>>();
+  cudaDeviceSynchronize();
+#endif
   gallatin_type::free_on_device(g);
   cudaDeviceSynchronize();
 

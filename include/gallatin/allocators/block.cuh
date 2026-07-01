@@ -59,14 +59,34 @@ namespace gallatin {
 namespace allocators {
 
 struct Block {
-  
+
   uint malloc_counter;
   uint free_counter;
+#ifdef GALLATIN_BLOCK_CACHE_REF
+  // Back-reference to the off-block-cache slot that currently owns this block:
+  // packed (sidx<<1)|valid. Written store-release on install, cleared on clean
+  // retire, and read by free_block to SEAL the slot when this block returns --
+  // so a slot can never keep handing slices of a returned/re-typed block.
+  unsigned int cache_ref;
+#endif
+#ifdef GALLATIN_BLOCK_HOME
+  // The single static-cache slot this block currently lives in (sidx+1; 0 = none).
+  // Invariant: a block exists in at most ONE location. Recorded when the block is
+  // assigned to a slot; read+wiped when the block is freed so a recycled block can
+  // never be left referenced by a stale slot. O(1), no scan.
+  unsigned int home;
+#endif
 
   __device__ void init() {
     //f u its gotta be big.
     malloc_counter = 4097UL;
     free_counter = 0UL;
+#ifdef GALLATIN_BLOCK_CACHE_REF
+    cache_ref = 0u;  // invalid (no owning slot)
+#endif
+#ifdef GALLATIN_BLOCK_HOME
+    home = 0u;  // no owning slot
+#endif
   }
 
   // helper functions
@@ -87,6 +107,13 @@ struct Block {
 
     #endif
 
+#ifdef GALLATIN_OVERFREE_PROBE
+    // Fires ONLY on the rare over-count event (free_counter already at/past 4096 when
+    // another free lands) -> no normal-path perturbation. Direct evidence of a block
+    // receiving more frees than slices = incarnation overlap / double-return seed.
+    if (old >= 4096) printf("OVERFREE bid free_counter old=%u (block over-counted)\n", old);
+#endif
+
     return (old == 4095);
   }
 
@@ -103,6 +130,10 @@ struct Block {
     if (old > 4096-num_frees) printf("Double free to block: %u frees\n", old+num_frees);
 
     #endif
+
+#ifdef GALLATIN_OVERFREE_PROBE
+    if (old + num_frees > 4096) printf("OVERFREE bid free_counter old=%u n=%u (over-counted)\n", old, num_frees);
+#endif
 
     return (old+num_frees == 4096);
   }
@@ -241,6 +272,17 @@ struct Block {
 
   }
 
+
+  // Static counter claims the WHOLE block up front: it takes ownership of all
+  // 4096 slices the instant it adopts the block, then hands them out itself via
+  // the off-block counter. So malloc_counter must read "full" (count == 4096),
+  // not 0 -- otherwise any reader (reconciliation, accounting, a cross-tree
+  // re-type) sees the block as empty while 4096 slices are live. Tree tag in the
+  // high bits is preserved so check_valid still recognizes the owning tree.
+  __device__ void claim_all_static(uint16_t tree_size){
+    uint shifted = (tree_size << GALLATIN_BLOCK_TREE_OFFSET) | 4096u;
+    atomicExch((unsigned int *)&malloc_counter, shifted);
+  }
 
   //atomically increment the counter and add the old value
   //this version accounts for the tree size.
