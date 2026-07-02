@@ -62,13 +62,6 @@ struct Block {
 
   uint malloc_counter;
   uint free_counter;
-#ifdef GALLATIN_BLOCK_CACHE_REF
-  // Back-reference to the off-block-cache slot that currently owns this block:
-  // packed (sidx<<1)|valid. Written store-release on install, cleared on clean
-  // retire, and read by free_block to SEAL the slot when this block returns --
-  // so a slot can never keep handing slices of a returned/re-typed block.
-  unsigned int cache_ref;
-#endif
 #ifdef GALLATIN_BLOCK_HOME
   // The single static-cache slot this block currently lives in (sidx+1; 0 = none).
   // Invariant: a block exists in at most ONE location. Recorded when the block is
@@ -81,9 +74,6 @@ struct Block {
     //f u its gotta be big.
     malloc_counter = 4097UL;
     free_counter = 0UL;
-#ifdef GALLATIN_BLOCK_CACHE_REF
-    cache_ref = 0u;  // invalid (no owning slot)
-#endif
 #ifdef GALLATIN_BLOCK_HOME
     home = 0u;  // no owning slot
 #endif
