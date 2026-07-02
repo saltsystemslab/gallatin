@@ -2631,6 +2631,96 @@ struct Gallatin {
     return nullptr;  // genuine exhaustion
   }
 
+  // Multi-slice reservation through the STATIC counter (N contiguous slices of a
+  // static-managed tree). A request larger than `biggest` but smaller than a block
+  // routes here (alloc_count = 2/4/8/... on tree num_trees-1). The static counter
+  // owns these slices OFF-block, so it -- not the on-block malloc_slice_allocation --
+  // must serve them, else the two counters dispense the same slices (churn V3
+  // double-alloc). One atomicAdd(N) yields a contiguous run [start, start+N); the run
+  // is contiguous in ADDRESS because a block's slices are contiguous (base + k*size).
+  //
+  // Free accounting: the app holds ONE pointer and calls free() ONCE, but N slices
+  // were consumed. Pre-add (N-1) to the backing block's free_counter at alloc (exactly
+  // as block_correct_frees does for the cooperative multi-slice path) so the single
+  // free() drains all N. This never reaches 4096 before the app's own free (each
+  // dispensed slice contributes at most once, and this alloc's +1 is still pending),
+  // so it cannot recycle the block early.
+  //
+  // Cold path (rare large alloc): out-of-line.
+  GALLATIN_COLD_ATTR
+  __device__ void *malloc_static_multi(uint16_t tree_id, uint N) {
+    uint64_t alloc_size = table->get_tree_alloc_size(tree_id);
+    int nblk = block_cache::g_nblk[tree_id];
+    unsigned int slot0 =
+        block_cache::slot_hash(blockIdx.x * blockDim.x + threadIdx.x);
+    int max_attempts = GALLATIN_MAX_ATTEMPTS * GALLATIN_MALLOC_LOOP_ATTEMPTS;
+    for (int attempt = 0; attempt < max_attempts; attempt++) {
+      int slot = (int)((slot0 + (unsigned int)attempt) % (unsigned int)nblk);
+      int sidx = tree_id * block_cache::MAX_N + slot;
+      unsigned long long merged = atomicAdd(
+          &block_cache::g_ctr64[sidx * block_cache::CSTRIDE64], (unsigned long long)N);
+      unsigned int gen = (unsigned int)(merged >> 32);
+      unsigned int start = (unsigned int)(merged & 0xffffffffu);
+      if (start >= 4096) continue;  // slot already full -> probe next
+
+      // Resolve the backing block for `gen` as ONE atomic word (no {base,gen} tear).
+      // If the slot swapped since our reserve, the run's real prefix is on gen's
+      // retired block (ring): roll it back so free_counter stays exact.
+      unsigned int endr = (start + N < 4096u) ? (start + N) : 4096u;  // real slices only
+#ifdef GALLATIN_LIVE_DESCRIPTOR
+      unsigned long long w =
+          gallatin::utils::load_acquire(&block_cache::g_live64[sidx]);
+      bool live = (w >> 63) &&
+                  (((unsigned int)((w >> 32) & 0x7FFFFFFFu)) == (gen & 0x7FFFFFFFu));
+      uint64_t bid = live ? (uint64_t)(w & 0xFFFFFFFFu) : 0ULL;
+#else
+      uint64_t sbase = gallatin::utils::load_acquire(&block_cache::g_sbase[sidx]);
+      bool live = ((unsigned int)(gallatin::utils::load_acquire(
+          &block_cache::g_ctr64[sidx * block_cache::CSTRIDE64]) >> 32) == gen);
+      // slice-0 of the block -> its global slice offset is bid*4096.
+      uint64_t bid = live ? (allocation_to_offset((void *)sbase, tree_id) / 4096ULL)
+                          : 0ULL;
+#endif
+      if (!live) {
+#ifdef GALLATIN_ATOMIC_RING
+        long long bo = ring_lookup(sidx, gen);
+        if (bo >= 0)
+          for (unsigned int s = start; s < endr; s++)
+            free_offset((unsigned long long)bo * 4096 + s, 7);  // static-multi rollback
+#else
+        int ri = sidx * block_cache::RING + (gen % block_cache::RING);
+        Block *bg = block_cache::g_prev[ri];
+        if (bg != nullptr &&
+            block_cache::g_prev_gen[ri] == (((unsigned long long)gen) | (1ULL << 63)))
+          for (unsigned int s = start; s < endr; s++)
+            free_offset(table->get_global_block_offset(bg) * 4096 + s, 7);
+#endif
+        continue;
+      }
+
+      if (start + N > 4096u) {
+        // Run straddles the block end -> not contiguous. We crossed 4095, so retire
+        // the slot (swap), then return the real prefix [start,4096) as immediately
+        // freed (never handed out) to keep the block balanced. Swap FIRST so the
+        // prefix frees drain the now-retired block normally (no recycle/swap race).
+        swap_slot_static(tree_id, sidx, slot, gen);
+        for (unsigned int s = start; s < 4096u; s++)
+          free_offset(bid * 4096 + s, 7);  // static-multi boundary rollback
+        continue;
+      }
+
+      // SUCCESS: [start, start+N) is a contiguous run on block `bid`, gen `gen`.
+      uint64_t base = (uint64_t)offset_to_allocation(bid * 4096, tree_id);
+      Block *B = table->get_block_from_global_block_id(bid);
+      // Pre-account the N-1 excess frees (see header). Plain add: provably < 4096 here.
+      atomicAdd((unsigned int *)&B->free_counter, (unsigned int)(N - 1));
+      if (start + N == 4096u)  // run fills the block (covers slice 4095) -> swap
+        swap_slot_static(tree_id, sidx, slot, gen);
+      return (void *)(base + (uint64_t)start * alloc_size);
+    }
+    return nullptr;  // genuine exhaustion
+  }
+
   // Software-pipelined fast path: hides the atomicAdd-return latency (the only
   // remaining gap to slab once instructions are below slab's). Each call CONSUMES
   // the reservation issued by the PREVIOUS call (its atomic has had a full insert
@@ -2802,7 +2892,15 @@ struct Gallatin {
         attempt_counter++;
       }
     } else {
-      // Multi-slice (sub-block large alloc).
+      // Multi-slice (sub-block large alloc) -- always targets the top slice tree.
+#if defined(GALLATIN_STATIC_COUNTER)
+      // If this tree is static-managed, its slices are dispensed OFF-block; the
+      // on-block malloc_slice_allocation would double-dispense the same slices
+      // (churn V3). Serve the contiguous run through the static counter instead.
+      if (tree_id < num_trees && block_cache::g_nblk[tree_id] > 0) {
+        return malloc_static_multi(tree_id, alloc_count);
+      }
+#endif
       while (offset == ~0ULL && attempt_counter < GALLATIN_MALLOC_LOOP_ATTEMPTS) {
         offset = malloc_slice_allocation(tree_id, alloc_count);
         attempt_counter++;
