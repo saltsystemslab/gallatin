@@ -61,28 +61,6 @@ __device__ unsigned int *gdbg_block_owner = nullptr;
 __device__ unsigned long long gdbg_block_owner_n = 0;
 #endif
 
-#ifdef GALLATIN_INVARIANTS
-// Systematic invariant harness. One counter per invariant; all-zero == all hold.
-//   I1 a static counter hands out only slices 0..4095 (<=4096 per generation)
-//   I2 a block lives in at most one static slot at a time (home assign CAS)
-//   I3 a block is fully freed exactly once (free_block runs once per incarnation)
-//   I4 no dispense from a stale slot (slot's segment still owned by slot's tree)
-//   I5 each allocation (slice) is unique (no two threads get the same slice)
-//   I6 each block handed out by a segment is unique (get_block hands a block once)
-//   I7 a segment is returned only when all its blocks are freed (home==0, fc==0)
-// Declared here (before get_block + before gallatin.cuh) so every path can reach it.
-__device__ unsigned long long g_inv[8] = {0,0,0,0,0,0,0,0};
-__device__ __forceinline__ unsigned long long inv_hit(int k) { return atomicAdd(&g_inv[k], 1ULL); }
-__global__ void gallatin_dump_invariants() {
-  if (threadIdx.x || blockIdx.x) return;
-  printf("=== INVARIANTS === I0(setup-while-homed)=%llu I1(overdispense)=%llu "
-         "I2(block-in-2-slots)=%llu I3(double-return)=%llu I4(stale-dispense)=%llu "
-         "I6(get_block-owned)=%llu I7(premature-dereg)=%llu  (I5 = test doubles=)\n",
-         g_inv[0], g_inv[1], g_inv[2], g_inv[3], g_inv[4], g_inv[6], g_inv[7]);
-}
-#endif
-
-
 enum Gallatin_memory_type {device_only, host_only, managed};
 
 
@@ -517,26 +495,6 @@ struct alloc_table {
   __device__ bool setup_segment(uint64_t segment, uint16_t tree_id) {
     int num_blocks = get_blocks_per_segment(tree_id);
 
-#ifdef GALLATIN_INVARIANTS
-    // I0 (root probe): we are about to (re)acquire this segment for `tree_id` and make its
-    // blocks available via the fresh-index path. EVERY block must be free (home==0). If a
-    // block is still homed, set_tree_id is re-acquiring a segment a static slot still owns ->
-    // the fresh path will re-hand an owned block (I6). This is the upstream source.
-    for (int i = 0; i < num_blocks; i++) {
-      Block *blk = &blocks[segment * blocks_per_segment + i];
-      unsigned hm = gallatin::utils::load_acquire(&blk->home);
-      if (hm != 0u) {
-        unsigned long long c = inv_hit(0);
-        if (c < 8)
-          printf("INV0 setup-while-homed seg=%llu newtree=%u bid=%llu home=%u(tree%u) fc=%u "
-                 "cur_treeid=%u\n",
-                 (unsigned long long)segment, (unsigned)tree_id,
-                 (unsigned long long)(segment * blocks_per_segment + i), hm,
-                 (hm - 1u) / 4096u, (unsigned)blk->free_counter, (unsigned)read_tree_id(segment));
-      }
-    }
-#endif
-
     // 1. Initialize per-segment state. Plain stores: the release-CAS at the
     // end orders these for any acquire-side reader.
     for (int i = 0; i < num_blocks; i++) {
@@ -712,49 +670,6 @@ struct alloc_table {
 
     }
 
-
-#ifdef GALLATIN_BLOCK_HOME
-    // INVARIANT: a block is FREE iff home==0 (wiped at free_block). If get_block is about to
-    // hand out a block with home!=0, a still-homed block leaked into the available pool --
-    // the REAL bug is upstream. Report WHICH path (fresh-index vs recycled-queue) and the
-    // block state, so we find how a homed block became available.
-    if (gallatin::utils::load_acquire(&my_block->home) != 0u) {
-#ifdef GALLATIN_DETECT_GETHOME
-      // DETECT-ONLY (do not alter behavior): report that a still-homed block reached
-      // get_block, with the path that produced it, so we trace the source.
-      printf("GETHOME bid=%llu seg=%llu tree=%u path=%s qpos=%d home=%u fc=%u mc=%x\n",
-             (unsigned long long)(my_block - blocks), (unsigned long long)segment_id,
-             (unsigned)tree_id, (queue_pos < (int)blocks_in_segment) ? "FRESH-index" : "queue",
-             queue_pos, (unsigned)my_block->home,
-             (unsigned)my_block->free_counter, (unsigned)my_block->malloc_counter);
-#endif
-#ifdef GALLATIN_BLOCK_HOME_REFUSE
-      return_slot_to_segment(segment_id);
-      return nullptr;
-#endif
-    }
-#endif
-
-#ifdef GALLATIN_INVARIANTS
-    // I6: each block handed out by a segment must be unique AND fully freed (the slice
-    // invariant: a block is handed out only after its previous incarnation drained). A
-    // properly-recycled block was reset_free'd to 0 before enqueue, so get_block must only
-    // ever see free_counter==0. home!=0 => still owned by a slot; free_counter!=0 => NOT
-    // fully drained. Either means get_block is handing a non-free block.
-    {
-      unsigned hm = gallatin::utils::load_acquire(&my_block->home);
-      unsigned fc = (unsigned)((volatile Block*)my_block)->free_counter;
-      if (hm != 0u || fc != 0u) {
-        unsigned long long c = inv_hit(6);
-        if (c < 8)
-          printf("INV6 get_block-non-free bid=%llu seg=%llu tree=%u path=%s qpos=%d home=%u fc=%u "
-                 "kind=%s\n",
-                 (unsigned long long)(my_block - blocks), (unsigned long long)segment_id,
-                 (unsigned)tree_id, (queue_pos < (int)blocks_in_segment) ? "FRESH" : "queue",
-                 queue_pos, hm, fc, (fc != 0u) ? "NOT-DRAINED" : "still-homed");
-      }
-    }
-#endif
 
     my_block->init_malloc(tree_id);
 
@@ -937,41 +852,9 @@ struct alloc_table {
       uint64_t bid = (uint64_t)(block_ptr - blocks);
       if (bid < gdbg_block_owner_n) {
         unsigned int prev = atomicExch(&gdbg_block_owner[bid], 0u);
-#ifdef GALLATIN_INVARIANTS
-        // PHANTOM RETURN: this block is being returned (enqueued + active_counts++ via
-        // finish_freeing_block) but its acquire-marker was already 0 -> it was NOT acquired
-        // (or already returned). That is the over-return that lifts active_counts past the
-        // gate and lets a segment deregister with a live block. THE leaked block.
-        if (prev == 0u) {
-          unsigned long long c = inv_hit(5);  // reuse slot 5 for phantom-return tally
-          if (c < 8)
-            printf("PHANTOM-RETURN bid=%llu seg=%llu tree=%u fc=%u "
-                   "(returned without being acquired -> over-increments active_counts)\n",
-                   (unsigned long long)bid, (unsigned long long)segment,
-                   (unsigned)global_tree_id, (unsigned)block_ptr->free_counter);
-        }
-#endif
       }
     }
     #endif
-
-#ifdef GALLATIN_INVARIANTS
-    // A block is enqueued for reuse ONLY from return_block (after free_block reset_free'd it to
-    // 0). So free_counter MUST be 0 here. If it is non-zero, the block is being enqueued while
-    // still live (premature return) -- vs. fc climbing AFTER a clean enqueue (late frees), which
-    // get_block's NOT-DRAINED check catches. This splits the two causes.
-    {
-      unsigned fc = (unsigned)((volatile Block*)block_ptr)->free_counter;
-      if (fc != 0u) {
-        unsigned long long c = inv_hit(3);  // reuse slot 3 for enqueue-while-live tally
-        if (c < 8)
-          printf("ENQUEUE-LIVE bid=%llu seg=%llu tree=%u fc=%u (block enqueued for reuse while "
-                 "free_counter != 0 = premature return)\n",
-                 (unsigned long long)(block_ptr - blocks), (unsigned long long)segment,
-                 (unsigned)global_tree_id, fc);
-      }
-    }
-#endif
 
     gallatin::utils::exchange_release<Block *>(
         &queues[segment * blocks_per_segment + live_enqueue_position],
