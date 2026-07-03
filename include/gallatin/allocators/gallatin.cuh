@@ -1391,20 +1391,12 @@ struct Gallatin {
       coalesced_team.sync();
 
       if (valid) {
-#ifdef GALLATIN_STOCK_NO_VALIDATE
-        // EXPERIMENT: skip the per-alloc tree-tag re-validation entirely (always
-        // trust the block). Tests whether check_valid is what protects stock from
-        // the cross-tree re-type crash, or whether the per-block malloc/free balance
-        // is the real protector.
-        return allocation + global_block_id * 4096;
-#else
         if (!my_block->check_valid(merged_count, tree_id)) {
           // Tree-id tag mismatch: someone reformatted this block. Roll back.
           free_offset(allocation + global_block_id * 4096);
         } else {
           return allocation + global_block_id * 4096;
         }
-#endif
       }
 
       num_attempts++;
