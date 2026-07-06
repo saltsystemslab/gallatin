@@ -249,6 +249,19 @@ __device__ unsigned int *gdbg_alloc_ctx = nullptr;
 #ifndef GALLATIN_PINNED_WAVEFRONT
 #define GALLATIN_PINNED_WAVEFRONT 256
 #endif
+// Per-tree pinned-wavefront SEGMENT cap. Each pinned slot holds one block, and for
+// large-slice trees a block is (nearly) a whole segment -- e.g. the top tree has
+// blocks_per_segment==1, so pinning its wavefront in BLOCKS locks that many whole
+// SEGMENTS. On a modest pool that over-commits the segment supply, and under churn the
+// global segment tree transiently empties -> request_new_block(top tree) returns null ->
+// swap OOM -> the static path misses where stock (shared-block dispensing) does not. Cap
+// each tree's pinned wavefront to this many SEGMENTS: cheap small-slice trees already need
+// <=1 segment (unaffected, full slot count preserved -> hot-path perf intact); only the
+// segment-expensive large-slice trees are trimmed, freeing pool so the top tree never
+// starves. -DGALLATIN_PINNED_SEG_CAP=N to tune.
+#ifndef GALLATIN_PINNED_SEG_CAP
+#define GALLATIN_PINNED_SEG_CAP 4
+#endif
 #define GALLATIN_TEAM_FREE 1
 
 
@@ -796,6 +809,14 @@ struct Gallatin {
                               ? (remaining_pool - reserve_for_others)
                               : 0;
       if (segs_needed > cap_segs) segs_needed = cap_segs;
+
+      // Bound the pinned wavefront to GALLATIN_PINNED_SEG_CAP SEGMENTS per tree so the
+      // segment-expensive large-slice trees can't over-commit the pool (root cause of the
+      // top-tree request_new_block starvation / static miss spikes). Cheap small-slice
+      // trees need <=1 segment for a full wavefront, so this leaves their slot count -- and
+      // thus the hot-path throughput -- untouched.
+      if (segs_needed > (uint64_t)GALLATIN_PINNED_SEG_CAP)
+        segs_needed = (uint64_t)GALLATIN_PINNED_SEG_CAP;
 
       // Slots can't exceed what the granted segments can back.
       uint64_t actual_slots = segs_needed * blocks_per_seg;
