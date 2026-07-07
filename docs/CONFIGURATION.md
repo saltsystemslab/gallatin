@@ -69,12 +69,20 @@ only. Disabling any of these reintroduces a validated double-alloc / crash class
 ## Boot-time explicit pinning (runtime)
 
 `generate_on_device(max_bytes, seed, print_info, pinned_per_tree)` (and the `_host` /
-`_managed` variants) take an optional `pinned_per_tree` (default `0` = auto). When `> 0`,
-**every** tree pins exactly that many wavefront slots (block-buffer entries), overriding the
-geometric `GALLATIN_PINNED_WAVEFRONT` / `MIN_PINNED_CUTOFF` / `GALLATIN_PINNED_SEG_CAP`
-heuristics — clamped only by the physical pool. Lets a caller size the fast-path buffers for
-its workload (e.g. keep the hot tree richly pinned in a lean `smallest=16,biggest=128` config
-without recompiling). Caller owns the perf/segment-pressure tradeoff above `SEG_CAP`.
+`_managed` variants) take an optional **per-tree** `pinned_per_tree` initializer list (default
+`{}` = auto). Entry `t` sizes tree `t` (smallest → biggest); pass e.g. `{32,32,32,128}` for a
+4-tree `smallest=16,biggest=128` config to keep the hot 128B tree richly pinned while the
+small trees stay lean:
+
+```cpp
+auto *a = my_gallatin::generate_on_device(pool, seed, /*print_info=*/false, {32, 32, 32, 128});
+```
+
+An explicit non-zero entry pins exactly that many wavefront slots (block-buffer entries) for
+that tree, overriding the geometric `GALLATIN_PINNED_WAVEFRONT` / `MIN_PINNED_CUTOFF` /
+`GALLATIN_PINNED_SEG_CAP` heuristics — clamped only by the physical pool. A `0` or missing
+entry keeps the auto default for that tree. Caller owns the perf/segment-pressure tradeoff
+above `SEG_CAP`.
 
 ## `allocator_context` wrapper
 

@@ -55,11 +55,15 @@ __global__ void ctx_alloc_tile(alloc_t *a, uint64_t ntiles, uint64_t size, uint6
 
 int main(int argc, char **argv) {
   uint64_t pool = 8ULL * 1024 * 1024 * 1024;
-  uint64_t pinned = (argc > 1) ? strtoull(argv[1], nullptr, 10) : 128;  // explicit pinned/tree
+  // Explicit PER-TREE pinned sizes for the 4 trees (16/32/64/128). Override each on the
+  // cmdline: `ctx_wrapper_test 32 32 32 128`; default keeps the hot 128B tree richly pinned.
+  uint32_t pin[4] = {32, 32, 32, 128};
+  for (int i = 0; i < 4 && (i + 1) < argc; i++) pin[i] = (uint32_t)strtoul(argv[i + 1], nullptr, 10);
   uint64_t size = 64, n = 4000000;
-  printf("=== boot Gallatin<16MB,16,128> with explicit pinned_per_tree=%llu ===\n",
-         (unsigned long long)pinned);
-  alloc_t *a = alloc_t::generate_on_device(pool, 42, /*print_info=*/false, /*pinned_per_tree=*/pinned);
+  printf("=== boot Gallatin<16MB,16,128> with explicit pinned_per_tree={%u,%u,%u,%u} ===\n",
+         pin[0], pin[1], pin[2], pin[3]);
+  alloc_t *a = alloc_t::generate_on_device(
+      pool, 42, /*print_info=*/false, {pin[0], pin[1], pin[2], pin[3]});
   cudaDeviceSynchronize();
   dump<<<1, 1>>>(a); cudaDeviceSynchronize();
 

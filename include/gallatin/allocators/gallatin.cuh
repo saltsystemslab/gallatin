@@ -88,6 +88,7 @@ The pointer returned must be the same address that was returned -
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <initializer_list>
 #include <iostream>
 #include <gallatin/allocators/alloc_utils.cuh>
 // Must be defined BEFORE block.cuh: it adds the Block::home field (the single-location
@@ -707,9 +708,12 @@ struct Gallatin {
   // Shared implementation for the three public generate_on_device variants.
   // memory_control selects the backing-memory kind (device / host-mapped /
   // managed). The three public wrappers below preserve the historical API.
+  // pinned_per_tree/pinned_count: optional explicit per-tree pinned wavefront sizes
+  // (entry t = slots for tree t; 0 or missing entry = auto/geometric for that tree).
   static __host__ my_type *generate_on_device_impl(
       uint64_t max_bytes, uint64_t seed, bool print_info,
-      Gallatin_memory_type memory_control, uint64_t pinned_per_tree = 0) {
+      Gallatin_memory_type memory_control,
+      const uint32_t *pinned_per_tree = nullptr, uint32_t pinned_count = 0) {
 
     if (memory_control != device_only) {
       GPUErrorCheck(cudaSetDeviceFlags(cudaDeviceMapHost));
@@ -812,14 +816,17 @@ struct Gallatin {
       uint64_t blocks_per_seg =
           alloc_table<bytes_per_segment, smallest>::get_blocks_per_segment(t);
 
-      // Wavefront slot target. An EXPLICIT boot override (pinned_per_tree > 0) sets it
-      // directly for every tree, bypassing the geometric halving, MIN_PINNED_CUTOFF, the
-      // 1/WAVEFRONT_BUDGET_FRACTION cap, and (below) GALLATIN_PINNED_SEG_CAP -- only the
-      // physical remaining-pool clamp still applies so boot can't fail. Caller owns the
-      // perf/segment-pressure tradeoff.
+      // Wavefront slot target. An EXPLICIT PER-TREE boot override (pinned_per_tree[t] > 0)
+      // sets tree t's slot count directly, bypassing the geometric halving,
+      // MIN_PINNED_CUTOFF, the 1/WAVEFRONT_BUDGET_FRACTION cap, and (below)
+      // GALLATIN_PINNED_SEG_CAP -- only the physical remaining-pool clamp still applies so
+      // boot can't fail. A 0 or absent entry falls back to the auto/geometric target for
+      // that tree. Caller owns the perf/segment-pressure tradeoff.
+      uint64_t explicit_pin =
+          (pinned_per_tree != nullptr && t < pinned_count) ? (uint64_t)pinned_per_tree[t] : 0;
       uint64_t target;
-      if (pinned_per_tree > 0) {
-        target = pinned_per_tree;
+      if (explicit_pin > 0) {
+        target = explicit_pin;
       } else {
         target = geom < MIN_PINNED_CUTOFF ? (uint64_t)MIN_PINNED_CUTOFF : geom;
         uint64_t slot_cap =
@@ -846,7 +853,7 @@ struct Gallatin {
       // top-tree request_new_block starvation / static miss spikes). Cheap small-slice
       // trees need <=1 segment for a full wavefront, so this leaves their slot count -- and
       // thus the hot-path throughput -- untouched.
-      if (pinned_per_tree == 0 && segs_needed > (uint64_t)GALLATIN_PINNED_SEG_CAP)
+      if (explicit_pin == 0 && segs_needed > (uint64_t)GALLATIN_PINNED_SEG_CAP)
         segs_needed = (uint64_t)GALLATIN_PINNED_SEG_CAP;
 
       // Slots can't exceed what the granted segments can back.
@@ -992,30 +999,36 @@ struct Gallatin {
   }
 
   // Device-backed allocator (the common case).
-  // `pinned_per_tree` (0 = auto/geometric default): explicitly set how many pinned
-  // wavefront slots (block-buffer entries) EVERY tree gets at construction, overriding
-  // the geometric PINNED_WAVEFRONT/MIN_PINNED_CUTOFF/SEG_CAP heuristics (clamped only by
-  // the physical pool). Lets a caller size the fast-path buffers for its workload.
-  static __host__ my_type *generate_on_device(uint64_t max_bytes, uint64_t seed,
-                                              bool print_info = true,
-                                              uint64_t pinned_per_tree = 0) {
-    return generate_on_device_impl(max_bytes, seed, print_info, device_only, pinned_per_tree);
+  // `pinned_per_tree` (empty = auto/geometric default): an explicit PER-TREE list of how
+  // many pinned wavefront slots (block-buffer entries) each tree gets at construction --
+  // entry t sizes tree t (smallest..biggest). Pass e.g. `{32,32,32,128}` for a 4-tree
+  // 16->128 config. An explicit entry overrides the geometric
+  // PINNED_WAVEFRONT/MIN_PINNED_CUTOFF/SEG_CAP heuristics for that tree (clamped only by
+  // the physical pool); a 0 or missing entry keeps the auto default for that tree.
+  static __host__ my_type *generate_on_device(
+      uint64_t max_bytes, uint64_t seed, bool print_info = true,
+      std::initializer_list<uint32_t> pinned_per_tree = {}) {
+    return generate_on_device_impl(max_bytes, seed, print_info, device_only,
+                                   pinned_per_tree.begin(),
+                                   (uint32_t)pinned_per_tree.size());
   }
 
   // Pinned-host-memory-backed allocator (mapped into the device address space).
-  static __host__ my_type *generate_on_device_host(uint64_t max_bytes,
-                                                   uint64_t seed,
-                                                   bool print_info = true,
-                                                   uint64_t pinned_per_tree = 0) {
-    return generate_on_device_impl(max_bytes, seed, print_info, host_only, pinned_per_tree);
+  static __host__ my_type *generate_on_device_host(
+      uint64_t max_bytes, uint64_t seed, bool print_info = true,
+      std::initializer_list<uint32_t> pinned_per_tree = {}) {
+    return generate_on_device_impl(max_bytes, seed, print_info, host_only,
+                                   pinned_per_tree.begin(),
+                                   (uint32_t)pinned_per_tree.size());
   }
 
   // UVM/managed-memory-backed allocator.
-  static __host__ my_type *generate_on_device_managed(uint64_t max_bytes,
-                                                      uint64_t seed,
-                                                      bool print_info = true,
-                                                      uint64_t pinned_per_tree = 0) {
-    return generate_on_device_impl(max_bytes, seed, print_info, managed, pinned_per_tree);
+  static __host__ my_type *generate_on_device_managed(
+      uint64_t max_bytes, uint64_t seed, bool print_info = true,
+      std::initializer_list<uint32_t> pinned_per_tree = {}) {
+    return generate_on_device_impl(max_bytes, seed, print_info, managed,
+                                   pinned_per_tree.begin(),
+                                   (uint32_t)pinned_per_tree.size());
   }
 
   // --- Legacy 4-arg overloads -------------------------------------------------
