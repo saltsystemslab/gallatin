@@ -3540,11 +3540,21 @@ struct allocator_context {
     alloc_size_ = static_managed_ ? alloc->table->get_tree_alloc_size(tree_id_) : size;
   }
 
-  // Per-thread allocate: each active thread gets its own slice.
+  // Per-thread allocate: each active thread gets its own slice. Uses the WARP-COALESCED
+  // fast path (gstatic_fast_grouped) so the warp's active same-tree lanes reserve their
+  // run with ONE atomicAdd(n) off the leader's cached slot -- matching the stateless
+  // a->malloc(size) coalescing while keeping the warm cached-slot context. The grouped
+  // path self-bypasses to the single-atomic gstatic_fast when only one lane is active
+  // (n==1), so lone/divergent callers stay cheap.
   __device__ void *malloc() {
 #ifdef GALLATIN_STATIC_COUNTER
     if (static_managed_) {
-      void *p = alloc_->gstatic_fast(cidx_, cbase_, cgen_, alloc_size_);
+      void *p;
+#ifdef GALLATIN_GROUPED
+      p = alloc_->gstatic_fast_grouped(cidx_, cbase_, cgen_, tree_id_, alloc_size_);
+#else
+      p = alloc_->gstatic_fast(cidx_, cbase_, cgen_, alloc_size_);
+#endif
       if (p == nullptr)
         p = alloc_->gstatic_slow(tree_id_, alloc_size_, cidx_, cbase_, cgen_);
       return p;
