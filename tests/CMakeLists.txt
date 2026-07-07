@@ -15,6 +15,11 @@ ConfigureExecutable(gallatin_context_test "${CMAKE_CURRENT_SOURCE_DIR}/src/galla
 # allocator_context wrapper + explicit per-tree pinned-size boot option.
 ConfigureExecutable(ctx_wrapper_test "${CMAKE_CURRENT_SOURCE_DIR}/src/ctx_wrapper_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+# Throughput comparison: context-based allocation (per-thread + coalesced tile)
+# vs the stateless static path. The stateless path auto-coalesces the warp, so it
+# wins on dense warp-uniform allocs; the context's value is the tile path + ergonomics.
+ConfigureExecutable(ctx_perf_test "${CMAKE_CURRENT_SOURCE_DIR}/src/ctx_perf_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
 
 ConfigureExecutable(global_test "${CMAKE_CURRENT_SOURCE_DIR}/src/global_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
