@@ -92,8 +92,8 @@ size, reuse across the loop:
 
 ```cpp
 allocator_context<my_gallatin> ctx(alloc, size);
-void* p = ctx.malloc();      // per-thread (one atomic warm path)
-void* q = ctx.malloc(tile);  // warp-coalesced; cg tile of size 16 or 32 -> one shared alloc
+void* p = ctx.malloc();      // per-thread; warp-coalesced warm path (1 atomic/warp)
+void* q = ctx.malloc(tile);  // cg tile of size 16 or 32 -> one shared alloc per tile
 ctx.free(p);
 ```
 

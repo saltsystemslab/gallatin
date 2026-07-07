@@ -22,46 +22,67 @@ slot's block fills (count reaches 4096) the lane that crosses the boundary **swa
 fresh block and bumps `gen`; a thread whose cached `gen` no longer matches simply
 re-resolves. That generation check is the single hot-path safety gate.
 
-## 2. Two ways to call it
+## 2. The two allocation paths
 
-### A. Cached context (recommended — the fast path)
+Both are **warp-coalesced** off-block static-counter paths — the warp's active same-tree
+lanes reserve a contiguous run with **one `atomicAdd(n)`** (Gallatin's native coalescing),
+not one atomic per thread. They differ only in whether a **cached context** is carried
+across calls. It is safe to **mix** the two on the same tree (identical off-block counter
+and free accounting).
 
-Use `device_allocator_context`. Construct it **once per thread** (really per tile
-leader) and reuse it across the allocation loop; it holds the cached slot so repeated
-allocations stay on the one-atomic warm path.
+### A. Static allocation with coalescing — stateless
+
+No per-thread state. `alloc->malloc(size)` / `alloc->free(ptr)`. For a static-managed tree,
+`malloc` routes to `malloc_static` (single slice) or `malloc_static_multi` (multi-slice, see
+§5). `malloc_static` coalesces the warp (`coalesced_threads()` + `labeled_partition(tree)`;
+leader reserves `team.size()`), so it is *not* a per-thread atomic — but it re-resolves the
+slot (`slot_hash` + `get_tree_alloc_size` + partition setup) on **every** call.
 
 ```cpp
-// tile is a cooperative_groups tile of size 16 or 32 (static_assert enforces this).
-device_allocator_context<gallatin_allocator<SLAB>> ctx(alloc_device_instance, tile);
+void* p = alloc->malloc(size);   // coalesced; resolves a slot each call
+... use p ...
+alloc->free(p);
+```
 
+### B. Static allocation with coalescing **+ context** (recommended — fastest)
+
+Carry an `allocator_context` (constructed once per thread / per tile leader, reused across
+the loop). Its per-thread `malloc()` uses the **same coalescing** as path A
+(`gstatic_fast_grouped`) *plus* the cached slot, so it skips the per-call slot re-resolve.
+
+```cpp
+allocator_context<my_gallatin> ctx(alloc, size);   // size -> tree resolved once
 for (...) {
-  auto handle = ctx.allocate(tile);          // fast path: 1 atomic on the cached slot
-  void* p     = ctx.address(handle);         // handle -> pointer
+  void* p = ctx.malloc();        // coalesced (1 atomic/warp) on the CACHED slot
   ... use p ...
-  ctx.deallocate_coop(handle, tile);         // or deallocate_perlane(handle)
+  ctx.free(p);
 }
-// ctx destructor returns any outstanding prefetched reservation (GX_PREFETCH only).
+void* q = ctx.malloc(tile);      // coalesced at cg-tile granularity: one shared slice/tile
 ```
 
 Key properties:
-- **Tile-leader only.** `allocate` reserves on `tile.thread_rank()==0` and `shfl`-broadcasts
-  the address to the tile. Tile-16 warps have two leaders; tile-32 warps have one.
-- **Warp coalescing (grouped).** For tile size < 32, `allocate` calls
-  `gstatic_fast_grouped`: the active same-tree leaders in a warp reserve a *contiguous
-  run with one `atomicAdd(n)`* (Gallatin's native coalescing), cutting the per-warp atomic
-  count. Tile-32 (one leader/warp) skips the coalescing machinery and takes the plain
-  single-atomic `gstatic_fast` — coalescing would be pure overhead with nothing to merge.
-- **Self-healing cache.** On a miss (slot swapped/full) `allocate` falls back to
-  `gstatic_slow`, which re-resolves and refreshes the cached `{cidx,cbase,cgen}` so the
-  next call is warm again.
+- **Coalesced.** `ctx.malloc()` calls `gstatic_fast_grouped`: active same-tree lanes reserve
+  one run with one `atomicAdd(n)`. The `n==1` bypass drops lone/divergent callers to the
+  plain single-atomic `gstatic_fast` — no shfl/sync overhead when there's nothing to merge.
+- **Warm cached slot.** It reuses `{cidx,cbase,cgen}` (see §3) instead of re-resolving, which
+  is the edge over path A.
+- **Tile granularity.** `ctx.malloc(tile)` (cg tile of size 16/32) gives the tile leader one
+  shared slice broadcast to the tile — a pattern the per-thread API can't express.
+- **Self-healing.** On a miss (slot swapped/full) it falls back to `gstatic_slow`, which
+  re-resolves and refreshes the cache so the next call is warm again.
 
-### B. Stateless `malloc` / `free`
+### Measured (H200, 1M threads × 64 malloc+free roundtrips, `Gallatin<16MB,16,128>`, miss=0)
 
-`alloc->malloc(size)` / `alloc->free(ptr)` work without a context. For a static-managed
-tree, `malloc` routes to `malloc_static` (single slice) or `malloc_static_multi`
-(multi-slice, see §5) on the same off-block counter, so it is safe to **mix** context and
-stateless calls on the same tree. This is slower than the cached context (it re-resolves a
-slot every call) but requires no per-thread state.
+| size | A stateless coalesced | B context coalesced | B vs A |
+|------|-----------------------|---------------------|--------|
+| 16B  | 5972 Mops | **6455 Mops** | +8% |
+| 64B  | 6047 Mops | **6781 Mops** | +12% |
+| 128B | 6003 Mops | **6660 Mops** | +11% |
+
+Both coalesce, so both are ~6 GMops; the context adds the warm cached slot for +8–12%. (Use
+harness `tests/src/ctx_perf_test.cu` to re-measure.) IndexinGPU uses a compile-time-size
+variant of path B, `device_allocator_context`, with `allocate(tile)`/`address`/
+`deallocate_*` — same machinery, constexpr `tree_id`/slice size for leaner registers.
 
 ## 3. The cached context parameters
 
@@ -91,9 +112,11 @@ Lifecycle notes:
 
 ## 4. Freeing
 
-- `deallocate_coop(handle, tile)` — cooperative free (one leader frees, coalesced).
-- `deallocate_perlane(handle)` / `deallocate_perlane_finish(sum, tile)` — per-lane free.
-- Stateless: `alloc->free(ptr)`.
+- Path A (stateless) / Path B (`allocator_context`): `alloc->free(ptr)` / `ctx.free(ptr)` —
+  both land in `free_offset`. For a tile allocation from `ctx.malloc(tile)`, free the shared
+  slice **exactly once** (the pointer is the same on every lane).
+- IndexinGPU `device_allocator_context`: `deallocate_coop(handle, tile)` (cooperative, one
+  leader frees, coalesced) / `deallocate_perlane(handle)` + `deallocate_perlane_finish(sum, tile)`.
 
 All of these land in `free_offset`, which credits the slice's block (`block_free`); when a
 block's `free_counter` reaches 4096 it is reset and recycled. Frees are coalesced per block
@@ -116,6 +139,10 @@ pre-accounts the extra slices).
 - [ ] Call the allocator's boot/publish step so the per-slot cache is filled before any
       device allocation (the block-cache fill kernel). Without it, `malloc` safely falls
       through to the cooperative path.
-- [ ] Construct one `device_allocator_context` per tile leader; reuse it across the loop.
-- [ ] Use tile size 16 or 32 (enforced by `static_assert`). Tile-16 gets warp coalescing.
-- [ ] Free with the matching `deallocate_*` or stateless `free`.
+- [ ] Pick a path: **A** stateless `alloc->malloc(size)` (coalesced, no state) or **B**
+      `allocator_context ctx(alloc,size); ctx.malloc()` (coalesced + cached slot, ~+10%).
+      Both are safe to mix on the same tree.
+- [ ] For path B, construct one context per thread / tile leader and reuse it across the loop.
+- [ ] For a shared per-tile allocation use `ctx.malloc(tile)` (cg tile size 16 or 32); free the
+      returned pointer exactly once.
+- [ ] Free with `alloc->free` / `ctx.free` (or IndexinGPU's `deallocate_*`).
