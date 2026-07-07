@@ -709,7 +709,7 @@ struct Gallatin {
   // managed). The three public wrappers below preserve the historical API.
   static __host__ my_type *generate_on_device_impl(
       uint64_t max_bytes, uint64_t seed, bool print_info,
-      Gallatin_memory_type memory_control) {
+      Gallatin_memory_type memory_control, uint64_t pinned_per_tree = 0) {
 
     if (memory_control != device_only) {
       GPUErrorCheck(cudaSetDeviceFlags(cudaDeviceMapHost));
@@ -812,13 +812,21 @@ struct Gallatin {
       uint64_t blocks_per_seg =
           alloc_table<bytes_per_segment, smallest>::get_blocks_per_segment(t);
 
-      // Wavefront slot target.
-      uint64_t target =
-          geom < MIN_PINNED_CUTOFF ? (uint64_t)MIN_PINNED_CUTOFF : geom;
-      uint64_t slot_cap =
-          (max_chunks * blocks_per_seg) / WAVEFRONT_BUDGET_FRACTION;
-      if (slot_cap == 0) slot_cap = 1;  // always at least one slot
-      if (target > slot_cap) target = slot_cap;
+      // Wavefront slot target. An EXPLICIT boot override (pinned_per_tree > 0) sets it
+      // directly for every tree, bypassing the geometric halving, MIN_PINNED_CUTOFF, the
+      // 1/WAVEFRONT_BUDGET_FRACTION cap, and (below) GALLATIN_PINNED_SEG_CAP -- only the
+      // physical remaining-pool clamp still applies so boot can't fail. Caller owns the
+      // perf/segment-pressure tradeoff.
+      uint64_t target;
+      if (pinned_per_tree > 0) {
+        target = pinned_per_tree;
+      } else {
+        target = geom < MIN_PINNED_CUTOFF ? (uint64_t)MIN_PINNED_CUTOFF : geom;
+        uint64_t slot_cap =
+            (max_chunks * blocks_per_seg) / WAVEFRONT_BUDGET_FRACTION;
+        if (slot_cap == 0) slot_cap = 1;  // always at least one slot
+        if (target > slot_cap) target = slot_cap;
+      }
 
       // Segments needed to back `target` slots (pack blocks_per_seg per segment).
       uint64_t segs_needed = (target + blocks_per_seg - 1) / blocks_per_seg;
@@ -838,7 +846,7 @@ struct Gallatin {
       // top-tree request_new_block starvation / static miss spikes). Cheap small-slice
       // trees need <=1 segment for a full wavefront, so this leaves their slot count -- and
       // thus the hot-path throughput -- untouched.
-      if (segs_needed > (uint64_t)GALLATIN_PINNED_SEG_CAP)
+      if (pinned_per_tree == 0 && segs_needed > (uint64_t)GALLATIN_PINNED_SEG_CAP)
         segs_needed = (uint64_t)GALLATIN_PINNED_SEG_CAP;
 
       // Slots can't exceed what the granted segments can back.
@@ -984,23 +992,30 @@ struct Gallatin {
   }
 
   // Device-backed allocator (the common case).
+  // `pinned_per_tree` (0 = auto/geometric default): explicitly set how many pinned
+  // wavefront slots (block-buffer entries) EVERY tree gets at construction, overriding
+  // the geometric PINNED_WAVEFRONT/MIN_PINNED_CUTOFF/SEG_CAP heuristics (clamped only by
+  // the physical pool). Lets a caller size the fast-path buffers for its workload.
   static __host__ my_type *generate_on_device(uint64_t max_bytes, uint64_t seed,
-                                              bool print_info = true) {
-    return generate_on_device_impl(max_bytes, seed, print_info, device_only);
+                                              bool print_info = true,
+                                              uint64_t pinned_per_tree = 0) {
+    return generate_on_device_impl(max_bytes, seed, print_info, device_only, pinned_per_tree);
   }
 
   // Pinned-host-memory-backed allocator (mapped into the device address space).
   static __host__ my_type *generate_on_device_host(uint64_t max_bytes,
                                                    uint64_t seed,
-                                                   bool print_info = true) {
-    return generate_on_device_impl(max_bytes, seed, print_info, host_only);
+                                                   bool print_info = true,
+                                                   uint64_t pinned_per_tree = 0) {
+    return generate_on_device_impl(max_bytes, seed, print_info, host_only, pinned_per_tree);
   }
 
   // UVM/managed-memory-backed allocator.
   static __host__ my_type *generate_on_device_managed(uint64_t max_bytes,
                                                       uint64_t seed,
-                                                      bool print_info = true) {
-    return generate_on_device_impl(max_bytes, seed, print_info, managed);
+                                                      bool print_info = true,
+                                                      uint64_t pinned_per_tree = 0) {
+    return generate_on_device_impl(max_bytes, seed, print_info, managed, pinned_per_tree);
   }
 
   // --- Legacy 4-arg overloads -------------------------------------------------
@@ -3469,6 +3484,94 @@ struct Gallatin {
 
 
 
+};
+
+// ---------------------------------------------------------------------------
+// allocator_context: a wrapper around the static-counter fast path.
+//
+// Caches the per-thread {slot, base, gen} reservation context for one target size so
+// repeated same-size allocations stay on the one-atomic warm path -- without the caller
+// hand-threading cidx/cbase/cgen through gstatic_fast/grouped/slow. Construct ONE per
+// thread (per tile leader) for a size, reuse across the allocation loop, and free() any
+// pointer. Falls back to the stateless cooperative path for sizes above the largest slice
+// or trees the static counter doesn't manage, so it is always safe.
+//
+//   allocator_context<my_gallatin> ctx(alloc, size);
+//   void* p = ctx.malloc();           // per-thread
+//   void* q = ctx.malloc(tile);       // warp-coalesced (cg tile of size 16 or 32)
+//   ctx.free(p);
+//
+// Register cost: a compile-time-size specialization (constexpr tree_id/alloc_size, like
+// IndexinGPU's device_allocator_context) is leaner; this runtime-size version trades a few
+// registers for generality. Construction does the size->tree resolve once (not per alloc).
+template <typename allocator_t>
+struct allocator_context {
+  allocator_t *alloc_;
+  uint64_t req_size_;     // requested size (used by the >biggest / unmanaged fallback)
+  uint64_t alloc_size_;   // the tree's slice size on the fast path
+  uint16_t tree_id_;
+  bool static_managed_;   // static counter serves this tree
+  int cidx_;              // cached slot (-1 = none)
+  uint64_t cbase_;        // cached slot base address
+  unsigned int cgen_;     // cached slot generation
+
+  __device__ allocator_context(allocator_t *alloc, uint64_t size)
+      : alloc_(alloc), req_size_(size), cidx_(-1), cbase_(0), cgen_(0) {
+    tree_id_ = alloc->get_tree_id_from_size(size);
+#if defined(GALLATIN_STATIC_COUNTER) && defined(GALLATIN_BLOCK_CACHE)
+    static_managed_ = (tree_id_ < alloc->num_trees) &&
+                      (block_cache::S().g_nblk[tree_id_] > 0);
+#else
+    static_managed_ = false;
+#endif
+    alloc_size_ = static_managed_ ? alloc->table->get_tree_alloc_size(tree_id_) : size;
+  }
+
+  // Per-thread allocate: each active thread gets its own slice.
+  __device__ void *malloc() {
+#ifdef GALLATIN_STATIC_COUNTER
+    if (static_managed_) {
+      void *p = alloc_->gstatic_fast(cidx_, cbase_, cgen_, alloc_size_);
+      if (p == nullptr)
+        p = alloc_->gstatic_slow(tree_id_, alloc_size_, cidx_, cbase_, cgen_);
+      return p;
+    }
+#endif
+    return alloc_->malloc(req_size_);  // large / unmanaged -> full stateless routing
+  }
+
+  // Warp-coalesced allocate: the tile leader reserves (grouped fast path for tile<32,
+  // which coalesces a warp's same-tree leaders into one atomicAdd) and broadcasts the
+  // result to the tile. `tile` must be a cooperative-groups tile with static size 16 or 32.
+  template <typename tile_t>
+  __device__ void *malloc(const tile_t &tile) {
+    uint64_t raw = 0;
+    if (tile.thread_rank() == 0) raw = reinterpret_cast<uint64_t>(malloc_leader<tile_t>());
+    raw = tile.shfl(raw, 0);
+    return reinterpret_cast<void *>(raw);
+  }
+
+  __device__ void free(void *p) { alloc_->free(p); }
+
+ private:
+  template <typename tile_t>
+  __device__ void *malloc_leader() {
+#ifdef GALLATIN_STATIC_COUNTER
+    if (static_managed_) {
+      void *p;
+#ifdef GALLATIN_GROUPED
+      if constexpr (tile_t::size() < 32)
+        p = alloc_->gstatic_fast_grouped(cidx_, cbase_, cgen_, tree_id_, alloc_size_);
+      else
+#endif
+        p = alloc_->gstatic_fast(cidx_, cbase_, cgen_, alloc_size_);
+      if (p == nullptr)
+        p = alloc_->gstatic_slow(tree_id_, alloc_size_, cidx_, cbase_, cgen_);
+      return p;
+    }
+#endif
+    return alloc_->malloc(req_size_);
+  }
 };
 
 }  // namespace allocators

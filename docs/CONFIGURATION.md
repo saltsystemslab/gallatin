@@ -66,6 +66,32 @@ only. Disabling any of these reintroduces a validated double-alloc / crash class
 | `GX_RDC` | ON | separable compilation for the lean hot path |
 | `GX_MAXRREG` | 32 | `-maxrregcount` |
 
+## Boot-time explicit pinning (runtime)
+
+`generate_on_device(max_bytes, seed, print_info, pinned_per_tree)` (and the `_host` /
+`_managed` variants) take an optional `pinned_per_tree` (default `0` = auto). When `> 0`,
+**every** tree pins exactly that many wavefront slots (block-buffer entries), overriding the
+geometric `GALLATIN_PINNED_WAVEFRONT` / `MIN_PINNED_CUTOFF` / `GALLATIN_PINNED_SEG_CAP`
+heuristics — clamped only by the physical pool. Lets a caller size the fast-path buffers for
+its workload (e.g. keep the hot tree richly pinned in a lean `smallest=16,biggest=128` config
+without recompiling). Caller owns the perf/segment-pressure tradeoff above `SEG_CAP`.
+
+## `allocator_context` wrapper
+
+`gallatin::allocators::allocator_context<AllocT>` wraps the static-counter fast path so
+callers don't hand-thread `cidx/cbase/cgen`. Construct one per thread (per tile leader) for a
+size, reuse across the loop:
+
+```cpp
+allocator_context<my_gallatin> ctx(alloc, size);
+void* p = ctx.malloc();      // per-thread (one atomic warm path)
+void* q = ctx.malloc(tile);  // warp-coalesced; cg tile of size 16 or 32 -> one shared alloc
+ctx.free(p);
+```
+
+Falls back to the stateless cooperative path for sizes above the largest slice / unmanaged
+trees, so it is always safe. See [`USAGE_STATIC_CONTEXT.md`](USAGE_STATIC_CONTEXT.md).
+
 ## Diagnostics (debug-only)
 
 - `GALLATIN_BLOCK_DEBUG` — per-slice free/alloc stamping; the `run_cachesafe` census and

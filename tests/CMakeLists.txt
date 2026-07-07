@@ -12,6 +12,9 @@ ConfigureExecutable(gallatin_churn "${CMAKE_CURRENT_SOURCE_DIR}/src/gallatin_chu
 # per-size, changing-size+reset) + mixed context/stateless interference.
 ConfigureExecutable(gallatin_context_test "${CMAKE_CURRENT_SOURCE_DIR}/src/gallatin_context_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 
+# allocator_context wrapper + explicit per-tree pinned-size boot option.
+ConfigureExecutable(ctx_wrapper_test "${CMAKE_CURRENT_SOURCE_DIR}/src/ctx_wrapper_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
+
 
 ConfigureExecutable(global_test "${CMAKE_CURRENT_SOURCE_DIR}/src/global_test.cu" "${GALLATIN_TESTS_BINARY_DIR}")
 

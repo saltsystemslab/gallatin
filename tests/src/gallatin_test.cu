@@ -266,7 +266,12 @@ int main(int argc, char** argv) {
    }
 
 
-   gallatin_test_allocs_pointer<16ULL*1024*1024, 16ULL, 4096ULL>(num_segments*16*1024*1024, num_rounds, size);
+   // Slice-size range is overridable to try leaner configs (e.g. -DGALLATIN_TEST_BIGGEST=128
+   // for a small-alloc workload: 4 trees 16/32/64/128, top tree 32 blocks/segment).
+#ifndef GALLATIN_TEST_BIGGEST
+#define GALLATIN_TEST_BIGGEST 4096ULL
+#endif
+   gallatin_test_allocs_pointer<16ULL*1024*1024, 16ULL, GALLATIN_TEST_BIGGEST>(num_segments*16*1024*1024, num_rounds, size);
 
 
 
