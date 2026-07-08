@@ -679,6 +679,39 @@ struct Gallatin {
 
 
   static_assert(bytes_per_segment >= biggest*4096);
+
+  // ---- Compile-time size <-> tree helpers -------------------------------------
+  // Constexpr mirrors of the runtime get_tree_id_from_size / get_tree_alloc_size,
+  // expressed purely from the (smallest,biggest) template params. A caller with a
+  // COMPILE-TIME allocation size can resolve its tree_id and slice size with zero
+  // registers and no device load -- this is what lets allocator_context<A,FixedBytes>
+  // be as lean as a hand-specialized context. ceil_log2_c(v) == get_first_bit_bigger(v)
+  // for v>0 (smallest r with 2^r >= v), so these agree with the runtime path exactly.
+  static constexpr int ceil_log2_c(uint64_t v) {
+    int r = 0;
+    while ((1ULL << r) < v) r++;
+    return r;
+  }
+  static constexpr int smallest_bits_c = ceil_log2_c(smallest);
+  static constexpr int num_trees_c = ceil_log2_c(biggest) - smallest_bits_c + 1;
+  static constexpr uint16_t tree_id_for_size(uint64_t size) {
+    return (size <= smallest) ? 0
+                              : (uint16_t)(ceil_log2_c(size) - smallest_bits_c);
+  }
+  static constexpr uint64_t tree_size_for_id(uint16_t tree) {
+    return smallest << tree;
+  }
+
+  // Base address of the contiguous slice heap (constant-cache read under
+  // GALLATIN_CONST_BASE). Used to convert a slice pointer to/from a compact index.
+  __device__ inline uint64_t heap_base() const {
+#ifdef GALLATIN_CONST_BASE
+    return (uint64_t)gallatin_const::g_table_bases.memory;
+#else
+    return (uint64_t)table->memory;
+#endif
+  }
+
   // internal structures
   veb_tree *segment_tree;
 
@@ -3500,72 +3533,109 @@ struct Gallatin {
 };
 
 // ---------------------------------------------------------------------------
-// allocator_context: a wrapper around the static-counter fast path.
-//
-// Caches the per-thread {slot, base, gen} reservation context for one target size so
-// repeated same-size allocations stay on the one-atomic warm path -- without the caller
-// hand-threading cidx/cbase/cgen through gstatic_fast/grouped/slow. Construct ONE per
-// thread (per tile leader) for a size, reuse across the allocation loop, and free() any
-// pointer. Falls back to the stateless cooperative path for sizes above the largest slice
-// or trees the static counter doesn't manage, so it is always safe.
-//
-//   allocator_context<my_gallatin> ctx(alloc, size);
-//   void* p = ctx.malloc();           // per-thread
-//   void* q = ctx.malloc(tile);       // warp-coalesced (cg tile of size 16 or 32)
-//   ctx.free(p);
-//
-// Register cost: a compile-time-size specialization (constexpr tree_id/alloc_size, like
-// IndexinGPU's device_allocator_context) is leaner; this runtime-size version trades a few
-// registers for generality. Construction does the size->tree resolve once (not per alloc).
+// ctx_size_policy: resolves {tree_id, slice size, requested size, is-managed} for a
+// context either at COMPILE TIME (FixedBytes>0 -> everything constexpr, this object is
+// empty and costs zero registers) or at CONSTRUCTION from a runtime size (FixedBytes==0).
+// This is what lets a single allocator_context template be as lean as a hand-written
+// compile-time specialization when the size is known, yet stay general otherwise.
+template <typename allocator_t, uint64_t FixedBytes>
+struct ctx_size_policy {  // compile-time size: no storage
+  static constexpr uint16_t tree_id = allocator_t::tree_id_for_size(FixedBytes);
+  static constexpr uint64_t slice = allocator_t::tree_size_for_id(tree_id);
+  __device__ ctx_size_policy(allocator_t *, uint64_t) {}
+  __device__ uint16_t tree() const { return tree_id; }
+  __device__ uint64_t size() const { return slice; }
+  __device__ uint64_t req() const { return FixedBytes; }
+  // A compile-time size inside [smallest,biggest] is a static-managed fast-path tree once
+  // the allocator has booted; asserted in the context ctor. (Out-of-range sizes should use
+  // the runtime policy, which falls back safely.)
+  __device__ bool managed() const { return true; }
+};
 template <typename allocator_t>
+struct ctx_size_policy<allocator_t, 0> {  // runtime size
+  uint16_t tree_id_;
+  uint64_t slice_;
+  uint64_t req_;
+  bool managed_;
+  __device__ ctx_size_policy(allocator_t *alloc, uint64_t size) : req_(size) {
+    tree_id_ = alloc->get_tree_id_from_size(size);
+#if defined(GALLATIN_STATIC_COUNTER) && defined(GALLATIN_BLOCK_CACHE)
+    managed_ = (tree_id_ < alloc->num_trees) && (block_cache::S().g_nblk[tree_id_] > 0);
+#else
+    managed_ = false;
+#endif
+    slice_ = managed_ ? alloc->table->get_tree_alloc_size(tree_id_) : size;
+  }
+  __device__ uint16_t tree() const { return tree_id_; }
+  __device__ uint64_t size() const { return slice_; }
+  __device__ uint64_t req() const { return req_; }
+  __device__ bool managed() const { return managed_; }
+};
+
+// ---------------------------------------------------------------------------
+// allocator_context: the wrapper around the static-counter fast path.
+//
+// Caches the per-thread {slot, base, gen} reservation context so repeated same-size
+// allocations stay on the WARP-COALESCED, one-atomic warm path -- without the caller
+// hand-threading cidx/cbase/cgen through gstatic_fast_grouped/slow.
+//
+//   // runtime size (general):
+//   allocator_context<my_gallatin> ctx(alloc, size);
+//   // compile-time size (leanest -- constexpr tree/slice, empty size policy):
+//   allocator_context<my_gallatin, 128> ctx(alloc);
+//
+//   void* p = ctx.malloc();           // per-thread (coalesced)
+//   void* q = ctx.malloc(tile);       // cg tile 16/32 -> one shared slice per tile
+//   ctx.free(p);
+//   uint64_t h = ctx.index_of(p);     // compact slice index into the heap
+//   void*    r = ctx.address(h);      // index -> pointer
+//
+// Compact index: because the static path serves fixed-size slices from one contiguous
+// heap, any slice maps to `(addr - heap_base) / slice_size`. index_of/address expose that
+// as a first-class, allocator-agnostic handle (e.g. a 32-bit slot id in a data structure).
+// The runtime-size form falls back to the stateless cooperative path for sizes above the
+// largest slice / unmanaged trees, so it is always safe.
+template <typename allocator_t, uint64_t FixedBytes = 0>
 struct allocator_context {
   allocator_t *alloc_;
-  uint64_t req_size_;     // requested size (used by the >biggest / unmanaged fallback)
-  uint64_t alloc_size_;   // the tree's slice size on the fast path
-  uint16_t tree_id_;
-  bool static_managed_;   // static counter serves this tree
+  ctx_size_policy<allocator_t, FixedBytes> sz_;  // empty when FixedBytes>0
   int cidx_;              // cached slot (-1 = none)
   uint64_t cbase_;        // cached slot base address
   unsigned int cgen_;     // cached slot generation
 
-  __device__ allocator_context(allocator_t *alloc, uint64_t size)
-      : alloc_(alloc), req_size_(size), cidx_(-1), cbase_(0), cgen_(0) {
-    tree_id_ = alloc->get_tree_id_from_size(size);
-#if defined(GALLATIN_STATIC_COUNTER) && defined(GALLATIN_BLOCK_CACHE)
-    static_managed_ = (tree_id_ < alloc->num_trees) &&
-                      (block_cache::S().g_nblk[tree_id_] > 0);
-#else
-    static_managed_ = false;
-#endif
-    alloc_size_ = static_managed_ ? alloc->table->get_tree_alloc_size(tree_id_) : size;
+  __device__ allocator_context(allocator_t *alloc, uint64_t size = FixedBytes)
+      : alloc_(alloc), sz_(alloc, size), cidx_(-1), cbase_(0), cgen_(0) {
+    // Compile-time-size contexts assert the constexpr resolve matches the runtime tables
+    // (same guarantee IndexinGPU's device_allocator_context relies on).
+    if constexpr (FixedBytes > 0) {
+      assert(sz_.tree() == alloc->get_tree_id_from_size(FixedBytes));
+    }
   }
 
   // Per-thread allocate: each active thread gets its own slice. Uses the WARP-COALESCED
-  // fast path (gstatic_fast_grouped) so the warp's active same-tree lanes reserve their
-  // run with ONE atomicAdd(n) off the leader's cached slot -- matching the stateless
-  // a->malloc(size) coalescing while keeping the warm cached-slot context. The grouped
-  // path self-bypasses to the single-atomic gstatic_fast when only one lane is active
-  // (n==1), so lone/divergent callers stay cheap.
+  // fast path (gstatic_fast_grouped) so the warp's active same-tree lanes reserve their run
+  // with ONE atomicAdd(n) off the leader's cached slot -- matching the stateless
+  // a->malloc(size) coalescing while keeping the warm cached-slot context. The grouped path
+  // self-bypasses to single-atomic gstatic_fast when only one lane is active (n==1).
   __device__ void *malloc() {
 #ifdef GALLATIN_STATIC_COUNTER
-    if (static_managed_) {
+    if (sz_.managed()) {
       void *p;
 #ifdef GALLATIN_GROUPED
-      p = alloc_->gstatic_fast_grouped(cidx_, cbase_, cgen_, tree_id_, alloc_size_);
+      p = alloc_->gstatic_fast_grouped(cidx_, cbase_, cgen_, sz_.tree(), sz_.size());
 #else
-      p = alloc_->gstatic_fast(cidx_, cbase_, cgen_, alloc_size_);
+      p = alloc_->gstatic_fast(cidx_, cbase_, cgen_, sz_.size());
 #endif
       if (p == nullptr)
-        p = alloc_->gstatic_slow(tree_id_, alloc_size_, cidx_, cbase_, cgen_);
+        p = alloc_->gstatic_slow(sz_.tree(), sz_.size(), cidx_, cbase_, cgen_);
       return p;
     }
 #endif
-    return alloc_->malloc(req_size_);  // large / unmanaged -> full stateless routing
+    return alloc_->malloc(sz_.req());  // large / unmanaged -> full stateless routing
   }
 
-  // Warp-coalesced allocate: the tile leader reserves (grouped fast path for tile<32,
-  // which coalesces a warp's same-tree leaders into one atomicAdd) and broadcasts the
-  // result to the tile. `tile` must be a cooperative-groups tile with static size 16 or 32.
+  // Warp-coalesced allocate: the tile leader reserves (grouped fast path for tile<32) and
+  // broadcasts the slice to the tile. `tile` is a cooperative-groups tile of size 16 or 32.
   template <typename tile_t>
   __device__ void *malloc(const tile_t &tile) {
     uint64_t raw = 0;
@@ -3576,24 +3646,32 @@ struct allocator_context {
 
   __device__ void free(void *p) { alloc_->free(p); }
 
+  // ---- compact slice-index handle (heap-relative, fixed slice size) ----
+  __device__ uint64_t index_of(void *p) const {
+    return ((uint64_t)p - alloc_->heap_base()) / sz_.size();
+  }
+  __device__ void *address(uint64_t idx) const {
+    return reinterpret_cast<void *>(alloc_->heap_base() + idx * sz_.size());
+  }
+
  private:
   template <typename tile_t>
   __device__ void *malloc_leader() {
 #ifdef GALLATIN_STATIC_COUNTER
-    if (static_managed_) {
+    if (sz_.managed()) {
       void *p;
 #ifdef GALLATIN_GROUPED
       if constexpr (tile_t::size() < 32)
-        p = alloc_->gstatic_fast_grouped(cidx_, cbase_, cgen_, tree_id_, alloc_size_);
+        p = alloc_->gstatic_fast_grouped(cidx_, cbase_, cgen_, sz_.tree(), sz_.size());
       else
 #endif
-        p = alloc_->gstatic_fast(cidx_, cbase_, cgen_, alloc_size_);
+        p = alloc_->gstatic_fast(cidx_, cbase_, cgen_, sz_.size());
       if (p == nullptr)
-        p = alloc_->gstatic_slow(tree_id_, alloc_size_, cidx_, cbase_, cgen_);
+        p = alloc_->gstatic_slow(sz_.tree(), sz_.size(), cidx_, cbase_, cgen_);
       return p;
     }
 #endif
-    return alloc_->malloc(req_size_);
+    return alloc_->malloc(sz_.req());
   }
 };
 

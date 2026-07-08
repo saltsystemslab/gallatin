@@ -38,6 +38,21 @@ __global__ void ctx_verify_free(alloc_t *a, uint64_t n, uint64_t *bad, uint64_t 
   ctx.free(p);
 }
 
+// (2c) COMPILE-TIME size context: allocator_context<alloc_t, 64> resolves tree/slice at
+// compile time (zero size members). Also validates the compact index handle roundtrip:
+// address(index_of(p)) == p.
+__global__ void ctx_alloc_fixed(alloc_t *a, uint64_t n, uint64_t *misses,
+                                uint64_t *handle_bad, uint64_t **ptrs) {
+  uint64_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid >= n) return;
+  allocator_context<alloc_t, 64> ctx(a);  // no runtime size arg
+  auto *p = (uint64_t *)ctx.malloc();
+  if (!p) { atomicAdd((unsigned long long *)misses, 1ULL); ptrs[tid] = nullptr; return; }
+  uint64_t h = ctx.index_of(p);
+  if (ctx.address(h) != p) atomicAdd((unsigned long long *)handle_bad, 1ULL);
+  p[0] = tid; ptrs[tid] = p;
+}
+
 // (2b) coalesced: each tile-16 gets ONE shared allocation via the leader-reserve path.
 __global__ void ctx_alloc_tile(alloc_t *a, uint64_t ntiles, uint64_t size, uint64_t *misses, uint64_t **ptrs) {
   auto block = cg::this_thread_block();
@@ -78,6 +93,14 @@ int main(int argc, char **argv) {
   printf("[per-thread ctx]  size=%llu n=%llu  misses=%llu  back_mismatch=%llu\n",
          (unsigned long long)size, (unsigned long long)n,
          (unsigned long long)*misses, (unsigned long long)*bad);
+
+  uint64_t *hbad; cudaMallocManaged(&hbad, 8);
+  *misses = 0; *hbad = 0; cudaMemset(ptrs, 0, sizeof(uint64_t *) * n);
+  ctx_alloc_fixed<<<(n + TPB - 1) / TPB, TPB>>>(a, n, misses, hbad, ptrs); cudaDeviceSynchronize();
+  *bad = 0; ctx_verify_free<<<(n + TPB - 1) / TPB, TPB>>>(a, n, bad, ptrs); cudaDeviceSynchronize();
+  printf("[fixed<64> ctx]   n=%llu  misses=%llu  back_mismatch=%llu  handle_mismatch=%llu\n",
+         (unsigned long long)n, (unsigned long long)*misses,
+         (unsigned long long)*bad, (unsigned long long)*hbad);
 
   uint64_t ntiles = n / 16;
   *misses = 0; cudaMemset(ptrs, 0, sizeof(uint64_t *) * n);
