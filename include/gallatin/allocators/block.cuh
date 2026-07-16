@@ -272,6 +272,14 @@ struct Block {
   __device__ void claim_all_static(uint16_t tree_size){
     uint shifted = (tree_size << GALLATIN_BLOCK_TREE_OFFSET) | 4096u;
     atomicExch((unsigned int *)&malloc_counter, shifted);
+    // Reset free_counter to 0 as the static counter takes ownership. This block's
+    // return is gated on free_counter reaching 4096, so every static incarnation
+    // must start its free accounting from a clean slate: a residual free_counter
+    // inherited from a prior life (setup_segment does not clear it) makes the block
+    // cross 4096 after only a few frees and return PREMATURELY -- while this slot is
+    // still dispensing it -- which lets the block be re-vended to a second slot
+    // (double ownership) and over-subscribed. See setup_segment for the matching reset.
+    atomicExch((unsigned int *)&free_counter, 0u);
   }
 
   //atomically increment the counter and add the old value

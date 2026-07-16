@@ -501,6 +501,21 @@ struct alloc_table {
       queues[segment * blocks_per_segment + i] = nullptr;
     }
 
+    // Re-typing a recycled segment: reset the per-BLOCK metadata too, so a block
+    // does not inherit ownership/accounting from a prior incarnation. Without this,
+    // the direct-compute vend in get_block hands out a block still stamped with a
+    // stale `home` (a prior owning slot) and/or a stale free_counter -- observed on
+    // sm_120 as double ownership of the largest tree's single-block segments
+    // (bytes_per_segment == alloc_size*4096), which over-subscribes the block and
+    // deregisters its segment while allocations are still live (FREE-UNOWNED).
+    // These are the two words a block's identity/accounting depend on across
+    // incarnations; the queue/active_counts above are already reset per segment.
+    for (uint64_t i = 0; i < blocks_per_segment; i++) {
+      Block *b = &blocks[segment * blocks_per_segment + i];
+      atomicExch(&b->home, 0u);
+      atomicExch((unsigned int *)&b->free_counter, 0u);
+    }
+
     queue_counters[segment] = 0;
     queue_free_counters[segment] = 0;
     active_counts[segment] = num_blocks - 1;
