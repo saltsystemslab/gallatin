@@ -510,11 +510,16 @@ struct alloc_table {
     // deregisters its segment while allocations are still live (FREE-UNOWNED).
     // These are the two words a block's identity/accounting depend on across
     // incarnations; the queue/active_counts above are already reset per segment.
+    // Scoped to GALLATIN_BLOCK_HOME: that is exactly the static-counter path that
+    // has the `home` back-ref (block.cuh) and the double-ownership bug this fixes;
+    // it also keeps `home` out of the default (non-static) build where it does not exist.
+#ifdef GALLATIN_BLOCK_HOME
     for (uint64_t i = 0; i < blocks_per_segment; i++) {
       Block *b = &blocks[segment * blocks_per_segment + i];
       atomicExch(&b->home, 0u);
       atomicExch((unsigned int *)&b->free_counter, 0u);
     }
+#endif
 
     queue_counters[segment] = 0;
     queue_free_counters[segment] = 0;
