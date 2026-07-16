@@ -151,22 +151,21 @@ The pointer returned must be the same address that was returned -
 // GALLATIN_BLOCK_HOME (the double-assignment fix) is defined above, before the block.cuh
 // include, because it adds a field to Block. See the note there.
 
-// THE double-alloc fix (default-on, reuse-preserving). A static slot caches (cbase,gen) and
-// dispenses off-block; if its block is recycled or its segment re-typed while the slot is not
-// invalidated, it dispenses into memory another slot/tree now owns -> double-allocation ->
-// over-free -> premature block/segment return -> FREE-UNOWNED / collapse. These two seals
-// invalidate a stale slot (atomic gen-CAS: detach g_block, zero g_sbase, bump gen so the hot
-// path re-resolves) at the two events that can strand it:
-//   SEAL_ON_FREE   -- when a block is freed (free_block), seal any slot still referencing it.
-//   WIPE_ON_RETYPE -- when a segment deregisters (return_block), seal all slots pointing into
-//                     it before reset_tree_id, using each block's `home` back-ref (O(1)).
-// Both are COLD PATH (block-free / swap / deregister -- never the alloc hot path): measured
-// zero perf cost, doubles 148->0, cross-tree reuse preserved (miss ~0.02-0.06%, not tree-
-// private's ~20%). Opt out with -DGALLATIN_NO_SEAL_ON_FREE / -DGALLATIN_NO_WIPE_ON_RETYPE.
-#if defined(GALLATIN_STATIC_COUNTER) && !defined(GALLATIN_NO_SEAL_ON_FREE)
+// SUPERSEDED defensive seals (now DEFAULT-OFF). These invalidate a stale static slot (atomic
+// gen-CAS: detach g_block, zero g_sbase, bump gen) at block-free (SEAL_ON_FREE) / segment
+// deregister (WIPE_ON_RETYPE). They were a band-aid for the FREE-UNOWNED crash whose ROOT was a
+// double-ownership on segment recycle -- a re-typed segment's block kept a prior incarnation's
+// `home`/free_counter, so get_block's direct-compute vend handed it to a second slot. That root is
+// now fixed at the source (claim_all_static resets free_counter; setup_segment resets home +
+// free_counter for the segment's blocks), so these seals never fire. They are NOT free: SEAL_ON_FREE
+// scans every static slot at each free_block, costing up to ~2x FREE throughput (e.g. tree8 free
+// 4492->9756 Mops with them off, matching main). Default-off; the root fix stays 0-crash without them
+// (verified: tree8=64 repro 60/60 clean). Opt back in with -DGALLATIN_ENABLE_SEAL_ON_FREE /
+// -DGALLATIN_ENABLE_WIPE_ON_RETYPE.
+#if defined(GALLATIN_STATIC_COUNTER) && defined(GALLATIN_ENABLE_SEAL_ON_FREE)
 #define GALLATIN_SEAL_ON_FREE
 #endif
-#if defined(GALLATIN_STATIC_COUNTER) && !defined(GALLATIN_NO_WIPE_ON_RETYPE)
+#if defined(GALLATIN_STATIC_COUNTER) && defined(GALLATIN_ENABLE_WIPE_ON_RETYPE)
 #define GALLATIN_WIPE_ON_RETYPE
 #endif
 
