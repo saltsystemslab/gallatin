@@ -143,7 +143,10 @@ __host__ void gallatin_pointer_churn(uint64_t num_bytes, uint64_t num_allocs, in
    std::cout << "Init in " << boot_timing.sync_end() << " seconds" << std::endl;
 
    gallatin::utils::timer kernel_timing;
-   pointer_churn_kernel<gallatin_type><<<(num_allocs-1)/TEST_BLOCK_SIZE+1, TEST_BLOCK_SIZE>>>(allocator, num_allocs, num_rounds, max_size, min_size, misses);
+   // NOTE: kernel signature is (..., min_size, max_size, misses); pass in that order. Previously
+   // max_size/min_size were swapped here, so `hash % max_size` used the small bound and the
+   // `< min_size` floor forced EVERY alloc to max_size (all one tree) instead of random in [min,max].
+   pointer_churn_kernel<gallatin_type><<<(num_allocs-1)/TEST_BLOCK_SIZE+1, TEST_BLOCK_SIZE>>>(allocator, num_allocs, num_rounds, min_size, max_size, misses);
    kernel_timing.sync_end();
 
    kernel_timing.print_throughput("Malloc/freed", num_allocs*num_rounds);
