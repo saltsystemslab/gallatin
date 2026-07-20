@@ -244,29 +244,7 @@ struct alloc_table {
 
       cudaMallocManaged((void **)&host_memory, bytes_per_segment*num_segments);
 
-      // Memory-oversubscription placement hint (host-scale-out): keep the pool
-      // device-resident until it oversubscribes VRAM, then let the driver
-      // LRU-spill pages to host. Pure hint; skipped where the device lacks
-      // concurrentManagedAccess.
-      {
-        int _mm_dev = 0; cudaGetDevice(&_mm_dev);
-        int _mm_concurrent = 0;
-        cudaDeviceGetAttribute(&_mm_concurrent, cudaDevAttrConcurrentManagedAccess, _mm_dev);
-        if (_mm_concurrent) {
-          cudaMemAdvise(host_memory, bytes_per_segment*num_segments, cudaMemAdviseSetPreferredLocation, _mm_dev);
-          cudaMemAdvise(host_memory, bytes_per_segment*num_segments, cudaMemAdviseSetAccessedBy, _mm_dev);
-        }
-      }
-
-      // The boot zero-fill touches every page, forcing the ENTIRE pool resident
-      // (and host-allocated) at boot — untenable for a very large (e.g. TB-scale)
-      // managed pool. Segment memory is raw user storage (block bitmaps live in
-      // the separate, still-zeroed `blocks` array), so skipping the fill is safe
-      // for callers that do not rely on zeroed allocations. Define
-      // GALLATIN_MANAGED_SKIP_BOOT_MEMSET to skip it.
-#ifndef GALLATIN_MANAGED_SKIP_BOOT_MEMSET
       cudaMemset(host_memory, 0, bytes_per_segment*num_segments);
-#endif
 
       host_version->memory = host_memory;
 
@@ -393,29 +371,7 @@ struct alloc_table {
 
       cudaMallocManaged((void **)&host_memory, bytes_per_segment*num_segments);
 
-      // Memory-oversubscription placement hint (host-scale-out): keep the pool
-      // device-resident until it oversubscribes VRAM, then let the driver
-      // LRU-spill pages to host. Pure hint; skipped where the device lacks
-      // concurrentManagedAccess.
-      {
-        int _mm_dev = 0; cudaGetDevice(&_mm_dev);
-        int _mm_concurrent = 0;
-        cudaDeviceGetAttribute(&_mm_concurrent, cudaDevAttrConcurrentManagedAccess, _mm_dev);
-        if (_mm_concurrent) {
-          cudaMemAdvise(host_memory, bytes_per_segment*num_segments, cudaMemAdviseSetPreferredLocation, _mm_dev);
-          cudaMemAdvise(host_memory, bytes_per_segment*num_segments, cudaMemAdviseSetAccessedBy, _mm_dev);
-        }
-      }
-
-      // The boot zero-fill touches every page, forcing the ENTIRE pool resident
-      // (and host-allocated) at boot — untenable for a very large (e.g. TB-scale)
-      // managed pool. Segment memory is raw user storage (block bitmaps live in
-      // the separate, still-zeroed `blocks` array), so skipping the fill is safe
-      // for callers that do not rely on zeroed allocations. Define
-      // GALLATIN_MANAGED_SKIP_BOOT_MEMSET to skip it.
-#ifndef GALLATIN_MANAGED_SKIP_BOOT_MEMSET
       cudaMemset(host_memory, 0, bytes_per_segment*num_segments);
-#endif
 
       host_version->memory = host_memory;
 
