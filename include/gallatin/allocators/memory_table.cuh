@@ -244,14 +244,27 @@ struct alloc_table {
 
       cudaMallocManaged((void **)&host_memory, bytes_per_segment*num_segments);
 
-      // The boot zero-fill faults every page of the pool resident on the device,
-      // filling VRAM at boot — fatal for a managed pool larger than VRAM (leaves
-      // no device memory for kernel launches). Segment memory is raw user payload
-      // (Gallatin's block bitmaps live in the separate, zeroed `blocks` array),
-      // so skipping the fill is safe for callers that don't rely on zeroed
-      // allocations. Define GALLATIN_MANAGED_SKIP_BOOT_MEMSET to skip; pages then
-      // fault in on demand and spill to host (normal UVM oversubscription).
-#ifndef GALLATIN_MANAGED_SKIP_BOOT_MEMSET
+      // GALLATIN_MANAGED_SKIP_BOOT_MEMSET = "oversubscription mode" for a managed
+      // pool LARGER than VRAM:
+      //   (a) Prefer host + AccessedBy=device. Keeps the device-resident set
+      //       bounded to the active working set so VRAM stays free for kernel
+      //       launches; pages fault to device on access and evict back to host
+      //       under pressure. (PreferredLocation=device would pin the pool to
+      //       VRAM and starve the executor — the opposite of what we want.)
+      //   (b) Skip the boot zero-fill, which would otherwise fault every page
+      //       resident at boot and fill VRAM immediately. Segment memory is raw
+      //       user payload (block bitmaps live in the separate, zeroed `blocks`
+      //       array), so skipping is safe for callers that don't rely on zeroed
+      //       allocations.
+      // Default (macro undefined): memset runs; pool is device-resident (fast,
+      // for pools that fit VRAM) — unchanged behavior.
+#ifdef GALLATIN_MANAGED_SKIP_BOOT_MEMSET
+      {
+        int _mm_dev = 0; cudaGetDevice(&_mm_dev);
+        cudaMemAdvise(host_memory, bytes_per_segment*num_segments, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId);
+        cudaMemAdvise(host_memory, bytes_per_segment*num_segments, cudaMemAdviseSetAccessedBy, _mm_dev);
+      }
+#else
       cudaMemset(host_memory, 0, bytes_per_segment*num_segments);
 #endif
 
@@ -380,9 +393,16 @@ struct alloc_table {
 
       cudaMallocManaged((void **)&host_memory, bytes_per_segment*num_segments);
 
-      // See the other managed branch: skip the resident-forcing boot memset for
-      // large (> VRAM) managed pools. Define GALLATIN_MANAGED_SKIP_BOOT_MEMSET.
-#ifndef GALLATIN_MANAGED_SKIP_BOOT_MEMSET
+      // See the other managed branch. Oversubscription mode (macro defined):
+      // prefer-host + AccessedBy=device (keep VRAM free for launches) and skip
+      // the resident-forcing boot memset. Default: memset, device-resident.
+#ifdef GALLATIN_MANAGED_SKIP_BOOT_MEMSET
+      {
+        int _mm_dev = 0; cudaGetDevice(&_mm_dev);
+        cudaMemAdvise(host_memory, bytes_per_segment*num_segments, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId);
+        cudaMemAdvise(host_memory, bytes_per_segment*num_segments, cudaMemAdviseSetAccessedBy, _mm_dev);
+      }
+#else
       cudaMemset(host_memory, 0, bytes_per_segment*num_segments);
 #endif
 
