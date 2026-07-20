@@ -244,7 +244,16 @@ struct alloc_table {
 
       cudaMallocManaged((void **)&host_memory, bytes_per_segment*num_segments);
 
+      // The boot zero-fill faults every page of the pool resident on the device,
+      // filling VRAM at boot — fatal for a managed pool larger than VRAM (leaves
+      // no device memory for kernel launches). Segment memory is raw user payload
+      // (Gallatin's block bitmaps live in the separate, zeroed `blocks` array),
+      // so skipping the fill is safe for callers that don't rely on zeroed
+      // allocations. Define GALLATIN_MANAGED_SKIP_BOOT_MEMSET to skip; pages then
+      // fault in on demand and spill to host (normal UVM oversubscription).
+#ifndef GALLATIN_MANAGED_SKIP_BOOT_MEMSET
       cudaMemset(host_memory, 0, bytes_per_segment*num_segments);
+#endif
 
       host_version->memory = host_memory;
 
@@ -371,7 +380,11 @@ struct alloc_table {
 
       cudaMallocManaged((void **)&host_memory, bytes_per_segment*num_segments);
 
+      // See the other managed branch: skip the resident-forcing boot memset for
+      // large (> VRAM) managed pools. Define GALLATIN_MANAGED_SKIP_BOOT_MEMSET.
+#ifndef GALLATIN_MANAGED_SKIP_BOOT_MEMSET
       cudaMemset(host_memory, 0, bytes_per_segment*num_segments);
+#endif
 
       host_version->memory = host_memory;
 
